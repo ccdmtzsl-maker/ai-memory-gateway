@@ -34,7 +34,7 @@ async def get_pool() -> asyncpg.Pool:
     if _pool is None:
         if not DATABASE_URL:
             raise RuntimeError("DATABASE_URL 未设置！")
-        _pool = await asyncpg.create_pool(DATABASE_URL, min_size=1, max_size=5)
+        _pool = await asyncpg.create_pool(DATABASE_URL, min_size=1, max_size=5, statement_cache_size=0)
         print("✅ 数据库连接池已创建")
     return _pool
 
@@ -85,6 +85,24 @@ async def init_tables():
         await conn.execute("""
             CREATE INDEX IF NOT EXISTS idx_conversations_session 
             ON conversations (session_id, created_at);
+        """)
+        
+        # 网关配置表（存储运行时可变配置）
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS gateway_config (
+                key     TEXT PRIMARY KEY,
+                value   TEXT DEFAULT ''
+            );
+        """)
+        
+        # 分区缓存状态表（存储每个session的轮转状态）
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS session_cache_state (
+                session_id      TEXT PRIMARY KEY,
+                summary         TEXT DEFAULT '',
+                a_start_round   INTEGER DEFAULT 0,
+                updated_at      TIMESTAMPTZ DEFAULT NOW()
+            );
         """)
     
     print("✅ 数据库表结构已就绪")
@@ -349,3 +367,220 @@ async def delete_memories_batch(memory_ids: list):
         await conn.execute(
             "DELETE FROM memories WHERE id = ANY($1::int[])", memory_ids
         )
+
+
+# ============================================================
+# 网关配置
+# ============================================================
+
+async def get_gateway_config(key: str, default: str = "") -> str:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT value FROM gateway_config WHERE key = $1", key)
+        return row['value'] if row else default
+
+
+async def set_gateway_config(key: str, value: str):
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute("""
+            INSERT INTO gateway_config (key, value) VALUES ($1, $2)
+            ON CONFLICT (key) DO UPDATE SET value = $2
+        """, key, value)
+
+
+# ============================================================
+# 对话历史读取（分区缓存用）
+# ============================================================
+
+async def get_conversation_messages(session_id: str, limit: int = 100):
+    """按时间正序读取session的消息"""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("""
+            SELECT role, content, created_at
+            FROM conversations
+            WHERE session_id = $1
+            ORDER BY created_at ASC
+            LIMIT $2
+        """, session_id, limit)
+        return [dict(r) for r in rows]
+
+
+# ============================================================
+# 分区缓存状态管理
+# ============================================================
+
+async def get_session_cache_state(session_id: str) -> dict:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT summary, a_start_round, updated_at FROM session_cache_state WHERE session_id = $1",
+            session_id
+        )
+        if row:
+            return {
+                'summary': row['summary'] or '',
+                'a_start_round': row['a_start_round'] or 0,
+                'updated_at': row['updated_at'],
+            }
+        return {'summary': '', 'a_start_round': 0, 'updated_at': None}
+
+
+async def save_session_cache_state(session_id: str, summary: str, a_start_round: int):
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute("""
+            INSERT INTO session_cache_state (session_id, summary, a_start_round, updated_at)
+            VALUES ($1, $2, $3, NOW())
+            ON CONFLICT (session_id) 
+            DO UPDATE SET summary = $2, a_start_round = $3, updated_at = NOW()
+        """, session_id, summary, a_start_round)
+
+
+# ============================================================
+# Token 使用记录
+# ============================================================
+
+async def ensure_token_usage_table():
+    """确保token_usage表存在（在init_tables里调用）"""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS token_usage (
+                id              SERIAL PRIMARY KEY,
+                session_id      TEXT,
+                model           TEXT,
+                prompt_tokens   INTEGER DEFAULT 0,
+                completion_tokens INTEGER DEFAULT 0,
+                total_tokens    INTEGER DEFAULT 0,
+                usage_type      TEXT DEFAULT 'chat',
+                created_at      TIMESTAMPTZ DEFAULT NOW()
+            );
+        """)
+        await conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_token_usage_created ON token_usage (created_at DESC);
+        """)
+
+
+async def save_token_usage(session_id: str, model: str, prompt_tokens: int, completion_tokens: int, total_tokens: int, usage_type: str = "chat"):
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute("""
+            INSERT INTO token_usage (session_id, model, prompt_tokens, completion_tokens, total_tokens, usage_type)
+            VALUES ($1, $2, $3, $4, $5, $6)
+        """, session_id, model, prompt_tokens, completion_tokens, total_tokens, usage_type)
+
+
+# ============================================================
+# 对话记录管理
+# ============================================================
+
+async def ensure_conversation_titles_table():
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS conversation_titles (
+                session_id  TEXT PRIMARY KEY,
+                title       TEXT DEFAULT ''
+            );
+        """)
+
+
+async def get_conversations_paginated(page: int = 1, per_page: int = 20):
+    offset = (page - 1) * per_page
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        total_row = await conn.fetchrow(
+            "SELECT COUNT(DISTINCT session_id) as total FROM conversations"
+        )
+        total = total_row['total'] if total_row else 0
+        
+        rows = await conn.fetch("""
+            WITH session_info AS (
+                SELECT session_id, MIN(created_at) as first_time, MAX(created_at) as last_time, COUNT(*) as message_count
+                FROM conversations GROUP BY session_id ORDER BY last_time DESC LIMIT $1 OFFSET $2
+            )
+            SELECT si.*, ct.title as custom_title,
+                   COALESCE(tu.total_all, 0) as total_tokens
+            FROM session_info si
+            LEFT JOIN conversation_titles ct ON si.session_id = ct.session_id
+            LEFT JOIN (
+                SELECT session_id, SUM(total_tokens) as total_all FROM token_usage WHERE usage_type = 'chat' GROUP BY session_id
+            ) tu ON si.session_id = tu.session_id
+            ORDER BY si.last_time DESC
+        """, per_page, offset)
+        
+        results = []
+        for r in rows:
+            preview_row = await conn.fetchrow(
+                "SELECT content FROM conversations WHERE session_id = $1 AND role = 'user' ORDER BY created_at LIMIT 1",
+                r['session_id']
+            )
+            preview = preview_row['content'][:80] if preview_row else ''
+            title = r['custom_title'] or (preview[:30] + '...' if len(preview) > 30 else preview) or r['session_id']
+            results.append({
+                'session_id': r['session_id'],
+                'title': title,
+                'first_time': r['first_time'].isoformat() if r['first_time'] else None,
+                'last_time': r['last_time'].isoformat() if r['last_time'] else None,
+                'message_count': r['message_count'],
+                'preview': preview,
+                'total_tokens': r['total_tokens'],
+            })
+        return results, total
+
+
+async def delete_conversation(session_id: str):
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute("DELETE FROM conversations WHERE session_id = $1", session_id)
+        await conn.execute("DELETE FROM conversation_titles WHERE session_id = $1", session_id)
+        await conn.execute("DELETE FROM session_cache_state WHERE session_id = $1", session_id)
+
+
+async def batch_delete_conversations(session_ids: list):
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute("DELETE FROM conversations WHERE session_id = ANY($1)", session_ids)
+        await conn.execute("DELETE FROM conversation_titles WHERE session_id = ANY($1)", session_ids)
+        await conn.execute("DELETE FROM session_cache_state WHERE session_id = ANY($1)", session_ids)
+
+
+async def merge_sessions_to_target(source_ids: list, target_id: str) -> dict:
+    if not source_ids:
+        return {'merged_sessions': 0, 'merged_messages': 0, 'merged_token_records': 0}
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        msg_count = await conn.fetchval("SELECT COUNT(*) FROM conversations WHERE session_id = ANY($1)", source_ids)
+        await conn.execute("UPDATE conversations SET session_id = $1 WHERE session_id = ANY($2)", target_id, source_ids)
+        token_count = await conn.fetchval("SELECT COUNT(*) FROM token_usage WHERE session_id = ANY($1)", source_ids)
+        await conn.execute("UPDATE token_usage SET session_id = $1 WHERE session_id = ANY($2)", target_id, source_ids)
+        await conn.execute("DELETE FROM conversation_titles WHERE session_id = ANY($1)", source_ids)
+        await conn.execute("DELETE FROM session_cache_state WHERE session_id = ANY($1)", source_ids)
+        return {'merged_sessions': len(source_ids), 'merged_messages': msg_count or 0, 'merged_token_records': token_count or 0}
+
+
+async def list_all_session_cache_states() -> list:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("""
+            SELECT scs.session_id, scs.summary, scs.a_start_round, scs.updated_at,
+                   COALESCE(c.message_count, 0) as message_count,
+                   COALESCE(tu.chat_tokens, 0) as chat_tokens
+            FROM session_cache_state scs
+            LEFT JOIN (SELECT session_id, COUNT(*) as message_count FROM conversations GROUP BY session_id) c ON scs.session_id = c.session_id
+            LEFT JOIN (SELECT session_id, SUM(total_tokens) as chat_tokens FROM token_usage WHERE usage_type = 'chat' GROUP BY session_id) tu ON scs.session_id = tu.session_id
+            ORDER BY scs.updated_at DESC
+        """)
+        return [{
+            'session_id': r['session_id'], 'summary': r['summary'] or '', 'summary_length': len(r['summary'] or ''),
+            'a_start_round': r['a_start_round'], 'updated_at': r['updated_at'].isoformat() if r['updated_at'] else None,
+            'message_count': r['message_count'], 'chat_tokens': r['chat_tokens'],
+        } for r in rows]
+
+
+async def delete_session_cache_state(session_id: str):
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute("DELETE FROM session_cache_state WHERE session_id = $1", session_id)

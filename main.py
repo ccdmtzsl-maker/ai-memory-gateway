@@ -24,7 +24,7 @@ from fastapi.responses import StreamingResponse, JSONResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from database import init_tables, close_pool, save_message, search_memories, save_memory, get_all_memories_count, get_recent_memories, get_all_memories, get_pool, get_all_memories_detail, update_memory, delete_memory, delete_memories_batch
+from database import init_tables, close_pool, save_message, search_memories, save_memory, get_all_memories_count, get_recent_memories, get_all_memories, get_pool, get_all_memories_detail, update_memory, delete_memory, delete_memories_batch, get_gateway_config, set_gateway_config, get_conversation_messages, get_session_cache_state, save_session_cache_state, delete_session_cache_state, save_token_usage, ensure_token_usage_table, ensure_conversation_titles_table, get_conversations_paginated, delete_conversation, batch_delete_conversations, merge_sessions_to_target, list_all_session_cache_states
 from memory_extractor import extract_memories, score_memories
 
 # ============================================================
@@ -54,6 +54,18 @@ MAX_MEMORIES_INJECT = int(os.getenv("MAX_MEMORIES_INJECT", "15"))
 
 # 记忆提取间隔（0 = 禁用自动提取，1 = 每轮提取，N = 每 N 轮提取一次）
 MEMORY_EXTRACT_INTERVAL = int(os.getenv("MEMORY_EXTRACT_INTERVAL", "1"))
+
+# 记忆提取+注入总开关（false时数据库仍连接、消息仍存储，但不提取也不注入记忆）
+MEMORY_EXTRACT_ENABLED = os.getenv("MEMORY_EXTRACT_ENABLED", "true").lower() == "true"
+
+# 分区缓存
+CACHE_PARTITION_ENABLED = os.getenv("CACHE_PARTITION_ENABLED", "false").lower() == "true"
+CACHE_PARTITION_X = int(os.getenv("CACHE_PARTITION_X", "15"))
+CACHE_SUMMARY_MODEL = os.getenv("CACHE_SUMMARY_MODEL", "anthropic/claude-haiku-4.5")
+PARTITION_SESSION_ID = os.getenv("PARTITION_SESSION_ID", "")
+
+def get_active_session_id() -> str:
+    return PARTITION_SESSION_ID
 
 # 时区偏移（小时），用于记忆注入时的日期显示，默认 UTC+8
 TIMEZONE_HOURS = int(os.getenv("TIMEZONE_HOURS", "8"))
@@ -105,11 +117,27 @@ else:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """应用启动时初始化数据库，关闭时断开连接"""
+    global PARTITION_SESSION_ID
     if MEMORY_ENABLED:
         try:
             await init_tables()
+            await ensure_token_usage_table()
+            await ensure_conversation_titles_table()
             count = await get_all_memories_count()
             print(f"✅ 记忆系统已启动，当前记忆数量：{count}")
+            if not MEMORY_EXTRACT_ENABLED:
+                print(f"ℹ️  记忆提取+注入已关闭（MEMORY_EXTRACT_ENABLED=false）")
+            
+            # 分区缓存：从DB读取活跃对话线ID
+            if CACHE_PARTITION_ENABLED:
+                db_sid = await get_gateway_config("partition_session_id", "")
+                if db_sid:
+                    PARTITION_SESSION_ID = db_sid
+                    print(f"🔗 活跃对话线(DB): {PARTITION_SESSION_ID}")
+                elif PARTITION_SESSION_ID:
+                    await set_gateway_config("partition_session_id", PARTITION_SESSION_ID)
+                    print(f"🔗 活跃对话线(ENV→DB): {PARTITION_SESSION_ID}")
+                print(f"🔒 分区缓存已启用: X={CACHE_PARTITION_X}, 摘要模型={CACHE_SUMMARY_MODEL}")
         except Exception as e:
             print(f"⚠️  数据库初始化失败: {e}")
             print("⚠️  记忆系统将不可用，但网关仍可正常转发")
@@ -139,7 +167,7 @@ async def build_system_prompt_with_memories(user_message: str) -> str:
     1. 用用户消息搜索相关记忆
     2. 格式化成文本拼接到人设后面
     """
-    if not MEMORY_ENABLED:
+    if not MEMORY_ENABLED or not MEMORY_EXTRACT_ENABLED:
         return SYSTEM_PROMPT
     
     try:
@@ -191,6 +219,241 @@ async def build_system_prompt_with_memories(user_message: str) -> str:
 
 
 # ============================================================
+# 分区缓存（Partition Cache）
+# ============================================================
+
+def build_time_injection() -> str:
+    """构建时间注入文本（东八区）"""
+    now_utc = datetime.now(timezone.utc)
+    now_local = now_utc + timedelta(hours=TIMEZONE_HOURS)
+    weekday_names = ["星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"]
+    weekday = weekday_names[now_local.weekday()]
+    time_str = now_local.strftime("%Y年%m月%d日 %H:%M")
+    return f"【当前时间】{time_str} {weekday}"
+
+
+async def generate_summary(messages: list, session_id: str = "") -> str:
+    """调用轻量模型压缩A区消息为摘要"""
+    if not messages:
+        return ""
+    
+    conversation_text = ""
+    for msg in messages:
+        role_label = "用户" if msg['role'] == 'user' else "AI"
+        content = msg['content'] if isinstance(msg['content'], str) else str(msg['content'])
+        conversation_text += f"{role_label}: {content}\n\n"
+    
+    prompt = f"""请将以下对话压缩成简洁摘要。保留关键信息（事件、决定、情感、约定），去掉日常寒暄和重复内容。用第三人称叙述，控制在300字以内。
+
+---
+{conversation_text}
+---
+
+摘要："""
+    
+    try:
+        headers = {
+            "Authorization": f"Bearer {API_KEY}",
+            "Content-Type": "application/json",
+        }
+        if "openrouter" in API_BASE_URL:
+            headers["HTTP-Referer"] = EXTRA_REFERER
+            headers["X-Title"] = EXTRA_TITLE
+        
+        async with httpx.AsyncClient(timeout=60) as client:
+            response = await client.post(API_BASE_URL, headers=headers, json={
+                "model": CACHE_SUMMARY_MODEL,
+                "max_tokens": 500,
+                "messages": [{"role": "user", "content": prompt}],
+            })
+            if response.status_code == 200:
+                data = response.json()
+                if "choices" in data:
+                    summary = data["choices"][0]["message"]["content"].strip()
+                    print(f"📝 摘要生成完成: {len(summary)}字 (压缩{len(messages)}条消息)")
+                    return summary
+        
+        print(f"⚠️ 摘要生成失败: HTTP {response.status_code}")
+        return ""
+    except Exception as e:
+        print(f"⚠️ 摘要生成异常: {e}")
+        return ""
+
+
+async def build_partitioned_messages(
+    session_id: str,
+    all_messages: list,
+    base_prompt: str,
+    user_message: str,
+) -> list:
+    """
+    分区缓存模式：构建带breakpoint的messages数组。
+    
+    结构：
+    system: [{人设, BP1}]
+    messages:
+      [摘要区]
+      [A区消息... 最后一条BP2]
+      [B区消息... 最后一条BP3]
+      [当前user: 时间+记忆+消息]（不缓存）
+    """
+    X = CACHE_PARTITION_X
+    
+    non_system = [m for m in all_messages if m.get('role') != 'system']
+    
+    current_user_msg = None
+    history = non_system[:]
+    if history and history[-1].get('role') == 'user':
+        current_user_msg = history.pop()
+    
+    total_rounds = len(history) // 2
+    
+    state = await get_session_cache_state(session_id)
+    summary = state['summary']
+    a_start_round = state['a_start_round']
+    
+    if total_rounds < X:
+        return await _build_basic_cached(history, base_prompt, user_message, current_user_msg)
+    
+    a_end_round = a_start_round + X
+    a_msgs = history[a_start_round * 2 : a_end_round * 2]
+    b_msgs = history[a_end_round * 2 :]
+    b_rounds = len(b_msgs) // 2
+    
+    rotation_count = 0
+    while b_rounds >= X:
+        rotation_count += 1
+        print(f"🔄 轮转#{rotation_count}: session={session_id}, B区{b_rounds}轮 >= X={X}")
+        
+        new_summary = await generate_summary(a_msgs, session_id)
+        if new_summary:
+            summary = (summary + "\n\n" + new_summary).strip() if summary else new_summary
+        
+        a_start_round += X
+        a_end_round = a_start_round + X
+        a_msgs = history[a_start_round * 2 : a_end_round * 2]
+        b_msgs = history[a_end_round * 2 :]
+        b_rounds = len(b_msgs) // 2
+    
+    if rotation_count > 0:
+        await save_session_cache_state(session_id, summary, a_start_round)
+        print(f"🔄 轮转完成(共{rotation_count}次): 摘要{len(summary)}字, A区{len(a_msgs)}条, B区{len(b_msgs)}条")
+    
+    # 拼装messages
+    result = [{
+        "role": "system",
+        "content": [{"type": "text", "text": base_prompt, "cache_control": {"type": "ephemeral"}}]
+    }]
+    
+    if summary:
+        result.append({"role": "user", "content": f"[以下是之前对话的摘要，帮助你回忆上下文]\n{summary}"})
+        result.append({"role": "assistant", "content": "好的，我已了解之前的对话内容。"})
+    
+    for i, msg in enumerate(a_msgs):
+        m = {"role": msg['role'], "content": msg['content']}
+        if i == len(a_msgs) - 1:
+            text = m['content'] if isinstance(m['content'], str) else str(m['content'])
+            m['content'] = [{"type": "text", "text": text, "cache_control": {"type": "ephemeral"}}]
+        result.append(m)
+    
+    for i, msg in enumerate(b_msgs):
+        m = {"role": msg['role'], "content": msg['content']}
+        if i == len(b_msgs) - 1 and len(b_msgs) > 0:
+            text = m['content'] if isinstance(m['content'], str) else str(m['content'])
+            m['content'] = [{"type": "text", "text": text, "cache_control": {"type": "ephemeral"}}]
+        result.append(m)
+    
+    if current_user_msg:
+        parts = [build_time_injection()]
+        
+        if MEMORY_ENABLED and MEMORY_EXTRACT_ENABLED and user_message:
+            mem_text = await build_memory_text(user_message)
+            if mem_text:
+                parts.append(mem_text)
+        
+        current_text = current_user_msg['content']
+        if isinstance(current_text, list):
+            current_text = " ".join(
+                item.get("text", "") for item in current_text
+                if isinstance(item, dict) and item.get("type") == "text"
+            )
+        parts.append(current_text)
+        result.append({"role": "user", "content": "\n\n".join(parts)})
+    
+    bp_count = 1 + (1 if a_msgs else 0) + (1 if b_msgs else 0)
+    print(f"🔒 分区缓存: BP×{bp_count} | 摘要{'有' if summary else '无'}({len(summary)}字) | A区{len(a_msgs)}条 | B区{len(b_msgs)}条 | 总{len(result)}条messages")
+    return result
+
+
+async def _build_basic_cached(
+    history: list,
+    base_prompt: str,
+    user_message: str,
+    current_user_msg: dict,
+) -> list:
+    """基础版prompt caching（历史不够分区时的降级模式）"""
+    result = [{
+        "role": "system",
+        "content": [{"type": "text", "text": base_prompt, "cache_control": {"type": "ephemeral"}}]
+    }]
+    
+    for i, msg in enumerate(history):
+        m = {"role": msg['role'], "content": msg['content']}
+        if i == len(history) - 1 and len(history) > 0:
+            text = m['content'] if isinstance(m['content'], str) else str(m['content'])
+            m['content'] = [{"type": "text", "text": text, "cache_control": {"type": "ephemeral"}}]
+        result.append(m)
+    
+    if current_user_msg:
+        parts = [build_time_injection()]
+        
+        if MEMORY_ENABLED and MEMORY_EXTRACT_ENABLED and user_message:
+            mem_text = await build_memory_text(user_message)
+            if mem_text:
+                parts.append(mem_text)
+        
+        current_text = current_user_msg['content']
+        if isinstance(current_text, list):
+            current_text = " ".join(
+                item.get("text", "") for item in current_text
+                if isinstance(item, dict) and item.get("type") == "text"
+            )
+        parts.append(current_text)
+        result.append({"role": "user", "content": "\n\n".join(parts)})
+    
+    bp_count = 1 + (1 if history else 0)
+    print(f"🔒 基础缓存(降级): BP×{bp_count} | 历史{len(history)}条 | 总{len(result)}条messages")
+    return result
+
+
+async def build_memory_text(user_message: str) -> str:
+    """搜索记忆并格式化为注入文本（分区缓存模式用）"""
+    try:
+        memories = await search_memories(user_message, limit=MAX_MEMORIES_INJECT)
+        if not memories:
+            return ""
+        
+        memory_lines = []
+        for mem in memories:
+            date_str = ""
+            if mem.get("created_at"):
+                try:
+                    utc_str = str(mem['created_at'])[:19]
+                    utc_dt = datetime.strptime(utc_str, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+                    local_dt = utc_dt + timedelta(hours=TIMEZONE_HOURS)
+                    date_str = f"[{local_dt.strftime('%Y-%m-%d')}] "
+                except:
+                    date_str = f"[{str(mem['created_at'])[:10]}] "
+            memory_lines.append(f"- {date_str}{mem['content']}")
+        
+        print(f"📚 注入了 {len(memories)} 条相关记忆")
+        return "【从过往对话中检索到的相关记忆】\n" + "\n".join(memory_lines)
+    except Exception as e:
+        print(f"⚠️ 记忆检索失败: {e}")
+        return ""
+
+
+# ============================================================
 # 后台记忆处理
 # ============================================================
 
@@ -215,6 +478,10 @@ async def process_memories_background(session_id: str, user_msg: str, assistant_
         await save_message(session_id, "assistant", assistant_msg, model)
         
         # 2. 检查是否需要提取记忆
+        if not MEMORY_EXTRACT_ENABLED:
+            print(f"⏭️  记忆提取已关闭（MEMORY_EXTRACT_ENABLED=false）")
+            return
+        
         if MEMORY_EXTRACT_INTERVAL == 0:
             print(f"⏭️  记忆自动提取已禁用，跳过")
             return
@@ -354,32 +621,60 @@ async def chat_completions(request: Request):
     # 先保存原始对话消息（不含 system prompt），用于记忆提取
     original_messages = [msg for msg in messages if msg.get("role") != "system"]
     
-    if SYSTEM_PROMPT or (MEMORY_ENABLED and user_message):
-        if MEMORY_ENABLED and user_message:
-            enhanced_prompt = await build_system_prompt_with_memories(user_message)
-        else:
-            enhanced_prompt = SYSTEM_PROMPT
-        
-        if enhanced_prompt:
-            has_system = any(msg.get("role") == "system" for msg in messages)
-            if has_system:
-                for i, msg in enumerate(messages):
-                    if msg.get("role") == "system":
-                        messages[i]["content"] = enhanced_prompt + "\n\n" + msg["content"]
-                        break
-            else:
-                messages.insert(0, {"role": "system", "content": enhanced_prompt})
+    # ---------- 生成 session ID ----------
+    session_id = str(uuid.uuid4())[:8]
     
-    body["messages"] = messages
+    # ---------- 分区缓存模式 ----------
+    if CACHE_PARTITION_ENABLED and SYSTEM_PROMPT:
+        active_sid = get_active_session_id()
+        if active_sid:
+            session_id = active_sid
+        
+        # 从DB读取历史
+        try:
+            db_history = await get_conversation_messages(session_id, limit=10000)
+            db_msgs = [{"role": m["role"], "content": m["content"]} for m in db_history] if db_history else []
+        except Exception as e:
+            print(f"[warning] 分区模式读取历史失败: {e}")
+            db_msgs = []
+        
+        # 提取客户端最新user消息
+        client_user_msgs = [m for m in messages if m.get("role") == "user"]
+        latest_user = client_user_msgs[-1] if client_user_msgs else None
+        all_msgs = db_msgs + ([latest_user] if latest_user else [])
+        
+        print(f"📦 分区模式: DB历史{len(db_msgs)}条 + 客户端消息{1 if latest_user else 0}条")
+        
+        messages = await build_partitioned_messages(
+            session_id, all_msgs, SYSTEM_PROMPT, user_message
+        )
+        body["messages"] = messages
+    
+    else:
+        # ---------- 原有逻辑：system prompt + 记忆注入 ----------
+        if SYSTEM_PROMPT or (MEMORY_ENABLED and MEMORY_EXTRACT_ENABLED and user_message):
+            if MEMORY_ENABLED and MEMORY_EXTRACT_ENABLED and user_message:
+                enhanced_prompt = await build_system_prompt_with_memories(user_message)
+            else:
+                enhanced_prompt = SYSTEM_PROMPT
+            
+            if enhanced_prompt:
+                has_system = any(msg.get("role") == "system" for msg in messages)
+                if has_system:
+                    for i, msg in enumerate(messages):
+                        if msg.get("role") == "system":
+                            messages[i]["content"] = enhanced_prompt + "\n\n" + msg["content"]
+                            break
+                else:
+                    messages.insert(0, {"role": "system", "content": enhanced_prompt})
+        
+        body["messages"] = messages
     
     # ---------- 模型处理 ----------
     model = body.get("model", DEFAULT_MODEL)
     if not model:
         model = DEFAULT_MODEL
     body["model"] = model
-    
-    # ---------- 生成 session ID ----------
-    session_id = str(uuid.uuid4())[:8]
     
     # ---------- 转发请求 ----------
     headers = {
@@ -446,6 +741,7 @@ async def chat_completions(request: Request):
 async def stream_and_capture(headers: dict, body: dict, session_id: str, user_message: str, model: str, original_messages: list = None):
     """流式响应 + 捕获完整回复（原始字节透传，确保SSE格式和thinking数据完整）"""
     full_response = []
+    stream_usage = {}
     line_buffer = ""
     
     async with httpx.AsyncClient(timeout=300) as client:
@@ -467,6 +763,10 @@ async def stream_and_capture(headers: dict, body: dict, session_id: str, user_me
                     if line.startswith("data: ") and line != "data: [DONE]":
                         try:
                             data = json.loads(line[6:])
+                            
+                            if "usage" in data:
+                                stream_usage = data["usage"]
+                            
                             delta = data.get("choices", [{}])[0].get("delta", {})
                             content = delta.get("content", "")
                             if content:
@@ -475,6 +775,15 @@ async def stream_and_capture(headers: dict, body: dict, session_id: str, user_me
                             pass
     
     assistant_msg = "".join(full_response)
+    
+    if stream_usage:
+        pt = stream_usage.get("prompt_tokens", 0)
+        ct = stream_usage.get("completion_tokens", 0)
+        tt = stream_usage.get("total_tokens", 0)
+        if tt > 0:
+            asyncio.create_task(save_token_usage(session_id, model, pt, ct, tt))
+            print(f"📊 Stream Token: {pt} + {ct} = {tt}")
+    
     if MEMORY_ENABLED and user_message and assistant_msg:
         asyncio.create_task(
             process_memories_background(session_id, user_message, assistant_msg, model, context_messages=original_messages)
@@ -713,6 +1022,170 @@ async def import_memories(request: Request):
 
 
 # ============================================================
+# 对话记录管理 API
+# ============================================================
+
+@app.get("/api/conversations")
+async def api_conversations(page: int = 1, per_page: int = 20):
+    if not MEMORY_ENABLED:
+        return {"error": "记忆系统未启用"}
+    try:
+        results, total = await get_conversations_paginated(page, per_page)
+        return {"conversations": results, "total": total, "page": page, "per_page": per_page}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.get("/api/conversations/{session_id}/messages")
+async def api_conversation_messages(session_id: str, limit: int = 200):
+    if not MEMORY_ENABLED:
+        return {"error": "记忆系统未启用"}
+    try:
+        msgs = await get_conversation_messages(session_id, limit)
+        return {"messages": [{"role": m["role"], "content": m["content"], "created_at": m["created_at"].isoformat() if m.get("created_at") else None} for m in msgs]}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.delete("/api/conversations/{session_id}")
+async def api_delete_conversation(session_id: str):
+    if not MEMORY_ENABLED:
+        return {"error": "记忆系统未启用"}
+    try:
+        await delete_conversation(session_id)
+        return {"status": "ok"}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.post("/api/conversations/batch-delete")
+async def api_batch_delete(request: Request):
+    if not MEMORY_ENABLED:
+        return {"error": "记忆系统未启用"}
+    try:
+        body = await request.json()
+        ids = body.get("session_ids", [])
+        if ids:
+            await batch_delete_conversations(ids)
+        return {"status": "ok", "deleted": len(ids)}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.post("/api/admin/merge-sessions")
+async def api_merge_sessions(request: Request):
+    if not MEMORY_ENABLED:
+        return {"error": "记忆系统未启用"}
+    try:
+        body = await request.json()
+        source_ids = [s for s in body.get("source_ids", []) if s != body.get("target_id", "")]
+        target_id = body.get("target_id", "")
+        if not source_ids or not target_id:
+            return {"error": "source_ids 和 target_id 不能为空"}
+        result = await merge_sessions_to_target(source_ids, target_id)
+        return {"status": "ok", **result}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+# ============================================================
+# 对话线管理 API（分区缓存）
+# ============================================================
+
+@app.get("/api/partition/status")
+async def api_partition_status():
+    active_sid = get_active_session_id()
+    state = await get_session_cache_state(active_sid) if active_sid else {}
+    return {
+        "enabled": CACHE_PARTITION_ENABLED,
+        "active_session_id": active_sid,
+        "partition_x": CACHE_PARTITION_X,
+        "summary_model": CACHE_SUMMARY_MODEL,
+        "summary": state.get('summary', ''),
+        "summary_length": len(state.get('summary', '')),
+        "a_start_round": state.get('a_start_round', 0),
+        "updated_at": state.get('updated_at').isoformat() if state.get('updated_at') else None,
+    }
+
+
+@app.get("/api/partition/threads")
+async def api_partition_threads():
+    threads = await list_all_session_cache_states()
+    active_sid = get_active_session_id()
+    for t in threads:
+        t['is_active'] = (t['session_id'] == active_sid)
+    if active_sid and not any(t['session_id'] == active_sid for t in threads):
+        threads.insert(0, {'session_id': active_sid, 'summary': '', 'summary_length': 0, 'a_start_round': 0, 'updated_at': None, 'message_count': 0, 'chat_tokens': 0, 'is_active': True})
+    return {"threads": threads, "active_session_id": active_sid}
+
+
+@app.put("/api/partition/summary")
+async def api_update_summary(request: Request):
+    try:
+        body = await request.json()
+        sid = body.get("session_id", "")
+        summary = body.get("summary", "")
+        if not sid:
+            return {"error": "session_id 不能为空"}
+        state = await get_session_cache_state(sid)
+        await save_session_cache_state(sid, summary, state.get('a_start_round', 0))
+        return {"status": "ok", "summary_length": len(summary)}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.delete("/api/partition/summary")
+async def api_clear_summary(request: Request):
+    try:
+        body = await request.json()
+        sid = body.get("session_id", "")
+        if not sid:
+            return {"error": "session_id 不能为空"}
+        state = await get_session_cache_state(sid)
+        await save_session_cache_state(sid, "", state.get('a_start_round', 0))
+        return {"status": "ok"}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.post("/api/partition/thread")
+async def api_create_thread(request: Request):
+    try:
+        body = await request.json()
+        new_id = body.get("session_id", "").strip()
+        copy_from = body.get("copy_summary_from", "")
+        if not new_id:
+            return {"error": "session_id 不能为空"}
+        existing = await get_session_cache_state(new_id)
+        if existing.get('updated_at'):
+            return {"error": f"对话线 '{new_id}' 已存在"}
+        summary = ""
+        if copy_from:
+            source = await get_session_cache_state(copy_from)
+            summary = source.get('summary', '')
+        await save_session_cache_state(new_id, summary, 0)
+        return {"status": "ok", "session_id": new_id, "summary_length": len(summary)}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.post("/api/partition/switch")
+async def api_switch_thread(request: Request):
+    global PARTITION_SESSION_ID
+    try:
+        body = await request.json()
+        new_id = body.get("session_id", "").strip()
+        if not new_id:
+            return {"error": "session_id 不能为空"}
+        old_id = PARTITION_SESSION_ID
+        PARTITION_SESSION_ID = new_id
+        await set_gateway_config("partition_session_id", new_id)
+        return {"status": "ok", "old_session_id": old_id, "new_session_id": new_id}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+# ============================================================
 
 if __name__ == "__main__":
     import uvicorn
@@ -721,7 +1194,11 @@ if __name__ == "__main__":
     print(f"🤖 默认模型：{DEFAULT_MODEL}")
     print(f"🔗 API 地址：{API_BASE_URL}")
     print(f"🧠 记忆系统：{'开启' if MEMORY_ENABLED else '关闭'}")
+    if MEMORY_ENABLED:
+        print(f"📝 记忆提取+注入：{'开启' if MEMORY_EXTRACT_ENABLED else '关闭'}")
     print(f"🔄 记忆提取间隔：{'禁用' if MEMORY_EXTRACT_INTERVAL == 0 else '每轮提取' if MEMORY_EXTRACT_INTERVAL == 1 else f'每 {MEMORY_EXTRACT_INTERVAL} 轮提取一次'}")
+    if CACHE_PARTITION_ENABLED:
+        print(f"🔒 分区缓存：开启 (X={CACHE_PARTITION_X}, session={PARTITION_SESSION_ID or '未设置'})")
     if FORCE_STREAM:
         print(f"⚡ 强制流式传输：开启")
     if REASONING_EFFORT:

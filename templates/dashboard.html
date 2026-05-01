@@ -27,6 +27,14 @@
                     <span class="nav-icon">📤</span>
                     <span class="nav-label">导出备份</span>
                 </a>
+                <a href="#" class="nav-item" data-section="conversations">
+                    <span class="nav-icon">💬</span>
+                    <span class="nav-label">对话记录</span>
+                </a>
+                <a href="#" class="nav-item" data-section="threads">
+                    <span class="nav-icon">🔗</span>
+                    <span class="nav-label">对话线</span>
+                </a>
             </nav>
             <div class="sidebar-footer">
                 <a href="https://github.com/garan0613/ai-memory-gateway" target="_blank" class="nav-item">
@@ -171,6 +179,85 @@
                         <li>建议定期备份，以防数据丢失</li>
                         <li>导出文件可用于迁移到其他部署实例</li>
                     </ul>
+                </div>
+            </section>
+
+            <!-- 对话记录 Section -->
+            <section id="section-conversations" class="section">
+                <div class="section-header">
+                    <h1>对话记录</h1>
+                    <p class="section-desc">浏览和管理历史对话</p>
+                </div>
+                <div class="card">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+                        <h4 id="conv-list-title">对话列表</h4>
+                        <span id="conv-list-count" style="color: var(--text-muted); font-size: 13px;"></span>
+                    </div>
+                    <div id="conv-list-container" style="min-height: 100px;">
+                        <div style="text-align: center; color: var(--text-muted); padding: 40px 0;">加载中...</div>
+                    </div>
+                    <div id="conv-pagination" style="display: flex; justify-content: center; align-items: center; gap: 12px; margin-top: 16px;"></div>
+                </div>
+                <div id="conv-detail-panel" class="card" style="display: none;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+                        <h4 id="conv-detail-title">对话详情</h4>
+                        <button class="btn btn-sm" onclick="closeConvDetail()">关闭</button>
+                    </div>
+                    <div id="conv-detail-messages" style="max-height: 600px; overflow-y: auto;"></div>
+                </div>
+            </section>
+
+            <!-- 对话线管理 Section -->
+            <section id="section-threads" class="section">
+                <div class="section-header">
+                    <h1>对话线管理</h1>
+                    <p class="section-desc">管理分区缓存的对话线、查看编辑摘要</p>
+                </div>
+                <div class="card" id="thread-status-card">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+                        <h4>🔗 当前活跃对话线</h4>
+                        <button class="btn btn-sm" onclick="loadThreads()">刷新</button>
+                    </div>
+                    <div id="thread-status" style="color: var(--text-muted);">加载中...</div>
+                </div>
+                <div class="card">
+                    <h4 style="margin-bottom: 12px;">🆕 新建对话线</h4>
+                    <div style="display: flex; gap: 8px; align-items: flex-end; flex-wrap: wrap;">
+                        <div style="flex: 1; min-width: 200px;">
+                            <label class="form-label" style="font-size: 13px;">对话线ID</label>
+                            <input type="text" id="new-thread-id" class="search-input" placeholder="例如: my-thread">
+                        </div>
+                        <div style="flex: 1; min-width: 200px;">
+                            <label class="form-label" style="font-size: 13px;">继承摘要自（可选）</label>
+                            <select id="new-thread-copy-from" class="select-input">
+                                <option value="">不继承，从零开始</option>
+                            </select>
+                        </div>
+                        <button class="btn btn-primary" onclick="createThread()">创建</button>
+                    </div>
+                    <div id="thread-create-msg" class="msg-container" style="margin-top: 8px;"></div>
+                </div>
+                <div class="card">
+                    <h4 style="margin-bottom: 12px;">📋 所有对话线</h4>
+                    <div id="thread-list" style="min-height: 60px;">
+                        <div style="text-align: center; color: var(--text-muted); padding: 20px 0;">加载中...</div>
+                    </div>
+                </div>
+                <div id="summaryModal" class="modal" style="display:none;">
+                    <div class="modal-content" style="max-width: 700px;">
+                        <h3>📝 编辑摘要 — <span id="summary-modal-sid"></span></h3>
+                        <div class="form-group">
+                            <textarea id="summary-editor" class="textarea" rows="16" style="font-size: 14px; line-height: 1.6;"></textarea>
+                        </div>
+                        <div style="display: flex; justify-content: space-between; align-items: center;">
+                            <span id="summary-char-count" style="color: var(--text-muted); font-size: 13px;"></span>
+                            <div style="display: flex; gap: 8px;">
+                                <button class="btn btn-danger" onclick="clearSummary()">清空摘要</button>
+                                <button class="btn btn-secondary" onclick="closeSummaryModal()">取消</button>
+                                <button class="btn btn-primary" onclick="saveSummary()">保存</button>
+                            </div>
+                        </div>
+                    </div>
                 </div>
             </section>
         </main>

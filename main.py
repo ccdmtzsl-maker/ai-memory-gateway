@@ -63,6 +63,8 @@ MEMORY_EXTRACT_ENABLED = os.getenv("MEMORY_EXTRACT_ENABLED", "true").lower() == 
 CACHE_PARTITION_ENABLED = os.getenv("CACHE_PARTITION_ENABLED", "false").lower() == "true"
 CACHE_PARTITION_X = int(os.getenv("CACHE_PARTITION_X", "15"))
 CACHE_SUMMARY_MODEL = os.getenv("CACHE_SUMMARY_MODEL", "anthropic/claude-haiku-4.5")
+CACHE_PARTITION_TRIGGER = os.getenv("CACHE_PARTITION_TRIGGER", "rounds")  # rounds=按轮次 | time=按时间窗口
+CACHE_PARTITION_WINDOW = int(os.getenv("CACHE_PARTITION_WINDOW", "30"))  # 时间窗口（分钟），仅 trigger=time 时生效
 PARTITION_SESSION_ID = os.getenv("PARTITION_SESSION_ID", "")
 
 def get_active_session_id() -> str:
@@ -257,16 +259,6 @@ async def build_system_prompt_with_memories(user_message: str) -> str:
 # 分区缓存（Partition Cache）
 # ============================================================
 
-def build_time_injection() -> str:
-    """构建时间注入文本（东八区）"""
-    now_utc = datetime.now(timezone.utc)
-    now_local = now_utc + timedelta(hours=TIMEZONE_HOURS)
-    weekday_names = ["星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"]
-    weekday = weekday_names[now_local.weekday()]
-    time_str = now_local.strftime("%Y年%m月%d日 %H:%M")
-    return f"【当前时间】{time_str} {weekday}"
-
-
 def _is_anthropic_model(model: str) -> bool:
     """判断是否为 Anthropic Claude 系列模型（只有 Claude 支持 cache_control）"""
     model_lower = model.lower()
@@ -287,11 +279,20 @@ def _strip_cache_control(messages: list):
             if isinstance(block, dict) and "cache_control" in block:
                 del block["cache_control"]
                 stripped += 1
-        # 只有一个 text block 时降级回纯字符串（兼容性最好）
         if len(content) == 1 and isinstance(content[0], dict) and content[0].get("type") == "text":
             msg["content"] = content[0]["text"]
     if stripped > 0:
         print(f"🔧 兼容性处理: 剥离了 {stripped} 个 cache_control 字段（非 Claude 模型）")
+
+
+def build_time_injection() -> str:
+    """构建时间注入文本（东八区）"""
+    now_utc = datetime.now(timezone.utc)
+    now_local = now_utc + timedelta(hours=TIMEZONE_HOURS)
+    weekday_names = ["星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"]
+    weekday = weekday_names[now_local.weekday()]
+    time_str = now_local.strftime("%Y年%m月%d日 %H:%M")
+    return f"【当前时间】{time_str} {weekday}"
 
 
 async def generate_summary(messages: list, session_id: str = "") -> str:
@@ -359,6 +360,39 @@ def group_by_rounds(history: list) -> list:
     return rounds
 
 
+def _should_rotate(b_rounds_count: int, X: int, a_msgs: list) -> bool:
+    """
+    判断是否应该触发A区→摘要的轮转。
+    
+    rounds模式（默认）：B区轮数 >= X 时触发
+    time模式：A区最早消息距今 >= 时间窗口 时触发（短时间内大量消息不频繁摘要）
+    """
+    if b_rounds_count == 0:
+        return False
+    
+    if CACHE_PARTITION_TRIGGER == "time":
+        a_first_time = None
+        for msg in a_msgs:
+            t = msg.get('created_at')
+            if t:
+                a_first_time = t
+                break
+        
+        if a_first_time:
+            now = datetime.now(timezone.utc)
+            if a_first_time.tzinfo is None:
+                a_first_time = a_first_time.replace(tzinfo=timezone.utc)
+            age_minutes = (now - a_first_time).total_seconds() / 60
+            return age_minutes >= CACHE_PARTITION_WINDOW
+        
+        return b_rounds_count >= X
+    
+    return b_rounds_count >= X
+
+# 时间窗口模式下单次请求最大轮转次数（防止一口气压完所有历史）
+CACHE_MAX_ROTATIONS = int(os.getenv("CACHE_MAX_ROTATIONS", "2"))
+
+
 async def build_partitioned_messages(
     session_id: str,
     all_messages: list,
@@ -424,9 +458,11 @@ async def build_partitioned_messages(
     b_rounds_count = len(b_round_groups)
     
     rotation_count = 0
-    while b_rounds_count >= X:
+    max_rotations = CACHE_MAX_ROTATIONS if CACHE_PARTITION_TRIGGER == "time" else 999
+    while _should_rotate(b_rounds_count, X, a_msgs) and rotation_count < max_rotations:
         rotation_count += 1
-        print(f"🔄 轮转#{rotation_count}: session={session_id}, B区{b_rounds_count}轮 >= X={X}")
+        trigger_info = f"B区{b_rounds_count}轮 >= X={X}" if CACHE_PARTITION_TRIGGER != "time" else f"A区首条消息超出{CACHE_PARTITION_WINDOW}分钟窗口"
+        print(f"🔄 轮转#{rotation_count}: session={session_id}, {trigger_info}")
         
         new_summary = await generate_summary(a_msgs, session_id)
         if new_summary:
@@ -494,6 +530,7 @@ async def build_partitioned_messages(
                 item.get("text", "") for item in current_text
                 if isinstance(item, dict) and item.get("type") == "text"
             )
+        
         parts.append(current_text)
         result.append({"role": "user", "content": "\n\n".join(parts)})
     
@@ -539,6 +576,7 @@ async def _build_basic_cached(
                 item.get("text", "") for item in current_text
                 if isinstance(item, dict) and item.get("type") == "text"
             )
+        
         parts.append(current_text)
         result.append({"role": "user", "content": "\n\n".join(parts)})
     
@@ -836,7 +874,11 @@ async def chat_completions(request: Request):
         # 从DB读取历史
         try:
             db_history = await get_conversation_messages(session_id, limit=10000)
-            db_msgs = [db_row_to_message(m) for m in db_history] if db_history else []
+            db_msgs = []
+            for m in (db_history or []):
+                msg = db_row_to_message(m)
+                msg['created_at'] = m.get('created_at')  # 保留时间戳供分区时间窗口判断
+                db_msgs.append(msg)
         except Exception as e:
             print(f"[warning] 分区模式读取历史失败: {e}")
             db_msgs = []
@@ -845,50 +887,54 @@ async def chat_completions(request: Request):
         client_new_msgs = [m for m in messages if m.get("role") != "system"]
         # 分区模式下，assistant消息来自上一轮response（DB里已存），过滤掉避免重复
         client_new_msgs = [m for m in client_new_msgs if m.get("role") != "assistant"]
-        # 工具结果轮次处理：用 tool_call_id 精确去重
+        # 工具结果轮次处理：基于DB状态 + 当前轮次tool_call_id精确判断
         client_tools = [m for m in client_new_msgs if m.get("role") == "tool"]
         if client_tools:
-            # 收集DB中已有的 tool_call_id
-            db_tool_call_ids = set()
-            for m in db_msgs:
-                if m.get("role") == "tool" and m.get("tool_call_id"):
-                    db_tool_call_ids.add(m["tool_call_id"])
+            # 判断DB是否处于"等待tool结果"状态（最后一条是assistant(tool_calls)）
+            db_last = db_msgs[-1] if db_msgs else None
+            db_expecting_tool = (db_last and db_last.get("role") == "assistant" and db_last.get("tool_calls"))
             
-            # 分离：已存的旧tool vs 新tool
-            new_tools = [m for m in client_tools if m.get("tool_call_id") not in db_tool_call_ids]
-            old_tools = [m for m in client_tools if m.get("tool_call_id") in db_tool_call_ids]
-            
-            if old_tools:
-                print(f"🔧 去重: 过滤{len(old_tools)}条已存tool (ids: {[m.get('tool_call_id','?') for m in old_tools]})")
-            
-            # 重建 client_new_msgs：新tool + 最后的user（如果有）
-            last_msg = client_new_msgs[-1] if client_new_msgs else None
-            client_new_msgs = new_tools[:]
-            if last_msg and last_msg.get("role") == "user":
-                client_new_msgs.append(last_msg)
-            
-            if new_tools:
-                print(f"🔧 保留{len(new_tools)}条新tool (ids: {[m.get('tool_call_id','?') for m in new_tools]})")
+            if not db_expecting_tool:
+                # DB不在等待tool结果 → 客户端的所有tool都是历史残留（含手动删除后的幽灵）
+                stale_ids = [m.get('tool_call_id', '?') for m in client_tools]
+                print(f"🔧 去重: DB未在等待tool结果，丢弃{len(client_tools)}条客户端tool (ids: {stale_ids})")
+                client_new_msgs = [m for m in client_new_msgs if m.get("role") != "tool"]
+            else:
+                # DB在等待tool → 只保留匹配当前轮次assistant(tool_calls)的tool
+                expected_tool_ids = {tc.get("id") for tc in db_last.get("tool_calls", []) if tc.get("id")}
+                new_tools = [m for m in client_tools if m.get("tool_call_id") in expected_tool_ids]
+                stale_tools = [m for m in client_tools if m.get("tool_call_id") not in expected_tool_ids]
                 
-                # Race condition 防护：如果DB里没有对应的assistant(tool_calls)，
-                # 从客户端原始消息中补充，防止孤立tool被build_partitioned_messages清洗掉
-                new_tool_ids = {m.get("tool_call_id") for m in new_tools if m.get("tool_call_id")}
-                db_has_matching_ast = False
-                for m in db_msgs:
-                    if m.get("role") == "assistant" and m.get("tool_calls"):
-                        ast_tc_ids = {tc.get("id") for tc in m["tool_calls"] if tc.get("id")}
-                        if new_tool_ids & ast_tc_ids:
-                            db_has_matching_ast = True
-                            break
-                if not db_has_matching_ast and new_tool_ids:
-                    # DB还没存上一轮的assistant(tool_calls)，从客户端消息里找
-                    for m in messages:
+                if stale_tools:
+                    print(f"🔧 去重: 丢弃{len(stale_tools)}条非当前轮次tool (ids: {[m.get('tool_call_id','?') for m in stale_tools]})")
+                if new_tools:
+                    print(f"🔧 保留{len(new_tools)}条当前轮次tool (ids: {[m.get('tool_call_id','?') for m in new_tools]})")
+                
+                # 重建 client_new_msgs
+                last_msg = client_new_msgs[-1] if client_new_msgs else None
+                client_new_msgs = new_tools[:]
+                if last_msg and last_msg.get("role") == "user":
+                    client_new_msgs.append(last_msg)
+                
+                if new_tools:
+                    # Race condition 防护：DB的assistant(tool_calls)已确认存在（db_expecting_tool=True），
+                    # 但仍需检查是否被其他并发请求意外清除
+                    new_tool_ids = {m.get("tool_call_id") for m in new_tools if m.get("tool_call_id")}
+                    db_has_matching_ast = False
+                    for m in db_msgs:
                         if m.get("role") == "assistant" and m.get("tool_calls"):
                             ast_tc_ids = {tc.get("id") for tc in m["tool_calls"] if tc.get("id")}
                             if new_tool_ids & ast_tc_ids:
-                                client_new_msgs.insert(0, m)
-                                print(f"⚠️ Race防护: 从客户端补充assistant(tool_calls)，DB可能还没存完上一轮")
+                                db_has_matching_ast = True
                                 break
+                    if not db_has_matching_ast and new_tool_ids:
+                        for m in messages:
+                            if m.get("role") == "assistant" and m.get("tool_calls"):
+                                ast_tc_ids = {tc.get("id") for tc in m["tool_calls"] if tc.get("id")}
+                                if new_tool_ids & ast_tc_ids:
+                                    client_new_msgs.insert(0, m)
+                                    print(f"⚠️ Race防护: 从客户端补充assistant(tool_calls)")
+                                    break
         all_msgs = db_msgs + client_new_msgs
         
         # 同步更新tool_messages，避免process_memories_background存重复的旧tool
@@ -928,9 +974,6 @@ async def chat_completions(request: Request):
     body["model"] = model
     
     # ---------- cache_control 兼容性处理 ----------
-    # cache_control 是 Anthropic Claude API 专有参数，非 Claude 模型不认识
-    # 分区缓存模式下会把 content 转成带 cache_control 的数组格式，
-    # 对于非 Claude 模型需要剥掉 cache_control 并将纯文本 content 降级回字符串
     if CACHE_PARTITION_ENABLED and not _is_anthropic_model(model):
         _strip_cache_control(body.get("messages", []))
     
@@ -1929,7 +1972,9 @@ async def api_update_summary(request: Request):
             return {"error": "session_id 不能为空"}
         state = await get_session_cache_state(sid)
         summary_parts = [summary] if isinstance(summary, str) and summary else summary if isinstance(summary, list) else []
-        await save_session_cache_state(sid, summary_parts, state.get('a_start_round', 0))
+        # 摘要清空时 a_start_round 也归零，否则历史会被跳过
+        a_start = state.get('a_start_round', 0) if summary_parts else 0
+        await save_session_cache_state(sid, summary_parts, a_start)
         total_len = sum(len(p) for p in summary_parts)
         return {"status": "ok", "summary_parts": len(summary_parts), "summary_length": total_len}
     except Exception as e:
@@ -1943,8 +1988,8 @@ async def api_clear_summary(request: Request):
         sid = body.get("session_id", "")
         if not sid:
             return {"error": "session_id 不能为空"}
-        state = await get_session_cache_state(sid)
-        await save_session_cache_state(sid, [], state.get('a_start_round', 0))
+        # 摘要和 a_start_round 一起归零
+        await save_session_cache_state(sid, [], 0)
         return {"status": "ok"}
     except Exception as e:
         return {"error": str(e)}

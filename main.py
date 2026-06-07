@@ -19,6 +19,8 @@ import asyncio
 import httpx
 from datetime import datetime, timedelta, timezone
 from contextlib import asynccontextmanager
+from fastapi import Request
+from fastapi.responses import JSONResponse
 from fastapi import FastAPI, Request
 from fastapi.responses import StreamingResponse, JSONResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
@@ -34,6 +36,9 @@ from memory_extractor import extract_memories, score_memories
 
 # 你的 API Key（OpenRouter / OpenAI / 其他兼容服务）
 API_KEY = os.getenv("API_KEY", "")
+
+# 你的环境变量名可以自己定，比如就叫 MY_SECRET_KEY
+SECRET_KEY = os.environ.get("SECRET_KEY", "")
 
 # API 地址（改这个就能切换不同的 LLM 服务商）
 # OpenRouter: https://openrouter.ai/api/v1/chat/completions
@@ -243,6 +248,23 @@ app = FastAPI(title="AI Memory Gateway", version="2.0.0", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
 
+# ============================================================
+# 鉴权
+# ============================================================
+@app.middleware("http")
+async def check_auth(request: Request, call_next):
+    # 放行根路径健康检查（避免监控报警）
+    if request.url.path == "/":
+        return await call_next(request)
+    
+    # 从请求头获取密钥（也可以从查询参数获取，看你自己习惯）
+    auth_header = request.headers.get("X-API-Key")
+    auth_param = request.query_params.get("api_key")
+    
+    if SECRET_KEY and auth_header != SECRET_KEY and auth_param != SECRET_KEY:
+        return JSONResponse(status_code=403, content={"error": "Forbidden", "message": "Invalid or missing API key"})
+    
+    return await call_next(request)
 
 # ============================================================
 # 记忆注入

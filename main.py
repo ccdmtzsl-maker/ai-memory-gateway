@@ -252,20 +252,23 @@ templates = Jinja2Templates(directory="templates")
 # 鉴权
 # ============================================================
 @app.middleware("http")
-async def check_auth(request: Request, call_next):
-    # 放行根路径健康检查（避免监控报警）
-    if request.url.path == "/":
+async def auth_middleware(request: Request, call_next):
+    # 放行健康检查和静态资源
+    if request.url.path == "/" or request.url.path.startswith("/static/"):
         return await call_next(request)
     
-    # 从请求头获取密钥（也可以从查询参数获取，看你自己习惯）
+    # 从请求头或查询参数中获取密钥
     auth_header = request.headers.get("X-API-Key")
     auth_param = request.query_params.get("api_key")
     
     if SECRET_KEY and auth_header != SECRET_KEY and auth_param != SECRET_KEY:
-        return JSONResponse(status_code=403, content={"error": "Forbidden", "message": "Invalid or missing API key"})
+        return JSONResponse(
+            status_code=403,
+            content={"error": "Forbidden", "message": "Missing or invalid API key"}
+        )
     
     return await call_next(request)
-
+    
 # ============================================================
 # 记忆注入
 # ============================================================

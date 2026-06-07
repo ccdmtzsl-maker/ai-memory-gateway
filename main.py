@@ -257,17 +257,35 @@ async def auth_middleware(request: Request, call_next):
     if request.url.path == "/" or request.url.path.startswith("/static/"):
         return await call_next(request)
     
-    # 从请求头或查询参数中获取密钥
-    auth_header = request.headers.get("X-API-Key")
-    auth_param = request.query_params.get("api_key")
+    # 尝试从多个位置获取密钥：Cookie、请求头、查询参数
+    auth_key = (
+        request.cookies.get("api_key") or
+        request.headers.get("X-API-Key") or
+        request.headers.get("X-Gateway-Key") or
+        request.query_params.get("api_key") or
+        request.query_params.get("gateway_key")
+    )
     
-    if SECRET_KEY and auth_header != SECRET_KEY and auth_param != SECRET_KEY:
+    # 如果没有密钥或者密钥不匹配
+    if not SECRET_KEY or auth_key != SECRET_KEY:
         return JSONResponse(
             status_code=403,
             content={"error": "Forbidden", "message": "Missing or invalid API key"}
         )
     
-    return await call_next(request)
+    # 处理请求
+    response = await call_next(request)
+    
+    # 如果本次是从查询参数获取到的密钥，就设置一个 cookie（有效期1天）
+    if request.query_params.get("api_key") or request.query_params.get("gateway_key"):
+        response.set_cookie(
+            key="api_key", 
+            value=auth_key, 
+            httponly=True, 
+            max_age=86400,  # 1天，你可以改成 3600（1小时）或 None（浏览器关闭失效）
+            samesite="lax"
+        )
+    return response
     
 # ============================================================
 # 记忆注入

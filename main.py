@@ -681,6 +681,30 @@ def _to_local_dt(t):
         return None
 
 
+def _shorten_client_timestamp(timestamp: str, history: list = None) -> str:
+    """附件/proxy 自带时间戳：同一天只显示 [HH:MM]，跨天保留 [MM-DD HH:MM]。"""
+    if not timestamp or not history:
+        return timestamp
+    try:
+        if not (timestamp.startswith("[") and timestamp.endswith("]")):
+            return timestamp
+        inner = timestamp[1:-1]
+        if len(inner) != 11 or inner[2] != "-" or inner[5] != " " or inner[8] != ":":
+            return timestamp
+        month = int(inner[0:2])
+        day = int(inner[3:5])
+        hm = inner[6:11]
+        for msg in reversed(history):
+            local_dt = _to_local_dt(msg.get('created_at'))
+            if local_dt:
+                if local_dt.month == month and local_dt.day == day:
+                    return f"[{hm}]"
+                return timestamp
+    except Exception:
+        return timestamp
+    return timestamp
+
+
 def _prepend_timestamp_to_user_messages(messages: list) -> list:
     """给历史 user 消息加轻量时间戳；assistant/tool 不加。"""
     last_date = None
@@ -860,7 +884,7 @@ async def build_partitioned_messages(
         if proxy_env_text:
             env_text = "\n\n".join(part for part in [env_text, proxy_env_text] if part)
         if attachment_time or proxy_time:
-            time_text = attachment_time or proxy_time
+            time_text = _shorten_client_timestamp(attachment_time or proxy_time, history)
         if time_text:
             current_text = f"{time_text}{current_text}"
         result.append({"role": "user", "content": current_text})
@@ -908,7 +932,7 @@ async def _build_basic_cached(
         result.append(m)
     
     if current_user_msg:
-        time_text = build_time_injection(history)
+        time_text = ""
 
         current_text = current_user_msg['content']
         if isinstance(current_text, list):

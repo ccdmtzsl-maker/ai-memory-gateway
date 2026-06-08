@@ -221,7 +221,7 @@ async def lifespan(app: FastAPI):
                 print(f"ℹ️  记忆提取+注入已关闭（MEMORY_EXTRACT_ENABLED=false）")
             
             # 分区缓存：从DB读取活跃对话线ID
-            if CACHE_PARTITION_ENABLED:
+            if False and CACHE_PARTITION_ENABLED:
                 db_sid = await get_gateway_config("partition_session_id", "")
                 if db_sid:
                     PARTITION_SESSION_ID = db_sid
@@ -1079,7 +1079,7 @@ async def chat_completions(request: Request):
     
     else:
         # ---------- 原有逻辑：system prompt + 记忆注入 ----------
-        if SYSTEM_PROMPT or (MEMORY_ENABLED and MEMORY_EXTRACT_ENABLED and user_message):
+        if False and (SYSTEM_PROMPT or (MEMORY_ENABLED and MEMORY_EXTRACT_ENABLED and user_message)):
             if MEMORY_ENABLED and MEMORY_EXTRACT_ENABLED and user_message:
                 enhanced_prompt = await build_system_prompt_with_memories(user_message)
             else:
@@ -1104,7 +1104,7 @@ async def chat_completions(request: Request):
     body["model"] = model
     
     # ---------- cache_control 兼容性处理 ----------
-    if CACHE_PARTITION_ENABLED and not _is_anthropic_model(model):
+    if False and CACHE_PARTITION_ENABLED and not _is_anthropic_model(model):
         _strip_cache_control(body.get("messages", []))
     
     # ---------- 转发请求 ----------

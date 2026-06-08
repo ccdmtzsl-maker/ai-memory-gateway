@@ -15,9 +15,10 @@ from typing import List, Dict
 API_KEY = os.getenv("API_KEY", "")
 API_BASE_URL = os.getenv("API_BASE_URL", "https://openrouter.ai/api/v1/chat/completions")
 
-# 记忆模型专用 API 地址（不设则回退到主 API_BASE_URL）
-# 适用于提取/评分记忆走单独中转站、便宜模型或本地模型的场景
-MEMORY_API_BASE_URL = os.getenv("MEMORY_API_BASE_URL", API_BASE_URL)
+# 记忆模型专用 API 地址。
+# 注意：这里故意不回退到主 API_BASE_URL。
+# 如果没有设置 MEMORY_API_BASE_URL，记忆提取/评分会跳过，避免偷偷占用聊天模型或聊天中转。
+MEMORY_API_BASE_URL = os.getenv("MEMORY_API_BASE_URL", "")
 
 # 记忆模型专用 API Key（不设则回退到主 API_KEY）
 # 适用于中转站按模型分组、不同模型需要不同 Key 的场景
@@ -30,7 +31,7 @@ def get_memory_api_key() -> str:
     return MEMORY_API_KEY or API_KEY
 
 def get_memory_api_base_url() -> str:
-    return MEMORY_API_BASE_URL or API_BASE_URL
+    return MEMORY_API_BASE_URL
 
 
 EXTRACTION_PROMPT = """你是信息提取专家，负责从对话中识别并提取值得长期记住的关键信息。
@@ -91,8 +92,12 @@ async def extract_memories(messages: List[Dict[str, str]], existing_memories: Li
     返回：
         记忆列表，格式 [{"content": "...", "importance": N}, ...]
     """
-    if not API_KEY:
-        print("⚠️  API_KEY 未设置，跳过记忆提取")
+    if not get_memory_api_key():
+        print("⚠️  API_KEY / MEMORY_API_KEY 未设置，跳过记忆提取")
+        return []
+
+    if not get_memory_api_base_url():
+        print("⚠️  MEMORY_API_BASE_URL 未设置，跳过记忆提取（不会回退到主 API_BASE_URL）")
         return []
 
     if not messages:
@@ -225,6 +230,14 @@ async def score_memories(texts: List[str]) -> List[Dict]:
     """对纯文本记忆条目批量评分"""
     if not texts:
         return []
+
+    if not get_memory_api_key():
+        print("⚠️  API_KEY / MEMORY_API_KEY 未设置，跳过记忆评分")
+        return [{"content": t, "importance": 5} for t in texts]
+
+    if not get_memory_api_base_url():
+        print("⚠️  MEMORY_API_BASE_URL 未设置，跳过记忆评分（不会回退到主 API_BASE_URL）")
+        return [{"content": t, "importance": 5} for t in texts]
 
     memories_text = "\n".join(f"- {t}" for t in texts)
     prompt = SCORING_PROMPT.format(memories_text=memories_text)

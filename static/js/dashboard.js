@@ -228,7 +228,7 @@ function renderTable(mems, startIndex) {
             '<td class="col-layer">' + layerSelect + '</td>' +
             '<td class="col-title"><input type="text" class="title-input" id="t_' + m.id + '" value="' + escHtml(titleDisplay) + '" placeholder="无标题"></td>' +
             '<td class="col-content"><textarea class="content-textarea" id="c_' + m.id + '">' + escHtml(m.content) + '</textarea></td>' +
-            '<td class="col-importance"><input type="number" class="importance-input" id="i_' + m.id + '" value="' + m.importance + '" min="1" max="10"></td>' +
+            '<td class="col-importance"><input type="number" class="importance-input" id="i_' + m.id + '" value="' + m.importance + '" min="-10" max="10"></td>' +
             '<td class="col-time">' + fmtTime(m.created_at) + '</td>' +
             '<td class="col-actions"><div class="row-actions">' +
                 '<button class="btn btn-primary btn-sm" onclick="saveMem(' + m.id + ')">保存</button>' +

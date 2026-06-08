@@ -488,6 +488,61 @@ def extract_environment_bundle_from_text(text: str) -> tuple[str, str, str]:
     return cleaned, env_text, attachment_time
 
 
+def extract_proxy_sender_context_from_text(text: str) -> tuple[str, str, str]:
+    """识别 Operit 插件注入的 proxy_sender 上下文，例如一起听歌。
+    返回: (用户真实文本, 轻量上下文, 附件时间戳)
+    """
+    if not isinstance(text, str) or "<proxy_sender" not in text or "用户说" not in text:
+        return text, "", ""
+
+    split_match = re.split(r'用户说[:：]\s*', text, maxsplit=1)
+    if len(split_match) < 2:
+        return text, "", ""
+
+    header = split_match[0]
+    user_text = split_match[1].strip()
+    env_lines = []
+    proxy_time = ""
+
+    time_match = re.search(r'当前时间[:：]\s*([0-9]{4})/([0-9]{1,2})/([0-9]{1,2})\s+([0-9]{1,2}:[0-9]{2})', header)
+    if time_match:
+        try:
+            month = int(time_match.group(2))
+            day = int(time_match.group(3))
+            hm = time_match.group(4)
+            proxy_time = f"[{month:02d}-{day:02d} {hm}]"
+        except Exception:
+            proxy_time = ""
+
+    if "一起听音乐" in header or "当前歌曲" in header or "附近歌词" in header:
+        song_match = re.search(r'当前歌曲[:：]\s*([^\n]+)', header)
+        play_match = re.search(r'播放时间[:：]\s*([^\n]+)', header)
+        if song_match:
+            song_line = song_match.group(1).strip()
+            if play_match:
+                song_line += f" {play_match.group(1).strip()}"
+            env_lines.append(f"歌曲: {song_line}")
+
+        lines = [line.strip() for line in header.splitlines()]
+        for i, line in enumerate(lines):
+            if line.startswith('▶'):
+                lyric = line.lstrip('▶').strip()
+                trans = ""
+                for nxt in lines[i+1:i+3]:
+                    if nxt and not nxt.startswith('▶') and '当前' not in nxt and '播放时间' not in nxt:
+                        trans = nxt
+                        break
+                if lyric:
+                    env_lines.append("歌词: " + (f"{lyric} / {trans}" if trans else lyric))
+                break
+
+    env_text = ""
+    if env_lines:
+        env_text = "【一起听歌】\n" + "\n".join(env_lines)
+
+    return user_text, env_text, proxy_time
+
+
 async def generate_summary(messages: list, session_id: str = "") -> str:
     """调用轻量模型压缩A区消息为摘要"""
     if not messages:

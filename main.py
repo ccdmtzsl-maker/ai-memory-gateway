@@ -1559,8 +1559,11 @@ async def consolidate_memories_for_date_range(start_date, end_date):
     # 调用 AI 进行整理
     prompt = CONSOLIDATION_PROMPT.format(fragments=fragments_text)
     
-    # 使用环境变量配置的模型，默认 haiku 节省成本
-    consolidation_model = os.getenv("MEMORY_MODEL", "") or os.getenv("DEFAULT_MODEL", "anthropic/claude-haiku-4.5")
+    # 使用记忆模型进行整理，和记忆提取/分区摘要共用同一套 MEMORY_* 配置
+    consolidation_model = os.getenv("MEMORY_MODEL", "anthropic/claude-haiku-4")
+    memory_api_base_url = get_memory_api_base_url()
+    if not memory_api_base_url:
+        return {"status": "error", "error": "MEMORY_API_BASE_URL 未设置，无法整理记忆（不会回退到主 API_BASE_URL）"}
     
     try:
         async with httpx.AsyncClient(timeout=120.0) as client:
@@ -1568,7 +1571,7 @@ async def consolidate_memories_for_date_range(start_date, end_date):
             last_error = None
             for attempt in range(3):
                 response = await client.post(
-                    API_BASE_URL,
+                    memory_api_base_url,
                     headers={
                         "Authorization": f"Bearer {get_memory_api_key()}",
                         "Content-Type": "application/json"
@@ -1620,7 +1623,7 @@ async def consolidate_memories_for_date_range(start_date, end_date):
                             # 方案3：让 AI 重新格式化
                             print(f"⚠️ JSON解析失败，尝试让AI修复: {e}")
                             fix_resp = await client.post(
-                                API_BASE_URL,
+                                memory_api_base_url,
                                 headers={
                                     "Authorization": f"Bearer {get_memory_api_key()}",
                                     "Content-Type": "application/json"

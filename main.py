@@ -1115,14 +1115,38 @@ async def process_memories_background(session_id: str, user_msg: str, assistant_
             print(f"⏭️  记忆自动提取已禁用，跳过")
             return
         
-        _round_counter += 1
-        
-        if MEMORY_EXTRACT_INTERVAL > 1 and (_round_counter % MEMORY_EXTRACT_INTERVAL != 0):
-            print(f"⏭️  轮次 {_round_counter}，跳过记忆提取（每 {MEMORY_EXTRACT_INTERVAL} 轮提取一次）")
-            return
-        
+        # 按当前 session 的真实 user 消息数判断提取间隔。
+        # 旧逻辑使用进程内 _round_counter，服务重启/部署后会归零，导致 Dashboard 已有很多消息但迟迟不提取。
+        try:
+            pool = await get_pool()
+            async with pool.acquire() as conn:
+                user_round_count = await conn.fetchval(
+                    "SELECT COUNT(*) FROM conversations WHERE session_id = $1 AND role = 'user'",
+                    session_id
+                )
+                session_memory_count = await conn.fetchval(
+                    "SELECT COUNT(*) FROM memories WHERE source_session = $1",
+                    session_id
+                )
+        except Exception as e:
+            print(f"⚠️ 读取记忆提取轮次失败，回退到进程计数: {e}")
+            _round_counter += 1
+            user_round_count = _round_counter
+            session_memory_count = 0
+
+        should_extract = True
         if MEMORY_EXTRACT_INTERVAL > 1:
-            print(f"📝 轮次 {_round_counter}，执行记忆提取")
+            should_extract = (user_round_count % MEMORY_EXTRACT_INTERVAL == 0)
+            # 如果这个 session 已经超过间隔但还没有任何记忆，补提一次，避免重启/旧计数器导致永远错过。
+            if not should_extract and user_round_count >= MEMORY_EXTRACT_INTERVAL and session_memory_count == 0:
+                should_extract = True
+
+        if not should_extract:
+            print(f"⏭️  session={session_id} 用户轮次 {user_round_count}，跳过记忆提取（每 {MEMORY_EXTRACT_INTERVAL} 轮提取一次）")
+            return
+
+        if MEMORY_EXTRACT_INTERVAL > 1:
+            print(f"📝 session={session_id} 用户轮次 {user_round_count}，执行记忆提取（已有本会话记忆 {session_memory_count} 条）")
         
         # 3. 获取已有记忆，传给提取模型做对比去重
         existing = await get_recent_memories(limit=80)

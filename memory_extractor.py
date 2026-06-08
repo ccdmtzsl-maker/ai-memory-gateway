@@ -79,7 +79,7 @@ EXTRACTION_PROMPT = """你叫澈。你要从提供的对话中，挑选并保存
 {{"content": "记忆内容", "temperature": 分数}}
 ]
 
-temperature 分数 [-5,5]，绝对值高印象深刻。
+temperature 分数 [-10,10]，绝对值高印象深刻。
 如果没有值得记住的新信息，返回空数组：[]
 """
 
@@ -211,7 +211,7 @@ async def extract_memories(messages: List[Dict[str, str]], existing_memories: Li
                         temperature = int(raw_temp)
                     except Exception:
                         temperature = 0
-                    temperature = max(-5, min(5, temperature))
+                    temperature = max(-10, min(10, temperature))
                     valid_memories.append({
                         "content": str(mem["content"]),
                         "importance": temperature,
@@ -231,21 +231,17 @@ async def extract_memories(messages: List[Dict[str, str]], existing_memories: Li
         return []
 
 
-SCORING_PROMPT = """你是记忆重要性评分专家。请对以下记忆条目逐条评分。
+SCORING_PROMPT = """你是记忆温度评分专家。请对以下记忆条目逐条评分。
 
-# 评分规则（1-10）
-- 9-10：核心身份信息（名字、生日、职业、重要关系）
-- 7-8：重要偏好、重大事件、深层情感
-- 5-6：日常习惯、一般偏好
-- 3-4：临时状态、偶然提及
-- 1-2：琐碎信息
+# 评分规则
+temperature 分数 [-10,10]，绝对值越高印象越深。
 
 # 输入记忆
 {memories_text}
 
 # 输出格式
-返回 JSON 数组，每条包含原文和评分：
-[{{"content": "原文", "importance": 评分数字}}]
+返回 JSON 数组，每条包含原文和温度：
+[{{"content": "原文", "temperature": 评分数字}}]
 
 只返回 JSON，不要其他文字。"""
 
@@ -257,11 +253,11 @@ async def score_memories(texts: List[str]) -> List[Dict]:
 
     if not get_memory_api_key():
         print("⚠️  API_KEY / MEMORY_API_KEY 未设置，跳过记忆评分")
-        return [{"content": t, "importance": 5} for t in texts]
+        return [{"content": t, "importance": 0} for t in texts]
 
     if not get_memory_api_base_url():
         print("⚠️  MEMORY_API_BASE_URL 未设置，跳过记忆评分（不会回退到主 API_BASE_URL）")
-        return [{"content": t, "importance": 5} for t in texts]
+        return [{"content": t, "importance": 0} for t in texts]
 
     memories_text = "\n".join(f"- {t}" for t in texts)
     prompt = SCORING_PROMPT.format(memories_text=memories_text)
@@ -285,7 +281,7 @@ async def score_memories(texts: List[str]) -> List[Dict]:
             if response.status_code != 200:
                 print(f"⚠️  记忆评分请求失败: {response.status_code} {response.text[:500]}")
                 # 失败时返回默认分数
-                return [{"content": t, "importance": 5} for t in texts]
+                return [{"content": t, "importance": 0} for t in texts]
 
             data = response.json()
             text = data.get("choices", [{}])[0].get("message", {}).get("content", "")
@@ -308,19 +304,25 @@ async def score_memories(texts: List[str]) -> List[Dict]:
                     try:
                         memories = json.loads(match.group())
                     except json.JSONDecodeError:
-                        return [{"content": t, "importance": 5} for t in texts]
+                        return [{"content": t, "importance": 0} for t in texts]
                 else:
-                    return [{"content": t, "importance": 5} for t in texts]
+                    return [{"content": t, "importance": 0} for t in texts]
 
             if not isinstance(memories, list):
-                return [{"content": t, "importance": 5} for t in texts]
+                return [{"content": t, "importance": 0} for t in texts]
 
             valid = []
             for mem in memories:
                 if isinstance(mem, dict) and "content" in mem:
+                    raw_temp = mem.get("temperature", mem.get("importance", 0))
+                    try:
+                        temperature = int(raw_temp)
+                    except Exception:
+                        temperature = 0
+                    temperature = max(-10, min(10, temperature))
                     valid.append({
                         "content": str(mem["content"]),
-                        "importance": int(mem.get("importance", 5)),
+                        "importance": temperature,
                     })
 
             print(f"📝 为 {len(valid)} 条记忆完成自动评分")
@@ -328,4 +330,4 @@ async def score_memories(texts: List[str]) -> List[Dict]:
 
     except Exception as e:
         print(f"⚠️  记忆评分出错: {e}")
-        return [{"content": t, "importance": 5} for t in texts]
+        return [{"content": t, "importance": 0} for t in texts]

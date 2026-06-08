@@ -647,12 +647,12 @@ async def search_memories(query: str, limit: int = 10):
                 ({hit_count_expr}) AS hit_count,
                 (
                     {WEIGHT_KEYWORD} * ({hit_count_expr})::float / {max_hits}.0 +
-                    {WEIGHT_IMPORTANCE} * importance::float / 10.0 +
+                    {WEIGHT_IMPORTANCE} * ABS(importance)::float / 10.0 +
                     {WEIGHT_RECENCY} * (1.0 / (1.0 + EXTRACT(EPOCH FROM (NOW() - created_at)) / 86400.0))
                 ) AS score
             FROM memories
             WHERE {where_clause}
-            ORDER BY score DESC, importance DESC, created_at DESC
+            ORDER BY score DESC, ABS(importance) DESC, created_at DESC
             LIMIT ${limit_idx}
         """
         
@@ -807,7 +807,7 @@ async def search_memories_hybrid(query: str, limit: int = 10):
         for mid, info in candidates.items():
             kw = kw_norm.get(mid, 0.0)
             sem = sem_norm.get(mid, 0.0)
-            imp = info['importance'] / 10.0
+            imp = abs(info['importance']) / 10.0
             days = (now - info['created_at']).total_seconds() / 86400.0
             rec = 1.0 / (1.0 + days)
             
@@ -826,7 +826,7 @@ async def search_memories_hybrid(query: str, limit: int = 10):
                 'score': score,
             })
         
-        final.sort(key=lambda x: (-x['score'], -x['importance']))
+        final.sort(key=lambda x: (-x['score'], -abs(x['importance'])))
         
         # 过滤低分
         if MIN_SCORE_THRESHOLD > 0:

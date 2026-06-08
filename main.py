@@ -701,7 +701,7 @@ async def build_partitioned_messages(
             )
         
         if time_text:
-            current_text = f"{time_text}\n\n{current_text}"
+            current_text = f"{time_text}{current_text}"
         result.append({"role": "user", "content": current_text})
 
         # 相关记忆后置：先让模型看到用户本轮原话，再参考检索记忆，降低“记忆抢注意力”的概率。
@@ -753,7 +753,7 @@ async def _build_basic_cached(
             )
         
         if time_text:
-            current_text = f"{time_text}\n\n{current_text}"
+            current_text = f"{time_text}{current_text}"
         result.append({"role": "user", "content": current_text})
 
         # 相关记忆后置：先让模型看到用户本轮原话，再参考检索记忆，降低“记忆抢注意力”的概率。

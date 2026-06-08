@@ -763,9 +763,16 @@ async def build_partitioned_messages(
                 if isinstance(item, dict) and item.get("type") == "text"
             )
         
+        current_text, env_text, attachment_time = extract_environment_bundle_from_text(current_text)
+        if attachment_time:
+            time_text = attachment_time
         if time_text:
             current_text = f"{time_text}{current_text}"
         result.append({"role": "user", "content": current_text})
+
+        # 环境附件后置为轻量 system 上下文，避免原始附件污染用户正文。
+        if env_text:
+            result.append({"role": "system", "content": env_text})
 
         # 相关记忆后置：先让模型看到用户本轮原话，再参考检索记忆，降低“记忆抢注意力”的概率。
         if MEMORY_ENABLED and MEMORY_EXTRACT_ENABLED and user_message:
@@ -815,9 +822,16 @@ async def _build_basic_cached(
                 if isinstance(item, dict) and item.get("type") == "text"
             )
         
+        current_text, env_text, attachment_time = extract_environment_bundle_from_text(current_text)
+        if attachment_time:
+            time_text = attachment_time
         if time_text:
             current_text = f"{time_text}{current_text}"
         result.append({"role": "user", "content": current_text})
+
+        # 环境附件后置为轻量 system 上下文，避免原始附件污染用户正文。
+        if env_text:
+            result.append({"role": "system", "content": env_text})
 
         # 相关记忆后置：先让模型看到用户本轮原话，再参考检索记忆，降低“记忆抢注意力”的概率。
         if MEMORY_ENABLED and MEMORY_EXTRACT_ENABLED and user_message:

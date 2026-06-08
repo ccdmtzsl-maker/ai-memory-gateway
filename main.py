@@ -392,14 +392,37 @@ def _strip_cache_control(messages: list):
         print(f"🔧 兼容性处理: 剥离了 {stripped} 个 cache_control 字段（非 Claude 模型）")
 
 
-def build_time_injection() -> str:
-    """构建时间注入文本（东八区）"""
+def build_time_injection(history: list = None) -> str:
+    """构建轻量时间注入。
+    第一轮/跨天显示日期：[06-08 17:23]
+    同一天内只显示时间：[17:23]
+    """
     now_utc = datetime.now(timezone.utc)
     now_local = now_utc + timedelta(hours=TIMEZONE_HOURS)
-    weekday_names = ["星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"]
-    weekday = weekday_names[now_local.weekday()]
-    time_str = now_local.strftime("%Y年%m月%d日 %H:%M")
-    return f"【当前时间】{time_str} {weekday}"
+    show_date = True
+
+    if history:
+        # 找最近一条带 created_at 的历史消息，若与当前日期相同则省略日期
+        for msg in reversed(history):
+            t = msg.get('created_at')
+            if not t:
+                continue
+            try:
+                if isinstance(t, str):
+                    prev_utc = datetime.fromisoformat(t.replace('Z', '+00:00'))
+                else:
+                    prev_utc = t
+                if prev_utc.tzinfo is None:
+                    prev_utc = prev_utc.replace(tzinfo=timezone.utc)
+                prev_local = prev_utc.astimezone(timezone.utc) + timedelta(hours=TIMEZONE_HOURS)
+                show_date = prev_local.date() != now_local.date()
+                break
+            except Exception:
+                continue
+
+    if show_date:
+        return f"[{now_local.strftime('%m-%d %H:%M')}]"
+    return f"[{now_local.strftime('%H:%M')}]"
 
 
 async def generate_summary(messages: list, session_id: str = "") -> str:
@@ -668,13 +691,16 @@ async def build_partitioned_messages(
         result.append(m)
     
     if current_user_msg:
-        parts = [build_time_injection()]
+        context_parts = [build_time_injection(history)]
         
         if MEMORY_ENABLED and MEMORY_EXTRACT_ENABLED and user_message:
             mem_text = await build_memory_text(user_message)
             if mem_text:
-                parts.append(mem_text)
+                context_parts.append(mem_text)
         
+        if context_parts:
+            result.append({"role": "system", "content": "\n\n".join(context_parts)})
+
         current_text = current_user_msg['content']
         if isinstance(current_text, list):
             current_text = " ".join(
@@ -682,8 +708,7 @@ async def build_partitioned_messages(
                 if isinstance(item, dict) and item.get("type") == "text"
             )
         
-        parts.append(current_text)
-        result.append({"role": "user", "content": "\n\n".join(parts)})
+        result.append({"role": "user", "content": current_text})
     
     bp_count = 1 + (1 if summary_parts else 0) + (1 if cleaned_a else 0) + (1 if b_msgs else 0)
     summary_total = sum(len(p) for p in summary_parts)
@@ -718,13 +743,16 @@ async def _build_basic_cached(
         result.append(m)
     
     if current_user_msg:
-        parts = [build_time_injection()]
+        context_parts = [build_time_injection(history)]
         
         if MEMORY_ENABLED and MEMORY_EXTRACT_ENABLED and user_message:
             mem_text = await build_memory_text(user_message)
             if mem_text:
-                parts.append(mem_text)
+                context_parts.append(mem_text)
         
+        if context_parts:
+            result.append({"role": "system", "content": "\n\n".join(context_parts)})
+
         current_text = current_user_msg['content']
         if isinstance(current_text, list):
             current_text = " ".join(

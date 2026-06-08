@@ -2021,6 +2021,40 @@ async function saveSettings() {
     }
 }
 
+async function testMemoryModel() {
+    const btn = document.getElementById('test-memory-model-btn');
+    const result = document.getElementById('test-memory-model-result');
+    if (btn) { btn.disabled = true; btn.textContent = '测试中...'; }
+    if (result) result.textContent = '正在发送测试请求...';
+
+    const payload = {
+        MEMORY_API_BASE_URL: document.getElementById('set-MEMORY_API_BASE_URL')?.value || '',
+        MEMORY_API_KEY: document.getElementById('set-MEMORY_API_KEY')?.value || '',
+        MEMORY_MODEL: document.getElementById('set-MEMORY_MODEL')?.value || '',
+    };
+
+    try {
+        const resp = await fetch('/api/settings/test-memory-model', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+        });
+        const data = await resp.json();
+        if (data.ok) {
+            if (result) result.textContent = '✅ 测试成功：' + (data.reply || '接口可用');
+            showSettingsMsg('success', '记忆模型测试成功');
+        } else {
+            if (result) result.textContent = '❌ 测试失败：' + (data.error || '未知错误');
+            showSettingsMsg('error', '记忆模型测试失败');
+        }
+    } catch (e) {
+        if (result) result.textContent = '❌ 请求失败：' + e.message;
+        showSettingsMsg('error', '测试请求失败: ' + e.message);
+    } finally {
+        if (btn) { btn.disabled = false; btn.textContent = '测试记忆模型'; }
+    }
+}
+
 async function loadModelList() {
     const hint = document.getElementById('model-count-hint');
     if (hint) hint.textContent = '加载模型列表...';

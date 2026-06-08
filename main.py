@@ -986,7 +986,18 @@ async def chat_completions(request: Request):
         print(f"🔧 检测到 {len(tool_messages)} 条工具结果消息")
     
     # ---------- 生成 session ID ----------
-    session_id = str(uuid.uuid4())[:8]
+    # OpenAI 兼容请求本身通常不带会话 ID。之前这里每次随机生成 uuid，
+    # 会导致每聊一句 Dashboard 就出现一条新对话。
+    # 现在优先读取客户端/请求头提供的会话 ID；如果没有，则使用固定 default。
+    session_id = (
+        body.get("session_id") or
+        body.get("conversation_id") or
+        body.get("sessionId") or
+        request.headers.get("X-Session-ID") or
+        request.headers.get("X-Conversation-ID") or
+        get_active_session_id() or
+        "default"
+    )
     
     # ---------- 分区缓存模式 ----------
     if CACHE_PARTITION_ENABLED:

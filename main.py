@@ -1035,6 +1035,24 @@ async def chat_completions(request: Request):
             print(f"[warning] 分区模式读取历史失败: {e}")
             db_msgs = []
         
+        # 提取客户端 system prompt。分区缓存会重组 messages，不能直接保留原 system 消息，
+        # 但必须把客户端传入的 system 内容作为 base_prompt 传入，避免系统消息被吞。
+        client_system_parts = []
+        for m in messages:
+            if m.get("role") == "system":
+                c = m.get("content", "")
+                if isinstance(c, str):
+                    client_system_parts.append(c)
+                elif isinstance(c, list):
+                    client_system_parts.append(" ".join(
+                        item.get("text", "") for item in c
+                        if isinstance(item, dict) and item.get("type") == "text"
+                    ))
+                else:
+                    client_system_parts.append(str(c))
+        client_system_prompt = "\n\n".join(p for p in client_system_parts if p).strip()
+        partition_base_prompt = client_system_prompt or SYSTEM_PROMPT
+
         # 提取客户端新消息（非system），可能是user、tool、或带tool_calls的assistant
         client_new_msgs = [m for m in messages if m.get("role") != "system"]
         # 分区模式下，assistant消息来自上一轮response（DB里已存），过滤掉避免重复
@@ -1102,7 +1120,7 @@ async def chat_completions(request: Request):
         print(f"📦 分区模式: DB历史{len(db_msgs)}条 + 客户端消息{len(client_new_msgs)}条")
         
         messages = await build_partitioned_messages(
-            session_id, all_msgs, SYSTEM_PROMPT, user_message
+            session_id, all_msgs, partition_base_prompt, user_message
         )
         body["messages"] = messages
     

@@ -118,9 +118,9 @@ async def extract_memories(messages: List[Dict[str, str]], existing_memories: Li
         role = msg.get("role", "unknown")
         content = msg.get("content", "")
         if role == "user":
-            conversation_text += f"用户: {content}\n"
+            conversation_text += f"藍: {content}\n"
         elif role == "assistant":
-            conversation_text += f"AI: {content}\n"
+            conversation_text += f"澈: {content}\n"
 
     if not conversation_text.strip():
         LAST_EXTRACTION_DEBUG = {"status": "empty_input", "message": "输入消息没有 user/assistant 文本", "model": MEMORY_MODEL, "base_url": get_memory_api_base_url()}

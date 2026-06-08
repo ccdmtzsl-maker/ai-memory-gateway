@@ -552,7 +552,7 @@ async def build_partitioned_messages(
     """
     X = CACHE_PARTITION_X
     
-    non_system = [m for m in all_messages if m.get('role') != 'system']
+    non_system = [m for m in all_messages if m.get('role') not in ('system', 'developer')]
     
     current_user_msg = None
     history = non_system[:]
@@ -1038,8 +1038,9 @@ async def chat_completions(request: Request):
         # 提取客户端 system prompt。分区缓存会重组 messages，不能直接保留原 system 消息，
         # 但必须把客户端传入的 system 内容作为 base_prompt 传入，避免系统消息被吞。
         client_system_parts = []
+        system_like_roles = {"system", "developer"}
         for m in messages:
-            if m.get("role") == "system":
+            if m.get("role") in system_like_roles:
                 c = m.get("content", "")
                 if isinstance(c, str):
                     client_system_parts.append(c)
@@ -1053,8 +1054,8 @@ async def chat_completions(request: Request):
         client_system_prompt = "\n\n".join(p for p in client_system_parts if p).strip()
         partition_base_prompt = client_system_prompt or SYSTEM_PROMPT
 
-        # 提取客户端新消息（非system），可能是user、tool、或带tool_calls的assistant
-        client_new_msgs = [m for m in messages if m.get("role") != "system"]
+        # 提取客户端新消息（非系统级消息），可能是user、tool、或带tool_calls的assistant
+        client_new_msgs = [m for m in messages if m.get("role") not in system_like_roles]
         # 分区模式下，assistant消息来自上一轮response（DB里已存），过滤掉避免重复
         client_new_msgs = [m for m in client_new_msgs if m.get("role") != "assistant"]
         # 分区模式下DB已有完整历史，客户端发来的旧user是冗余的，只保留最后一条

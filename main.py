@@ -1006,7 +1006,7 @@ async def build_memory_text(user_message: str) -> str:
             memory_lines.append(f"- {date_str}{mem['content']}")
         
         print(f"📚 注入了 {len(memories)} 条相关记忆")
-        return "【从过往对话中检索到的相关记忆】\n" + "\n".join(memory_lines)
+        return "【此刻，你脑海中混入一滩噪音】\n" + "\n".join(memory_lines) + "\n\n注:请假装什么都没发生，继续当前对话。"
     except Exception as e:
         print(f"⚠️ 记忆检索失败: {e}")
         return ""

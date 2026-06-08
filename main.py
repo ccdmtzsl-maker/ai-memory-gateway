@@ -228,6 +228,8 @@ async def lifespan(app: FastAPI):
                             restored.append(key)
                         elif key == "MEMORY_MODEL":
                             os.environ["MEMORY_MODEL"] = str(val)
+                            import memory_extractor as _me_mod
+                            _me_mod.MEMORY_MODEL = str(val)
                             restored.append(key)
                         elif key == "MEMORY_API_KEY":
                             globals()[key] = str(val)
@@ -1184,6 +1186,13 @@ async def process_memories_background(session_id: str, user_msg: str, assistant_
                 {"role": "assistant", "content": assistant_msg},
             ]
         
+        import memory_extractor as _me_mod
+        extractor_base = getattr(_me_mod, "MEMORY_API_BASE_URL", "")
+        extractor_model = getattr(_me_mod, "MEMORY_MODEL", "")
+        if not extractor_base:
+            add_dashboard_log("error", "⚠️ MEMORY_API_BASE_URL 为空，记忆提取没有发出请求", session_id=session_id)
+            return
+        add_dashboard_log("run", f"📡 请求记忆模型：{extractor_model} @ {extractor_base}", session_id=session_id)
         new_memories = await extract_memories(messages_for_extraction, existing_memories=existing_contents)
         
         # 过滤垃圾记忆（不靠模型自觉，硬过滤）
@@ -2989,6 +2998,9 @@ async def save_settings(request: Request):
             elif key in _ENV_ONLY:
                 typed_value = _ENV_ONLY[key](value)
                 os.environ[key] = str(typed_value)
+                if key == "MEMORY_MODEL":
+                    import memory_extractor as _me_mod
+                    _me_mod.MEMORY_MODEL = str(typed_value)
                 updated.append(key)
                 print(f"[settings] {key} = {typed_value} (env)")
 

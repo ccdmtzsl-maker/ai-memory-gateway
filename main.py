@@ -975,6 +975,28 @@ async def build_memory_text(user_message: str) -> str:
 # 后台记忆处理
 # ============================================================
 
+def clean_user_message_for_log(user_msg: str) -> str:
+    """保存到对话记录前，清理附件/proxy注入，避免Dashboard显示大段原始上下文。"""
+    if not isinstance(user_msg, str):
+        return user_msg
+
+    cleaned = user_msg
+    time_text = ""
+
+    cleaned, _env_text, attachment_time = extract_environment_bundle_from_text(cleaned)
+    if attachment_time:
+        time_text = attachment_time
+
+    cleaned, _proxy_env_text, proxy_time = extract_proxy_sender_context_from_text(cleaned)
+    if proxy_time and not time_text:
+        time_text = proxy_time
+
+    cleaned = (cleaned or "").strip()
+    if time_text and cleaned and not re.match(r'^\[[0-9]{2}(?:-[0-9]{2})? [0-9]{2}:[0-9]{2}\]|^\[[0-9]{2}:[0-9]{2}\]', cleaned):
+        cleaned = f"{time_text}{cleaned}"
+    return cleaned or user_msg
+
+
 async def process_memories_background(session_id: str, user_msg: str, assistant_msg: str, model: str, context_messages: list = None, skip_conversation_log: bool = False, tool_messages: list = None, assistant_tool_calls: list = None, assistant_reasoning: str = None):
     """
     后台异步：存储对话 + 提取记忆（不阻塞主流程）
@@ -1002,6 +1024,7 @@ async def process_memories_background(session_id: str, user_msg: str, assistant_
             print(f"💾 tool详情: {[{'role': m.get('role'), 'tool_call_id': m.get('tool_call_id', '?')} for m in tool_messages]}")
         
         # 1. 存储对话记录（除非明确跳过）
+        clean_user_msg = clean_user_message_for_log(user_msg) if user_msg else user_msg
         if skip_conversation_log:
             print(f"⏭️  跳过对话存储（辅助请求）")
         elif tool_messages:
@@ -1035,21 +1058,21 @@ async def process_memories_background(session_id: str, user_msg: str, assistant_
             
             if assistant_tool_calls:
                 # 首次工具调用：assistant回复包含tool_calls，存user + assistant(tool_calls)
-                await save_message(session_id, "user", user_msg, model)
+                await save_message(session_id, "user", clean_user_msg, model)
                 await save_message(session_id, "assistant", assistant_msg or "", model, metadata=assistant_meta)
                 print(f"🔧 存储: user + assistant (含{len(assistant_tool_calls)}个tool_calls)" + (" (含reasoning)" if assistant_reasoning else ""))
             else:
                 # 纯文字对话：re-roll检测 + 存user + assistant
                 last_user = await get_last_user_content(session_id)
-                if last_user and last_user.strip() == user_msg.strip():
+                if last_user and last_user.strip() == clean_user_msg.strip():
                     updated = await update_last_assistant_message(session_id, assistant_msg, model)
                     if updated:
                         print(f"🔄 检测到re-roll，已覆盖最后一条assistant回复")
                     else:
-                        await save_message(session_id, "user", user_msg, model)
+                        await save_message(session_id, "user", clean_user_msg, model)
                         await save_message(session_id, "assistant", assistant_msg, model, metadata=assistant_meta)
                 else:
-                    await save_message(session_id, "user", user_msg, model)
+                    await save_message(session_id, "user", clean_user_msg, model)
                     await save_message(session_id, "assistant", assistant_msg, model, metadata=assistant_meta)
         
         # 2. 检查是否需要提取记忆

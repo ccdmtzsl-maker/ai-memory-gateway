@@ -478,7 +478,11 @@
                     <div class="settings-field">
                         <label>记忆模型 API Base URL (MEMORY_API_BASE_URL)</label>
                         <input type="text" id="set-MEMORY_API_BASE_URL" class="input" placeholder="https://openrouter.ai/api/v1/chat/completions">
-                        <small class="form-hint">记忆提取/评分专用接口地址；留空则跳过记忆提取，不会回退到主 API Base URL</small>
+                        <small class="form-hint">记忆提取/评分/摘要/整理专用接口地址；留空则跳过，不会回退到主 API Base URL</small>
+                    </div>
+                    <div class="settings-field">
+                        <button type="button" class="btn btn-secondary" id="test-memory-model-btn" onclick="testMemoryModel()">测试记忆模型</button>
+                        <small class="form-hint" id="test-memory-model-result">会使用上方当前填写的记忆模型 URL / Key / 模型名发送一次测试请求</small>
                     </div>
                     <div class="settings-field">
                         <label>最大注入记忆数 (MAX_MEMORIES_INJECT)</label>

@@ -240,7 +240,7 @@ async def lifespan(app: FastAPI):
                 elif PARTITION_SESSION_ID:
                     await set_gateway_config("partition_session_id", PARTITION_SESSION_ID)
                     print(f"🔗 活跃对话线(ENV→DB): {PARTITION_SESSION_ID}")
-                print(f"🔒 分区缓存已启用: X={CACHE_PARTITION_X}, 摘要模型={CACHE_SUMMARY_MODEL}")
+                print(f"🔒 分区缓存已启用: X={CACHE_PARTITION_X}, 摘要模型=MEMORY_MODEL({os.getenv('MEMORY_MODEL', 'anthropic/claude-haiku-4')})")
         except Exception as e:
             print(f"⚠️  数据库初始化失败: {e}")
             print("⚠️  记忆系统将不可用，但网关仍可正常转发")
@@ -426,13 +426,20 @@ async def generate_summary(messages: list, session_id: str = "") -> str:
             "Authorization": f"Bearer {get_memory_api_key()}",
             "Content-Type": "application/json",
         }
-        if "openrouter" in API_BASE_URL:
+        memory_api_base_url = get_memory_api_base_url()
+        if not memory_api_base_url:
+            print("⚠️ 摘要生成跳过: MEMORY_API_BASE_URL 未设置（不会回退到主 API_BASE_URL）")
+            return ""
+
+        summary_model = os.getenv("MEMORY_MODEL", "anthropic/claude-haiku-4")
+
+        if "openrouter" in memory_api_base_url:
             headers["HTTP-Referer"] = EXTRA_REFERER
             headers["X-Title"] = EXTRA_TITLE
 
         async with httpx.AsyncClient(timeout=60) as client:
-            response = await client.post(API_BASE_URL, headers=headers, json={
-                "model": CACHE_SUMMARY_MODEL,
+            response = await client.post(memory_api_base_url, headers=headers, json={
+                "model": summary_model,
                 "max_tokens": 500,
                 "messages": [{"role": "user", "content": prompt}],
             })
@@ -443,7 +450,7 @@ async def generate_summary(messages: list, session_id: str = "") -> str:
                     print(f"📝 摘要生成完成: {len(summary)}字 (压缩{len(messages)}条消息)")
                     return summary
 
-        print(f"⚠️ 摘要生成失败: HTTP {response.status_code}")
+        print(f"⚠️ 摘要生成失败: HTTP {response.status_code} {response.text[:500]}")
         return ""
     except Exception as e:
         print(f"⚠️ 摘要生成异常: {e}")
@@ -2093,7 +2100,7 @@ async def api_partition_status():
         "enabled": CACHE_PARTITION_ENABLED,
         "active_session_id": active_sid,
         "partition_x": CACHE_PARTITION_X,
-        "summary_model": CACHE_SUMMARY_MODEL,
+        "summary_model": os.getenv("MEMORY_MODEL", "anthropic/claude-haiku-4"),
         "summary": '\n\n'.join(state.get('summary_parts', [])),
         "summary_parts": state.get('summary_parts', []),
         "summary_count": len(state.get('summary_parts', [])),

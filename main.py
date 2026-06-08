@@ -1132,8 +1132,9 @@ async def process_memories_background(session_id: str, user_msg: str, assistant_
             add_dashboard_log("skip", "⏭️  记忆自动提取已禁用，跳过", session_id=session_id)
             return
         
-        # 按当前 session 的真实 user 消息数判断提取间隔。
-        # 旧逻辑使用进程内 _round_counter，服务重启/部署后会归零，导致 Dashboard 已有很多消息但迟迟不提取。
+        # 使用“书签”判断提取范围：上次提到第几轮，本次从下一轮继续。
+        # 书签存在 gateway_config，不改 conversations 表，也不影响分区压缩。
+        cursor_key = f"memory_extract_cursor:{session_id}"
         try:
             pool = await get_pool()
             async with pool.acquire() as conn:
@@ -1145,25 +1146,22 @@ async def process_memories_background(session_id: str, user_msg: str, assistant_
                     "SELECT COUNT(*) FROM memories WHERE source_session = $1",
                     session_id
                 )
+            last_extracted_round = int(await get_gateway_config(cursor_key, "0") or 0)
         except Exception as e:
-            add_dashboard_log("warn", f"⚠️ 读取记忆提取轮次失败，回退到进程计数: {e}", session_id=session_id)
+            add_dashboard_log("warn", f"⚠️ 读取记忆提取书签失败，回退到进程计数: {e}", session_id=session_id)
             _round_counter += 1
             user_round_count = _round_counter
             session_memory_count = 0
+            last_extracted_round = max(0, user_round_count - 1)
 
-        should_extract = True
-        if MEMORY_EXTRACT_INTERVAL > 1:
-            should_extract = (user_round_count % MEMORY_EXTRACT_INTERVAL == 0)
-            # 如果这个 session 已经超过间隔但还没有任何记忆，补提一次，避免重启/旧计数器导致永远错过。
-            if not should_extract and user_round_count >= MEMORY_EXTRACT_INTERVAL and session_memory_count == 0:
-                should_extract = True
-
-        if not should_extract:
-            add_dashboard_log("skip", f"⏭️ 用户轮次 {user_round_count}，跳过记忆提取（每 {MEMORY_EXTRACT_INTERVAL} 轮提取一次）", session_id=session_id)
+        pending_rounds = max(0, user_round_count - last_extracted_round)
+        if pending_rounds < MEMORY_EXTRACT_INTERVAL:
+            add_dashboard_log("skip", f"⏭️ 书签在第 {last_extracted_round} 轮，当前第 {user_round_count} 轮，攒了 {pending_rounds}/{MEMORY_EXTRACT_INTERVAL} 轮，跳过", session_id=session_id)
             return
 
-        if MEMORY_EXTRACT_INTERVAL > 1:
-            add_dashboard_log("run", f"📝 用户轮次 {user_round_count}，执行记忆提取（已有本会话记忆 {session_memory_count} 条）", session_id=session_id)
+        extract_start_round = last_extracted_round + 1
+        extract_end_round = user_round_count
+        add_dashboard_log("run", f"📝 提取范围：第 {extract_start_round}-{extract_end_round} 轮（书签原在第 {last_extracted_round} 轮，已有本会话记忆 {session_memory_count} 条）", session_id=session_id)
         
         # 3. 获取已有记忆，传给提取模型做对比去重
         existing = await get_recent_memories(limit=80)
@@ -1171,27 +1169,32 @@ async def process_memories_background(session_id: str, user_msg: str, assistant_
         
         # 4. 构建用于提取的消息列表
         #    使用 conversations 表中已经保存的清洗后消息，和 Dashboard 对话记录同源。
-        #    注意：不复用 get_conversation_messages()，避免影响分区压缩；这里单独按倒序取最近 N 条再反转。
-        tail_count = max(MEMORY_EXTRACT_INTERVAL * 2, 2)
+        #    注意：这里单独按轮次范围读取，不复用 get_conversation_messages()，避免影响分区压缩。
         try:
             pool = await get_pool()
             async with pool.acquire() as conn:
                 rows = await conn.fetch(
                     """
+                    WITH ordered AS (
+                        SELECT role, content, created_at, id,
+                               SUM(CASE WHEN role = 'user' THEN 1 ELSE 0 END)
+                               OVER (ORDER BY created_at ASC, id ASC) AS user_round
+                        FROM conversations
+                        WHERE session_id = $1 AND role IN ('user', 'assistant')
+                    )
                     SELECT role, content
-                    FROM conversations
-                    WHERE session_id = $1 AND role IN ('user', 'assistant')
-                    ORDER BY created_at DESC
-                    LIMIT $2
+                    FROM ordered
+                    WHERE user_round >= $2 AND user_round <= $3
+                    ORDER BY created_at ASC, id ASC
                     """,
-                    session_id, tail_count
+                    session_id, extract_start_round, extract_end_round
                 )
             messages_for_extraction = [
                 {"role": r["role"], "content": r["content"]}
-                for r in reversed(rows)
+                for r in rows
                 if r["content"]
             ]
-            add_dashboard_log("run", f"🧾 从数据库对话记录截取最近 {len(messages_for_extraction)} 条清洗后消息用于记忆提取", session_id=session_id)
+            add_dashboard_log("run", f"🧾 从数据库对话记录读取第 {extract_start_round}-{extract_end_round} 轮，共 {len(messages_for_extraction)} 条清洗后消息", session_id=session_id)
         except Exception as e:
             add_dashboard_log("warn", f"⚠️ 读取数据库对话记录失败，回退到当前轮提取: {e}", session_id=session_id)
             messages_for_extraction = [
@@ -1236,6 +1239,13 @@ async def process_memories_background(session_id: str, user_msg: str, assistant_
                 source_session=session_id,
             )
         
+        extract_status = getattr(_me_mod, "LAST_EXTRACTION_DEBUG", {}).get("status")
+        if extract_status == "parsed":
+            await set_gateway_config(cursor_key, str(extract_end_round))
+            add_dashboard_log("success", f"🔖 记忆提取书签已移动到第 {extract_end_round} 轮", session_id=session_id)
+        else:
+            add_dashboard_log("warn", f"⚠️ 记忆提取未确认成功，书签停在第 {last_extracted_round} 轮（状态: {extract_status}）", session_id=session_id)
+
         if filtered_memories:
             total = await get_all_memories_count()
             add_dashboard_log("success", f"💾 已保存 {len(filtered_memories)} 条新记忆（过滤了 {len(new_memories) - len(filtered_memories)} 条），总计 {total} 条", session_id=session_id)

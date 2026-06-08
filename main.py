@@ -2318,15 +2318,7 @@ async def _delete_message_by_id(message_id: int):
     return {"status": "ok", "deleted": deleted}
 
 
-@app.delete("/api/chat/messages/{message_id}")
-async def api_delete_message(message_id: int):
-    """删除单条对话消息"""
-    if not MEMORY_ENABLED:
-        return {"error": "记忆系统未启用"}
-    try:
-        return await _delete_message_by_id(message_id)
-    except Exception as e:
-        return {"error": str(e)}
+
 
 
 @app.delete("/api/messages/{message_id}")

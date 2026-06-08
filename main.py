@@ -799,9 +799,15 @@ async def build_partitioned_messages(
     
     rotation_count = 0
     max_rotations = CACHE_MAX_ROTATIONS if CACHE_PARTITION_TRIGGER == "time" else 999
-    while _should_rotate(b_rounds_count, X, a_msgs) and rotation_count < max_rotations:
+    def _rotation_ready() -> bool:
+        if CACHE_PARTITION_TRIGGER == "time":
+            return _should_rotate(b_rounds_count, X, a_msgs)
+        # rounds 模式：A区攒满 X 轮就立即摘要，不再额外等待 B区也攒满 X 轮。
+        return len(a_round_groups) >= X
+
+    while _rotation_ready() and rotation_count < max_rotations:
         rotation_count += 1
-        trigger_info = f"B区{b_rounds_count}轮 >= X={X}" if CACHE_PARTITION_TRIGGER != "time" else f"A区首条消息超出{CACHE_PARTITION_WINDOW}分钟窗口"
+        trigger_info = f"A区{len(a_round_groups)}轮 >= X={X}" if CACHE_PARTITION_TRIGGER != "time" else f"A区首条消息超出{CACHE_PARTITION_WINDOW}分钟窗口"
         print(f"🔄 轮转#{rotation_count}: session={session_id}, {trigger_info}")
         
         new_summary = await generate_summary(a_msgs, session_id)

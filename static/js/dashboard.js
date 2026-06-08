@@ -263,8 +263,8 @@ function filterAndSort() {
     mems = [...mems].sort((a, b) => {
         if (sort === 'id-desc') return b.id - a.id;
         if (sort === 'id-asc') return a.id - b.id;
-        if (sort === 'imp-desc') return b.importance - a.importance || b.id - a.id;
-        if (sort === 'imp-asc') return a.importance - b.importance || a.id - b.id;
+        if (sort === 'imp-desc') return Math.abs(b.importance) - Math.abs(a.importance) || b.id - a.id;
+        if (sort === 'imp-asc') return Math.abs(a.importance) - Math.abs(b.importance) || a.id - b.id;
         return 0;
     });
     
@@ -661,7 +661,7 @@ function openMergeModal() {
     document.getElementById('mergeContent').value = selectedContents;
     document.getElementById('mergeContent').placeholder = '请编辑合并后的完整描述...';
     document.getElementById('mergeTitle').value = '';
-    document.getElementById('mergeImportance').value = '5';
+    document.getElementById('mergeImportance').value = '0';
     document.getElementById('mergeLayer').value = '2';
     document.getElementById('mergeModal').style.display = 'flex';
 }

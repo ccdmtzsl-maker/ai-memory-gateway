@@ -426,6 +426,68 @@ def build_time_injection(history: list = None) -> str:
     return f"[{now_local.strftime('%H:%M')}]"
 
 
+def _format_hm_duration(text: str) -> str:
+    return (text or "").strip().replace(" ", "")
+
+
+def extract_environment_bundle_from_text(text: str) -> tuple[str, str, str]:
+    """识别并压缩 Operit 注入的 text/plain 环境附件。
+    返回: (清理后的用户文本, 轻量环境上下文, 附件时间戳)
+    """
+    if not isinstance(text, str) or "<attachment" not in text:
+        return text, "", ""
+
+    env_lines = []
+    attachment_time = ""
+
+    def repl(match):
+        nonlocal attachment_time, env_lines
+        attrs = match.group(1) or ""
+        body = match.group(2) or ""
+        filename_match = re.search(r'filename="([^"]+)"', attrs)
+        filename = filename_match.group(1) if filename_match else ""
+
+        markers = ("【当前时间】", "【当前电量】", "【当前天气】", "【应用使用时长】")
+        if not any(m in body for m in markers) and not filename.startswith("Time:"):
+            return match.group(0)
+
+        time_match = re.search(r'【当前时间】\s*([0-9]{4}-[0-9]{2}-[0-9]{2})\s+([0-9]{2}:[0-9]{2})', body)
+        if time_match:
+            try:
+                dt = datetime.strptime(time_match.group(1) + " " + time_match.group(2), "%Y-%m-%d %H:%M")
+                attachment_time = f"[{dt.strftime('%m-%d %H:%M')}]"
+            except Exception:
+                attachment_time = f"[{time_match.group(2)}]"
+
+        battery_match = re.search(r'【当前电量】.*?电量:\s*([^\n]+).*?状态:\s*([^\n]+)', body, re.S)
+        if battery_match:
+            env_lines.append(f"电量: {battery_match.group(1).strip()}，{battery_match.group(2).strip()}")
+
+        weather_block = re.search(r'【当前天气】(.*?)(?:【|$)', body, re.S)
+        if weather_block:
+            wb = weather_block.group(1).strip()
+            if wb and "错误:" not in wb and "无法获取" not in wb:
+                one_line = "；".join(line.strip() for line in wb.splitlines() if line.strip())
+                if one_line:
+                    env_lines.append(f"天气: {one_line}")
+
+        app_block = re.search(r'【应用使用时长】(.*?)(?:$)', body, re.S)
+        if app_block:
+            apps = []
+            for app, duration in re.findall(r'应用:\s*([^\n]+).*?使用时长:\s*([^\n]+)', app_block.group(1), re.S):
+                apps.append(f"{app.strip()} {_format_hm_duration(duration)}")
+                if len(apps) >= 3:
+                    break
+            if apps:
+                env_lines.append("应用使用: " + "，".join(apps))
+
+        return ""
+
+    cleaned = re.sub(r'<attachment([^>]*)>(.*?)</attachment>', repl, text, flags=re.S).strip()
+    env_text = "【当前环境】\n" + "\n".join(env_lines) if env_lines else ""
+    return cleaned, env_text, attachment_time
+
+
 async def generate_summary(messages: list, session_id: str = "") -> str:
     """调用轻量模型压缩A区消息为摘要"""
     if not messages:

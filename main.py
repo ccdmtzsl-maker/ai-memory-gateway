@@ -20,6 +20,7 @@ import re
 import httpx
 from datetime import datetime, timedelta, timezone
 from contextlib import asynccontextmanager
+from collections import deque
 from fastapi import Request
 from fastapi.responses import JSONResponse
 from fastapi import FastAPI, Request
@@ -79,8 +80,22 @@ def get_active_session_id() -> str:
 # 时区偏移（小时），用于记忆注入时的日期显示，默认 UTC+8
 TIMEZONE_HOURS = int(os.getenv("TIMEZONE_HOURS", "8"))
 
-# 轮次计数器
+# 轮次计数器（仅作为数据库统计失败时的兜底）
 _round_counter = 0
+
+# Dashboard 后台日志：只保留最近若干条，避免占内存。
+_dashboard_logs = deque(maxlen=200)
+
+def add_dashboard_log(level: str, message: str, category: str = "memory", session_id: str = ""):
+    item = {
+        "time": (datetime.now(timezone.utc) + timedelta(hours=TIMEZONE_HOURS)).strftime("%m-%d %H:%M:%S"),
+        "level": level,
+        "category": category,
+        "session_id": session_id or "",
+        "message": message,
+    }
+    _dashboard_logs.appendleft(item)
+    print(message)
 
 # 强制流式传输（部分客户端不发stream=true导致thinking数据丢失，开启后强制所有请求走流式）
 FORCE_STREAM = os.getenv("FORCE_STREAM", "false").lower() == "true"
@@ -1108,11 +1123,11 @@ async def process_memories_background(session_id: str, user_msg: str, assistant_
         
         # 2. 检查是否需要提取记忆
         if not MEMORY_EXTRACT_ENABLED:
-            print(f"⏭️  记忆提取已关闭（MEMORY_EXTRACT_ENABLED=false）")
+            add_dashboard_log("skip", "⏭️  记忆提取已关闭（MEMORY_EXTRACT_ENABLED=false）", session_id=session_id)
             return
         
         if MEMORY_EXTRACT_INTERVAL == 0:
-            print(f"⏭️  记忆自动提取已禁用，跳过")
+            add_dashboard_log("skip", "⏭️  记忆自动提取已禁用，跳过", session_id=session_id)
             return
         
         # 按当前 session 的真实 user 消息数判断提取间隔。
@@ -1129,7 +1144,7 @@ async def process_memories_background(session_id: str, user_msg: str, assistant_
                     session_id
                 )
         except Exception as e:
-            print(f"⚠️ 读取记忆提取轮次失败，回退到进程计数: {e}")
+            add_dashboard_log("warn", f"⚠️ 读取记忆提取轮次失败，回退到进程计数: {e}", session_id=session_id)
             _round_counter += 1
             user_round_count = _round_counter
             session_memory_count = 0
@@ -1142,11 +1157,11 @@ async def process_memories_background(session_id: str, user_msg: str, assistant_
                 should_extract = True
 
         if not should_extract:
-            print(f"⏭️  session={session_id} 用户轮次 {user_round_count}，跳过记忆提取（每 {MEMORY_EXTRACT_INTERVAL} 轮提取一次）")
+            add_dashboard_log("skip", f"⏭️ 用户轮次 {user_round_count}，跳过记忆提取（每 {MEMORY_EXTRACT_INTERVAL} 轮提取一次）", session_id=session_id)
             return
 
         if MEMORY_EXTRACT_INTERVAL > 1:
-            print(f"📝 session={session_id} 用户轮次 {user_round_count}，执行记忆提取（已有本会话记忆 {session_memory_count} 条）")
+            add_dashboard_log("run", f"📝 用户轮次 {user_round_count}，执行记忆提取（已有本会话记忆 {session_memory_count} 条）", session_id=session_id)
         
         # 3. 获取已有记忆，传给提取模型做对比去重
         existing = await get_recent_memories(limit=80)
@@ -1197,10 +1212,12 @@ async def process_memories_background(session_id: str, user_msg: str, assistant_
         
         if filtered_memories:
             total = await get_all_memories_count()
-            print(f"💾 已保存 {len(filtered_memories)} 条新记忆（过滤了 {len(new_memories) - len(filtered_memories)} 条），总计 {total} 条")
+            add_dashboard_log("success", f"💾 已保存 {len(filtered_memories)} 条新记忆（过滤了 {len(new_memories) - len(filtered_memories)} 条），总计 {total} 条", session_id=session_id)
+        else:
+            add_dashboard_log("empty", f"🫧 本轮未提取到新记忆（模型返回 {len(new_memories)} 条，过滤后 0 条）", session_id=session_id)
             
     except Exception as e:
-        print(f"⚠️  后台记忆处理失败: {e}")
+        add_dashboard_log("error", f"⚠️ 后台记忆处理失败: {e}", session_id=session_id if 'session_id' in locals() else "")
 
 
 # ============================================================
@@ -1672,6 +1689,19 @@ async def dashboard_page(request: Request):
 # ============================================================
 # 管理 API
 # ============================================================
+
+@app.get("/api/dashboard/logs")
+async def api_dashboard_logs(limit: int = 80):
+    """Dashboard 查看最近后台任务/记忆提取日志。"""
+    limit = max(1, min(limit, 200))
+    return {"logs": list(_dashboard_logs)[:limit]}
+
+
+@app.post("/api/dashboard/logs/clear")
+async def api_clear_dashboard_logs():
+    _dashboard_logs.clear()
+    return {"status": "ok"}
+
 
 @app.get("/api/memories")
 async def api_get_memories(layer: int = None, active_only: bool = None):

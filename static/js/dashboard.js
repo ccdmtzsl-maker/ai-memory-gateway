@@ -114,6 +114,9 @@ function switchSection(name) {
     if (name === 'threads') {
         loadThreads();
     }
+    if (name === 'logs') {
+        loadDashboardLogs();
+    }
     if (name === 'settings') {
         loadSettings();
     }
@@ -1488,6 +1491,51 @@ function escapeHtml(str) {
     const div = document.createElement('div');
     div.textContent = str;
     return div.innerHTML;
+}
+
+async function loadDashboardLogs() {
+    const list = document.getElementById('dashboard-log-list');
+    if (!list) return;
+    list.innerHTML = '<div class="card" style="padding:24px; text-align:center; color:var(--text-muted);">加载日志中...</div>';
+    try {
+        const resp = await fetch('/api/dashboard/logs?limit=120');
+        const data = await resp.json();
+        const logs = data.logs || [];
+        if (!logs.length) {
+            list.innerHTML = '<div class="card" style="padding:30px; text-align:center; color:var(--text-muted);">🫧 暂时没有后台日志。发几条消息后再刷新看看。</div>';
+            return;
+        }
+        const colorMap = {
+            success: ['#16a34a', 'rgba(22,163,74,.10)'],
+            run: ['#7c3aed', 'rgba(124,58,237,.10)'],
+            skip: ['#64748b', 'rgba(100,116,139,.10)'],
+            empty: ['#0891b2', 'rgba(8,145,178,.10)'],
+            warn: ['#d97706', 'rgba(217,119,6,.12)'],
+            error: ['#dc2626', 'rgba(220,38,38,.10)']
+        };
+        list.innerHTML = logs.map(log => {
+            const colors = colorMap[log.level] || ['var(--primary)', 'rgba(231,90,124,.08)'];
+            const sid = log.session_id ? `<span style="font-size:12px; color:var(--text-muted);">session: ${escapeHtml(log.session_id)}</span>` : '';
+            return `<div class="card" style="padding:14px 16px; border-left:4px solid ${colors[0]}; background:${colors[1]};">
+                <div style="display:flex; justify-content:space-between; gap:12px; align-items:flex-start; margin-bottom:6px;">
+                    <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+                        <span style="font-weight:700; color:${colors[0]}; font-size:13px;">${escapeHtml(log.level || 'log')}</span>
+                        ${sid}
+                    </div>
+                    <span style="font-size:12px; color:var(--text-muted); white-space:nowrap;">${escapeHtml(log.time || '')}</span>
+                </div>
+                <div style="font-size:14px; line-height:1.6; color:var(--text); word-break:break-word;">${escapeHtml(log.message || '')}</div>
+            </div>`;
+        }).join('');
+    } catch (e) {
+        list.innerHTML = '<div class="card" style="padding:20px; color:#dc2626;">加载日志失败：' + escapeHtml(e.message || String(e)) + '</div>';
+    }
+}
+
+async function clearDashboardLogs() {
+    if (!confirm('确定清空当前后台日志？')) return;
+    await fetch('/api/dashboard/logs/clear', {method: 'POST'});
+    loadDashboardLogs();
 }
 
 function formatConvTime(isoStr) {

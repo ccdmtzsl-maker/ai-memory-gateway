@@ -691,15 +691,9 @@ async def build_partitioned_messages(
         result.append(m)
     
     if current_user_msg:
-        context_parts = [build_time_injection(history)]
-        
-        if MEMORY_ENABLED and MEMORY_EXTRACT_ENABLED and user_message:
-            mem_text = await build_memory_text(user_message)
-            if mem_text:
-                context_parts.append(mem_text)
-        
-        if context_parts:
-            result.append({"role": "system", "content": "\n\n".join(context_parts)})
+        time_text = build_time_injection(history)
+        if time_text:
+            result.append({"role": "system", "content": time_text})
 
         current_text = current_user_msg['content']
         if isinstance(current_text, list):
@@ -709,6 +703,12 @@ async def build_partitioned_messages(
             )
         
         result.append({"role": "user", "content": current_text})
+
+        # 相关记忆后置：先让模型看到用户本轮原话，再参考检索记忆，降低“记忆抢注意力”的概率。
+        if MEMORY_ENABLED and MEMORY_EXTRACT_ENABLED and user_message:
+            mem_text = await build_memory_text(user_message)
+            if mem_text:
+                result.append({"role": "system", "content": mem_text})
     
     bp_count = 1 + (1 if summary_parts else 0) + (1 if cleaned_a else 0) + (1 if b_msgs else 0)
     summary_total = sum(len(p) for p in summary_parts)
@@ -743,15 +743,9 @@ async def _build_basic_cached(
         result.append(m)
     
     if current_user_msg:
-        context_parts = [build_time_injection(history)]
-        
-        if MEMORY_ENABLED and MEMORY_EXTRACT_ENABLED and user_message:
-            mem_text = await build_memory_text(user_message)
-            if mem_text:
-                context_parts.append(mem_text)
-        
-        if context_parts:
-            result.append({"role": "system", "content": "\n\n".join(context_parts)})
+        time_text = build_time_injection(history)
+        if time_text:
+            result.append({"role": "system", "content": time_text})
 
         current_text = current_user_msg['content']
         if isinstance(current_text, list):
@@ -760,8 +754,13 @@ async def _build_basic_cached(
                 if isinstance(item, dict) and item.get("type") == "text"
             )
         
-        parts.append(current_text)
-        result.append({"role": "user", "content": "\n\n".join(parts)})
+        result.append({"role": "user", "content": current_text})
+
+        # 相关记忆后置：先让模型看到用户本轮原话，再参考检索记忆，降低“记忆抢注意力”的概率。
+        if MEMORY_ENABLED and MEMORY_EXTRACT_ENABLED and user_message:
+            mem_text = await build_memory_text(user_message)
+            if mem_text:
+                result.append({"role": "system", "content": mem_text})
     
     bp_count = 1 + (1 if history else 0)
     print(f"🔒 基础缓存(降级): BP×{bp_count} | 历史{len(history)}条 | 总{len(result)}条messages")

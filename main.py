@@ -1170,21 +1170,38 @@ async def process_memories_background(session_id: str, user_msg: str, assistant_
         existing_contents = [r["content"] for r in existing]
         
         # 4. 构建用于提取的消息列表
-        #    截取最近 MEMORY_EXTRACT_INTERVAL 轮对话（每轮=user+assistant共2条）
-        #    而非发送完整上下文，省token
-        if context_messages:
-            # 截取最近N轮（interval×2条），加上最新的assistant回复
-            tail_count = MEMORY_EXTRACT_INTERVAL * 2
-            recent_msgs = list(context_messages)[-tail_count:] if len(context_messages) > tail_count else list(context_messages)
-            messages_for_extraction = recent_msgs + [
-                {"role": "assistant", "content": assistant_msg}
+        #    使用 conversations 表中已经保存的清洗后消息，和 Dashboard 对话记录同源。
+        #    注意：不复用 get_conversation_messages()，避免影响分区压缩；这里单独按倒序取最近 N 条再反转。
+        tail_count = max(MEMORY_EXTRACT_INTERVAL * 2, 2)
+        try:
+            pool = await get_pool()
+            async with pool.acquire() as conn:
+                rows = await conn.fetch(
+                    """
+                    SELECT role, content
+                    FROM conversations
+                    WHERE session_id = $1 AND role IN ('user', 'assistant')
+                    ORDER BY created_at DESC
+                    LIMIT $2
+                    """,
+                    session_id, tail_count
+                )
+            messages_for_extraction = [
+                {"role": r["role"], "content": r["content"]}
+                for r in reversed(rows)
+                if r["content"]
             ]
-            print(f"📝 截取最近 {MEMORY_EXTRACT_INTERVAL} 轮对话提取记忆（{len(messages_for_extraction)} 条消息）")
-        else:
+            add_dashboard_log("run", f"🧾 从数据库对话记录截取最近 {len(messages_for_extraction)} 条清洗后消息用于记忆提取", session_id=session_id)
+        except Exception as e:
+            add_dashboard_log("warn", f"⚠️ 读取数据库对话记录失败，回退到当前轮提取: {e}", session_id=session_id)
             messages_for_extraction = [
                 {"role": "user", "content": user_msg},
                 {"role": "assistant", "content": assistant_msg},
             ]
+
+        if not messages_for_extraction:
+            add_dashboard_log("empty", "🫧 没有可用于记忆提取的对话记录", session_id=session_id)
+            return
         
         import memory_extractor as _me_mod
         extractor_base = getattr(_me_mod, "MEMORY_API_BASE_URL", "")

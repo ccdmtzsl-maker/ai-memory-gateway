@@ -846,7 +846,7 @@ async def build_partitioned_messages(
         result.append(m)
     
     if current_user_msg:
-        time_text = build_time_injection(history)
+        time_text = ""
 
         current_text = current_user_msg['content']
         if isinstance(current_text, list):

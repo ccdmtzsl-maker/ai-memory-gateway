@@ -1231,13 +1231,31 @@ async def list_all_session_cache_states() -> list:
     pool = await get_pool()
     async with pool.acquire() as conn:
         rows = await conn.fetch("""
-            SELECT scs.session_id, scs.summary, scs.a_start_round, scs.updated_at,
-                   COALESCE(c.message_count, 0) as message_count,
-                   COALESCE(tu.chat_tokens, 0) as chat_tokens
-            FROM session_cache_state scs
-            LEFT JOIN (SELECT session_id, COUNT(*) as message_count FROM conversations GROUP BY session_id) c ON scs.session_id = c.session_id
-            LEFT JOIN (SELECT session_id, SUM(total_tokens) as chat_tokens FROM token_usage WHERE usage_type = 'chat' GROUP BY session_id) tu ON scs.session_id = tu.session_id
-            ORDER BY scs.updated_at DESC
+            WITH all_sessions AS (
+                SELECT session_id FROM session_cache_state
+                UNION
+                SELECT DISTINCT session_id FROM conversations
+            ),
+            conv AS (
+                SELECT session_id, COUNT(*) as message_count, MAX(created_at) as last_message_at
+                FROM conversations
+                GROUP BY session_id
+            ),
+            usage AS (
+                SELECT session_id, SUM(total_tokens) as chat_tokens
+                FROM token_usage
+                WHERE usage_type = 'chat'
+                GROUP BY session_id
+            )
+            SELECT s.session_id, scs.summary, scs.a_start_round, scs.updated_at,
+                   COALESCE(conv.message_count, 0) as message_count,
+                   COALESCE(usage.chat_tokens, 0) as chat_tokens,
+                   conv.last_message_at
+            FROM all_sessions s
+            LEFT JOIN session_cache_state scs ON s.session_id = scs.session_id
+            LEFT JOIN conv ON s.session_id = conv.session_id
+            LEFT JOIN usage ON s.session_id = usage.session_id
+            ORDER BY COALESCE(scs.updated_at, conv.last_message_at) DESC NULLS LAST
         """)
         results = []
         for r in rows:
@@ -1256,8 +1274,8 @@ async def list_all_session_cache_states() -> list:
                 'summary': '\n\n'.join(summary_parts),
                 'summary_length': sum(len(p) for p in summary_parts),
                 'summary_count': len(summary_parts),
-                'a_start_round': r['a_start_round'],
-                'updated_at': r['updated_at'].isoformat() if r['updated_at'] else None,
+                'a_start_round': r['a_start_round'] or 0,
+                'updated_at': (r['updated_at'] or r['last_message_at']).isoformat() if (r['updated_at'] or r['last_message_at']) else None,
                 'message_count': r['message_count'],
                 'chat_tokens': r['chat_tokens'],
             })

@@ -2473,6 +2473,67 @@ async def get_settings():
         return {"error": str(e)}
 
 
+@app.post("/api/settings/test-memory-model")
+async def test_memory_model(request: Request):
+    """测试记忆模型接口是否可用（OpenAI chat/completions 兼容格式）"""
+    try:
+        data = await request.json()
+
+        memory_api_base_url = str(data.get("MEMORY_API_BASE_URL") or MEMORY_API_BASE_URL or "").strip()
+        memory_model = str(data.get("MEMORY_MODEL") or os.getenv("MEMORY_MODEL", "") or "anthropic/claude-haiku-4").strip()
+        memory_api_key_raw = str(data.get("MEMORY_API_KEY") or "").strip()
+        memory_api_key = get_memory_api_key() if (not memory_api_key_raw or _is_masked(memory_api_key_raw)) else memory_api_key_raw
+
+        if not memory_api_base_url:
+            return {"ok": False, "error": "MEMORY_API_BASE_URL 为空，记忆模型不会回退到主 API_BASE_URL"}
+        if not memory_api_key:
+            return {"ok": False, "error": "MEMORY_API_KEY / API_KEY 为空"}
+        if not memory_model:
+            return {"ok": False, "error": "MEMORY_MODEL 为空"}
+
+        headers = {
+            "Authorization": f"Bearer {memory_api_key}",
+            "Content-Type": "application/json",
+        }
+        if "openrouter" in memory_api_base_url:
+            headers["HTTP-Referer"] = EXTRA_REFERER
+            headers["X-Title"] = EXTRA_TITLE
+
+        payload = {
+            "model": memory_model,
+            "messages": [
+                {"role": "user", "content": "请只回复 OK，用于测试记忆模型接口连通性。"}
+            ],
+            "max_tokens": 20,
+            "temperature": 0,
+        }
+
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(memory_api_base_url, headers=headers, json=payload)
+
+        if resp.status_code != 200:
+            return {
+                "ok": False,
+                "status_code": resp.status_code,
+                "error": f"HTTP {resp.status_code}: {resp.text[:500]}",
+            }
+
+        try:
+            resp_data = resp.json()
+        except Exception:
+            return {"ok": False, "error": f"响应不是 JSON: {resp.text[:500]}"}
+
+        reply = resp_data.get("choices", [{}])[0].get("message", {}).get("content", "")
+        if reply is None:
+            reply = ""
+        if "choices" not in resp_data:
+            return {"ok": False, "error": f"接口返回成功，但不是 OpenAI chat/completions 格式: {str(resp_data)[:500]}"}
+
+        return {"ok": True, "status_code": resp.status_code, "model": memory_model, "reply": str(reply)[:200]}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
 @app.put("/api/settings")
 async def save_settings(request: Request):
     """保存高级设置（写入数据库 + 热更新运行时变量，立即生效无需重启）"""

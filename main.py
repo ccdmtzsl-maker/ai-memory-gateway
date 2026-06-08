@@ -2308,19 +2308,34 @@ async def api_update_message(message_id: int, request: Request):
         return {"error": str(e)}
 
 
+async def _delete_message_by_id(message_id: int):
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        result = await conn.execute("DELETE FROM conversations WHERE id = $1", message_id)
+    deleted = int(result.split()[-1]) if result else 0
+    if deleted == 0:
+        return {"error": "消息不存在"}
+    return {"status": "ok", "deleted": deleted}
+
+
 @app.delete("/api/chat/messages/{message_id}")
 async def api_delete_message(message_id: int):
     """删除单条对话消息"""
     if not MEMORY_ENABLED:
         return {"error": "记忆系统未启用"}
     try:
-        pool = await get_pool()
-        async with pool.acquire() as conn:
-            result = await conn.execute("DELETE FROM conversations WHERE id = $1", message_id)
-        deleted = int(result.split()[-1]) if result else 0
-        if deleted == 0:
-            return {"error": "消息不存在"}
-        return {"status": "ok", "deleted": deleted}
+        return await _delete_message_by_id(message_id)
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.delete("/api/messages/{message_id}")
+async def api_delete_message_legacy(message_id: int):
+    """删除单条对话消息（兼容 Dashboard 旧接口）"""
+    if not MEMORY_ENABLED:
+        return {"error": "记忆系统未启用"}
+    try:
+        return await _delete_message_by_id(message_id)
     except Exception as e:
         return {"error": str(e)}
 

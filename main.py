@@ -666,6 +666,49 @@ def _apply_breakpoint(msg: dict) -> bool:
     return False
 
 
+def _to_local_dt(t):
+    if not t:
+        return None
+    try:
+        if isinstance(t, str):
+            dt = datetime.fromisoformat(t.replace('Z', '+00:00'))
+        else:
+            dt = t
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc) + timedelta(hours=TIMEZONE_HOURS)
+    except Exception:
+        return None
+
+
+def _prepend_timestamp_to_user_messages(messages: list) -> list:
+    """给历史 user 消息加轻量时间戳；assistant/tool 不加。"""
+    last_date = None
+    stamped = []
+    for msg in messages:
+        m = dict(msg)
+        if m.get('role') == 'user':
+            local_dt = _to_local_dt(m.get('created_at'))
+            if local_dt:
+                show_date = last_date != local_dt.date()
+                stamp = f"[{local_dt.strftime('%m-%d %H:%M')}]" if show_date else f"[{local_dt.strftime('%H:%M')}]"
+                content = m.get('content')
+                if isinstance(content, str):
+                    if not re.match(r'^\[[0-9]{2}(?:-[0-9]{2})? [0-9]{2}:[0-9]{2}\]|^\[[0-9]{2}:[0-9]{2}\]', content):
+                        m['content'] = f"{stamp}{content}"
+                elif isinstance(content, list):
+                    for block in content:
+                        if isinstance(block, dict) and block.get('type') == 'text':
+                            text = block.get('text', '')
+                            if not re.match(r'^\[[0-9]{2}(?:-[0-9]{2})? [0-9]{2}:[0-9]{2}\]|^\[[0-9]{2}:[0-9]{2}\]', text):
+                                block['text'] = f"{stamp}{text}"
+                            break
+                last_date = local_dt.date()
+        m.pop('created_at', None)
+        stamped.append(m)
+    return stamped
+
+
 async def build_partitioned_messages(
     session_id: str,
     all_messages: list,

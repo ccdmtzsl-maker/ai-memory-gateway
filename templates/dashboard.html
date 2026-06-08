@@ -432,7 +432,27 @@
             </section>
 
             <!-- 设置 Section -->
-            <section id="section-settings" class="section">
+            <section id="section-logs" class="section">
+    <div class="section-header">
+        <h1>后台日志</h1>
+        <p class="section-desc">查看记忆提取、跳过原因和后台任务状态</p>
+    </div>
+    <div class="card" style="padding:18px; margin-bottom:16px; background:linear-gradient(135deg, rgba(231,90,124,.10), rgba(116,91,255,.08)); border:1px solid rgba(231,90,124,.18);">
+        <div style="display:flex; justify-content:space-between; gap:12px; align-items:center; flex-wrap:wrap;">
+            <div>
+                <div style="font-weight:700; font-size:16px; margin-bottom:4px;">记忆提取监控</div>
+                <div style="color:var(--text-muted); font-size:13px;">会显示最近 200 条后台日志；服务重启后会清空。</div>
+            </div>
+            <div style="display:flex; gap:8px;">
+                <button class="btn btn-secondary" onclick="loadDashboardLogs()">刷新</button>
+                <button class="btn btn-danger" onclick="clearDashboardLogs()">清空</button>
+            </div>
+        </div>
+    </div>
+    <div id="dashboard-log-list" style="display:flex; flex-direction:column; gap:10px;"></div>
+</section>
+
+<section id="section-settings" class="section">
                 <div class="section-header">
                     <h2>设置</h2>
                     <div id="settings-msg" class="msg-box" style="display:none;"></div>
@@ -617,6 +637,6 @@
         </main>
     </div>
 
-    <script src="/static/js/dashboard.js?v=3.6"></script>
+    <script src="/static/js/dashboard.js?v=3.7"></script>
 </body>
 </html>

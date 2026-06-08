@@ -88,12 +88,18 @@ FORCE_STREAM = os.getenv("FORCE_STREAM", "false").lower() == "true"
 # 设为 low/medium/high 会在转发请求时注入 reasoning_effort 参数
 REASONING_EFFORT = os.getenv("REASONING_EFFORT", "")
 
+# 记忆模型专用 API 地址。留空时不会自动回退到主 API_BASE_URL，由调用方决定是否跳过。
+MEMORY_API_BASE_URL = os.getenv("MEMORY_API_BASE_URL", "")
+
 # 记忆模型专用 API Key（不设则回退到主 API_KEY）
 # 适用于中转站按模型分组、不同模型需要不同 Key 的场景
 MEMORY_API_KEY = os.getenv("MEMORY_API_KEY", "")
 
 def get_memory_api_key() -> str:
     return MEMORY_API_KEY or API_KEY
+
+def get_memory_api_base_url() -> str:
+    return MEMORY_API_BASE_URL
 
 # 额外的请求头（有些 API 需要，比如 OpenRouter 需要 Referer）
 EXTRA_REFERER = os.getenv("EXTRA_REFERER", "https://ai-memory-gateway.local")
@@ -211,6 +217,11 @@ async def lifespan(app: FastAPI):
                             globals()[key] = str(val)
                             import memory_extractor as _me_mod
                             _me_mod.MEMORY_API_KEY = str(val)
+                            restored.append(key)
+                        elif key == "MEMORY_API_BASE_URL":
+                            globals()[key] = str(val)
+                            import memory_extractor as _me_mod
+                            _me_mod.MEMORY_API_BASE_URL = str(val)
                             restored.append(key)
                     if restored:
                         print(f"🔄 从数据库恢复 {len(restored)} 项面板配置: {', '.join(restored)}")
@@ -2411,6 +2422,7 @@ async def get_settings():
             # 记忆系统
             "MEMORY_ENABLED":          _parse_bool(db.get("MEMORY_ENABLED"), MEMORY_ENABLED),
             "MEMORY_API_KEY":          _mask_key(memory_key_raw),
+            "MEMORY_API_BASE_URL":     db.get("MEMORY_API_BASE_URL") or str(MEMORY_API_BASE_URL),
             "MEMORY_MODEL":            db.get("MEMORY_MODEL") or os.environ.get("MEMORY_MODEL", ""),
             "MAX_MEMORIES_INJECT":     int(db.get("MAX_MEMORIES_INJECT") or MAX_MEMORIES_INJECT),
             "MIN_SCORE_THRESHOLD":     float(db.get("MIN_SCORE_THRESHOLD") or _db_module.MIN_SCORE_THRESHOLD),
@@ -2465,6 +2477,7 @@ async def save_settings(request: Request):
             "API_KEY":               str,
             "DEFAULT_MODEL":         str,
             "MEMORY_API_KEY":        str,
+            "MEMORY_API_BASE_URL":   str,
             "MEMORY_ENABLED":        lambda v: _parse_bool(v),
             "MAX_MEMORIES_INJECT":   int,
             "MEMORY_EXTRACT_INTERVAL": int,
@@ -2536,6 +2549,9 @@ async def save_settings(request: Request):
                 if key == "MEMORY_API_KEY":
                     import memory_extractor as _me_mod
                     _me_mod.MEMORY_API_KEY = str(value)
+                if key == "MEMORY_API_BASE_URL":
+                    import memory_extractor as _me_mod
+                    _me_mod.MEMORY_API_BASE_URL = str(value)
                 updated.append(key)
                 print(f"[settings] {key} = {typed_value}")
 

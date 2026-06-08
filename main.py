@@ -831,11 +831,12 @@ async def build_partitioned_messages(
         if cleaned_a[j].get('role') != 'tool' and _apply_breakpoint(cleaned_a[j]):
             break
     
+    cleaned_a = _prepend_timestamp_to_user_messages(cleaned_a)
     for m in cleaned_a:
         result.append(m)
     
     # B区：先构建去掉created_at的副本，再从末尾往前打BP
-    b_cleaned = [{k: v for k, v in msg.items() if k not in ('created_at',)} for msg in b_msgs]
+    b_cleaned = _prepend_timestamp_to_user_messages(b_msgs)
     
     for j in range(len(b_cleaned) - 1, -1, -1):
         if b_cleaned[j].get('role') != 'tool' and _apply_breakpoint(b_cleaned[j]):
@@ -896,7 +897,7 @@ async def _build_basic_cached(
             "content": [{"type": "text", "text": base_prompt, "cache_control": {"type": "ephemeral"}}]
         })
     
-    h_cleaned = [{k: v for k, v in msg.items() if k not in ('created_at',)} for msg in history]
+    h_cleaned = _prepend_timestamp_to_user_messages(history)
     
     # 从末尾往前找第一条非tool消息打BP
     for j in range(len(h_cleaned) - 1, -1, -1):

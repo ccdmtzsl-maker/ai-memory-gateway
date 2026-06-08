@@ -999,7 +999,7 @@ async def build_memory_text(user_message: str) -> str:
 # 后台记忆处理
 # ============================================================
 
-def clean_user_message_for_log(user_msg: str) -> str:
+def clean_user_message_for_log(user_msg: str, history: list = None) -> str:
     """保存到对话记录前，清理附件/proxy注入，避免Dashboard显示大段原始上下文。"""
     if not isinstance(user_msg, str):
         return user_msg
@@ -1017,6 +1017,7 @@ def clean_user_message_for_log(user_msg: str) -> str:
 
     cleaned = (cleaned or "").strip()
     if time_text and cleaned and not re.match(r'^\[[0-9]{2}(?:-[0-9]{2})? [0-9]{2}:[0-9]{2}\]|^\[[0-9]{2}:[0-9]{2}\]', cleaned):
+        time_text = _shorten_client_timestamp(time_text, history)
         cleaned = f"{time_text}{cleaned}"
     return cleaned or user_msg
 
@@ -1048,7 +1049,13 @@ async def process_memories_background(session_id: str, user_msg: str, assistant_
             print(f"💾 tool详情: {[{'role': m.get('role'), 'tool_call_id': m.get('tool_call_id', '?')} for m in tool_messages]}")
         
         # 1. 存储对话记录（除非明确跳过）
-        clean_user_msg = clean_user_message_for_log(user_msg) if user_msg else user_msg
+        recent_log_history = []
+        if user_msg:
+            try:
+                recent_log_history = await get_conversation_messages(session_id, limit=20)
+            except Exception as e:
+                print(f"⚠️ 读取最近对话用于日志时间戳缩短失败: {e}")
+        clean_user_msg = clean_user_message_for_log(user_msg, recent_log_history) if user_msg else user_msg
         if skip_conversation_log:
             print(f"⏭️  跳过对话存储（辅助请求）")
         elif tool_messages:

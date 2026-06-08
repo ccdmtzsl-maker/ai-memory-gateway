@@ -819,13 +819,16 @@ async def build_partitioned_messages(
             )
         
         current_text, env_text, attachment_time = extract_environment_bundle_from_text(current_text)
-        if attachment_time:
-            time_text = attachment_time
+        current_text, proxy_env_text, proxy_time = extract_proxy_sender_context_from_text(current_text)
+        if proxy_env_text:
+            env_text = "\n\n".join(part for part in [env_text, proxy_env_text] if part)
+        if attachment_time or proxy_time:
+            time_text = attachment_time or proxy_time
         if time_text:
             current_text = f"{time_text}{current_text}"
         result.append({"role": "user", "content": current_text})
 
-        # 环境附件后置为轻量 system 上下文，避免原始附件污染用户正文。
+        # 环境/插件上下文后置为轻量 system 消息，避免原始注入污染用户正文。
         if env_text:
             result.append({"role": "system", "content": env_text})
 
@@ -878,13 +881,16 @@ async def _build_basic_cached(
             )
         
         current_text, env_text, attachment_time = extract_environment_bundle_from_text(current_text)
-        if attachment_time:
-            time_text = attachment_time
+        current_text, proxy_env_text, proxy_time = extract_proxy_sender_context_from_text(current_text)
+        if proxy_env_text:
+            env_text = "\n\n".join(part for part in [env_text, proxy_env_text] if part)
+        if attachment_time or proxy_time:
+            time_text = attachment_time or proxy_time
         if time_text:
             current_text = f"{time_text}{current_text}"
         result.append({"role": "user", "content": current_text})
 
-        # 环境附件后置为轻量 system 上下文，避免原始附件污染用户正文。
+        # 环境/插件上下文后置为轻量 system 消息，避免原始注入污染用户正文。
         if env_text:
             result.append({"role": "system", "content": env_text})
 

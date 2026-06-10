@@ -975,10 +975,6 @@ async def build_partitioned_messages(
         # Operit 原生记忆附件放在最底部，按用户手动检索结果使用。
         if operit_memory_text:
             result.append({"role": "system", "content": operit_memory_text})
-
-        # Operit 原生记忆附件放在最底部，按用户手动检索结果使用。
-        if operit_memory_text:
-            result.append({"role": "system", "content": operit_memory_text})
     
     bp_count = 1 + (1 if summary_parts else 0) + (1 if cleaned_a else 0) + (1 if b_msgs else 0)
     summary_total = sum(len(p) for p in summary_parts)
@@ -1042,6 +1038,10 @@ async def _build_basic_cached(
             mem_text = await build_memory_text(user_message)
             if mem_text:
                 result.append({"role": "system", "content": mem_text})
+
+        # Operit 原生记忆附件放在最底部，按用户手动检索结果使用。
+        if operit_memory_text:
+            result.append({"role": "system", "content": operit_memory_text})
     
     bp_count = 1 + (1 if history else 0)
     print(f"🔒 基础缓存(降级): BP×{bp_count} | 历史{len(history)}条 | 总{len(result)}条messages")

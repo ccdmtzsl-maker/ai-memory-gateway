@@ -634,6 +634,15 @@
                             <option value="high">high</option>
                         </select>
                     </div>
+                    <div class="settings-field settings-toggle-row">
+                        <label>启用非流式响应转换</label>
+                        <label class="toggle"><input type="checkbox" id="set-RESPONSE_TRANSFORM_ENABLED"><span class="toggle-slider"></span></label>
+                    </div>
+                    <div class="settings-field">
+                        <label>响应转换规则 (RESPONSE_TRANSFORM_RULES)</label>
+                        <textarea id="set-RESPONSE_TRANSFORM_RULES" class="textarea" rows="6" placeholder="\\[语音::(.+?)\\] => &lt;hcard type='voice'&gt;$1&lt;/hcard&gt;"></textarea>
+                        <small class="form-hint">仅非流式响应生效；一行一条，格式：正则 =&gt; 替换。替换里可用 $1、$2 等捕获组。</small>
+                    </div>
                 </div>
 
                 <!-- System Prompt -->
@@ -653,6 +662,6 @@
         </main>
     </div>
 
-    <script src="/static/js/dashboard.js?v=3.9"></script>
+    <script src="/static/js/dashboard.js?v=4.0"></script>
 </body>
 </html>

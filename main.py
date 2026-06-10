@@ -86,6 +86,11 @@ _round_counter = 0
 # Dashboard 后台日志：只保留最近若干条，避免占内存。
 _dashboard_logs = deque(maxlen=200)
 
+# Dashboard 调试：只保留最近一次实际转发给上游模型的请求体。
+# 不主动打印，避免日志刷屏；需要时由后台日志页手动查看。
+_last_upstream_request_body = None
+_last_upstream_request_meta = {}
+
 def add_dashboard_log(level: str, message: str, category: str = "memory", session_id: str = ""):
     item = {
         "time": (datetime.now(timezone.utc) + timedelta(hours=TIMEZONE_HOURS)).strftime("%m-%d %H:%M:%S"),
@@ -1488,6 +1493,20 @@ async def chat_completions(request: Request):
     if CACHE_PARTITION_ENABLED and not _is_anthropic_model(model):
         _strip_cache_control(body.get("messages", []))
     
+    # ---------- 记录最近一次实际发送给上游的请求体（Dashboard 手动查看） ----------
+    global _last_upstream_request_body, _last_upstream_request_meta
+    try:
+        _last_upstream_request_body = json.loads(json.dumps(body, ensure_ascii=False))
+        _last_upstream_request_meta = {
+            "time": (datetime.now(timezone.utc) + timedelta(hours=TIMEZONE_HOURS)).strftime("%m-%d %H:%M:%S"),
+            "session_id": session_id,
+            "model": body.get("model", ""),
+            "message_count": len(body.get("messages", []) or []),
+            "cache_partition_enabled": CACHE_PARTITION_ENABLED,
+        }
+    except Exception as e:
+        print(f"⚠️ 记录上次请求体失败: {e}")
+
     # ---------- 转发请求 ----------
     headers = {
         "Authorization": f"Bearer {API_KEY}",
@@ -1731,6 +1750,18 @@ async def api_dashboard_logs(limit: int = 80):
     """Dashboard 查看最近后台任务/记忆提取日志。"""
     limit = max(1, min(limit, 200))
     return {"logs": list(_dashboard_logs)[:limit]}
+
+
+@app.get("/api/dashboard/last-request")
+async def api_dashboard_last_request():
+    """Dashboard 手动查看最近一次实际转发给上游模型的请求体。"""
+    if _last_upstream_request_body is None:
+        return {"available": False, "message": "还没有记录到已转发的请求体"}
+    return {
+        "available": True,
+        "meta": _last_upstream_request_meta,
+        "body": _last_upstream_request_body,
+    }
 
 
 @app.post("/api/dashboard/logs/clear")

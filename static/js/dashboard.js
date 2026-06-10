@@ -1538,6 +1538,46 @@ async function clearDashboardLogs() {
     loadDashboardLogs();
 }
 
+async function toggleLastRequestBody(forceShow) {
+    const panel = document.getElementById('last-request-body-panel');
+    const content = document.getElementById('last-request-body-content');
+    const metaEl = document.getElementById('last-request-body-meta');
+    if (!panel || !content) return;
+
+    const shouldShow = forceShow === undefined ? panel.style.display === 'none' : forceShow;
+    if (!shouldShow) {
+        panel.style.display = 'none';
+        return;
+    }
+
+    panel.style.display = 'block';
+    content.textContent = '加载上次请求体中...';
+    if (metaEl) metaEl.textContent = '';
+
+    try {
+        const resp = await fetch('/api/dashboard/last-request');
+        const data = await resp.json();
+        if (!data.available) {
+            content.textContent = data.message || '还没有记录到已转发的请求体';
+            return;
+        }
+
+        const meta = data.meta || {};
+        if (metaEl) {
+            const parts = [];
+            if (meta.time) parts.push(meta.time);
+            if (meta.model) parts.push('model: ' + meta.model);
+            if (meta.session_id) parts.push('session: ' + meta.session_id);
+            if (meta.message_count !== undefined) parts.push('messages: ' + meta.message_count);
+            parts.push('分区缓存: ' + (meta.cache_partition_enabled ? '开' : '关'));
+            metaEl.textContent = parts.join(' · ');
+        }
+        content.textContent = JSON.stringify(data.body || {}, null, 2);
+    } catch (e) {
+        content.textContent = '读取上次请求体失败：' + (e.message || String(e));
+    }
+}
+
 function formatConvTime(isoStr) {
     try {
         const d = new Date(isoStr);

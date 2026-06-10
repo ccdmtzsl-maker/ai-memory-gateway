@@ -118,7 +118,7 @@ async def extract_memories(messages: List[Dict[str, str]], existing_memories: Li
         role = msg.get("role", "unknown")
         content = msg.get("content", "")
         if role == "user":
-            conversation_text += f"藍: {content}\n"
+            conversation_text += f"用户: {content}\n"
         elif role == "assistant":
             conversation_text += f"澈: {content}\n"
 

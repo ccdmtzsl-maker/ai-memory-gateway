@@ -217,6 +217,8 @@ async def lifespan(app: FastAPI):
                         "CACHE_PARTITION_X": int, "CACHE_PARTITION_TRIGGER": str,
                         "CACHE_PARTITION_WINDOW": int, "CACHE_SUMMARY_MODEL": str,
                         "FORCE_STREAM": lambda v: _parse_bool(v),
+                        "RESPONSE_TRANSFORM_ENABLED": lambda v: _parse_bool(v),
+                        "RESPONSE_TRANSFORM_RULES": str,
                         "REASONING_EFFORT": str,
                     }
                     _RESTORE_DB = {
@@ -2995,6 +2997,8 @@ async def get_settings():
 
             # 其他
             "FORCE_STREAM":       _parse_bool(db.get("FORCE_STREAM"), FORCE_STREAM),
+            "RESPONSE_TRANSFORM_ENABLED": _parse_bool(db.get("RESPONSE_TRANSFORM_ENABLED"), RESPONSE_TRANSFORM_ENABLED),
+            "RESPONSE_TRANSFORM_RULES": db.get("RESPONSE_TRANSFORM_RULES") or str(RESPONSE_TRANSFORM_RULES),
             "REASONING_EFFORT":   db.get("REASONING_EFFORT") or str(REASONING_EFFORT),
 
             # System Prompt
@@ -3093,6 +3097,8 @@ async def save_settings(request: Request):
             "CACHE_PARTITION_WINDOW": int,
             "CACHE_SUMMARY_MODEL":   str,
             "FORCE_STREAM":          lambda v: _parse_bool(v),
+            "RESPONSE_TRANSFORM_ENABLED": lambda v: _parse_bool(v),
+            "RESPONSE_TRANSFORM_RULES": str,
             "REASONING_EFFORT":      str,
         }
 

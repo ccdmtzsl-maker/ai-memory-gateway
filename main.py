@@ -108,6 +108,10 @@ def add_dashboard_log(level: str, message: str, category: str = "memory", sessio
 # 强制流式传输（部分客户端不发stream=true导致thinking数据丢失，开启后强制所有请求走流式）
 FORCE_STREAM = os.getenv("FORCE_STREAM", "false").lower() == "true"
 
+# 非流式响应文本正则转换。流式响应不处理，避免 chunk 拆分导致误替换。
+RESPONSE_TRANSFORM_ENABLED = os.getenv("RESPONSE_TRANSFORM_ENABLED", "false").lower() == "true"
+RESPONSE_TRANSFORM_RULES = os.getenv("RESPONSE_TRANSFORM_RULES", "")
+
 # 推理/思维链参数（部分客户端走网关时不会自动添加reasoning参数，导致上游不返回thinking数据）
 # 设为 low/medium/high 会在转发请求时注入 reasoning_effort 参数
 REASONING_EFFORT = os.getenv("REASONING_EFFORT", "")
@@ -416,6 +420,46 @@ def _strip_cache_control(messages: list):
             msg["content"] = content[0]["text"]
     if stripped > 0:
         print(f"🔧 兼容性处理: 剥离了 {stripped} 个 cache_control 字段（非 Claude 模型）")
+
+
+def _convert_replacement_groups(replacement: str) -> str:
+    """把 Dashboard 里更直观的 $1/$2 替换写法转成 Python re.sub 的 \\1/\\2。"""
+    return re.sub(r'\$(\d+)', r'\\\1', replacement or "")
+
+
+def apply_response_transform_rules(text: str) -> str:
+    """按配置的正则规则转换非流式 assistant 文本。规则格式：pattern => replacement，一行一条。"""
+    if not RESPONSE_TRANSFORM_ENABLED or not isinstance(text, str) or not text:
+        return text
+
+    rules_text = RESPONSE_TRANSFORM_RULES or ""
+    if not rules_text.strip():
+        return text
+
+    transformed = text
+    applied = 0
+    for raw_line in rules_text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "=>" not in line:
+            continue
+        pattern, replacement = line.split("=>", 1)
+        pattern = pattern.strip()
+        replacement = _convert_replacement_groups(replacement.strip())
+        if not pattern:
+            continue
+        try:
+            new_text = re.sub(pattern, replacement, transformed, flags=re.S)
+            if new_text != transformed:
+                applied += 1
+                transformed = new_text
+        except Exception as e:
+            print(f"⚠️ 响应转换规则无效，已跳过: {pattern} ({e})")
+
+    if applied:
+        print(f"🔁 非流式响应转换: 应用 {applied} 条规则")
+    return transformed
 
 
 def build_time_injection(history: list = None) -> str:

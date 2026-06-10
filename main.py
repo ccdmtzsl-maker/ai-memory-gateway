@@ -1674,6 +1674,11 @@ async def chat_completions(request: Request):
                 try:
                     msg_obj = resp_data["choices"][0]["message"]
                     assistant_msg = msg_obj.get("content") or ""
+                    if assistant_msg:
+                        transformed_msg = apply_response_transform_rules(assistant_msg)
+                        if transformed_msg != assistant_msg:
+                            assistant_msg = transformed_msg
+                            msg_obj["content"] = transformed_msg
                     if msg_obj.get("tool_calls"):
                         assistant_tool_calls = msg_obj["tool_calls"]
                         print(f"🔧 Response 包含 {len(assistant_tool_calls)} 个工具调用")
@@ -3217,4 +3222,6 @@ if __name__ == "__main__":
         print(f"🧠 推理参数注入：{REASONING_EFFORT}")
     if str(CHAT_TEMPERATURE).strip() != "":
         print(f"🌡️ 聊天温度参数：{CHAT_TEMPERATURE}")
+    if RESPONSE_TRANSFORM_ENABLED:
+        print("🔁 非流式响应转换：开启")
     uvicorn.run(app, host="0.0.0.0", port=PORT)

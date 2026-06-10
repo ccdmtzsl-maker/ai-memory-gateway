@@ -443,11 +443,22 @@
                 <div style="font-weight:700; font-size:16px; margin-bottom:4px;">记忆提取监控</div>
                 <div style="color:var(--text-muted); font-size:13px;">会显示最近 200 条后台日志；服务重启后会清空。</div>
             </div>
-            <div style="display:flex; gap:8px;">
+            <div style="display:flex; gap:8px; flex-wrap:wrap;">
                 <button class="btn btn-secondary" onclick="loadDashboardLogs()">刷新</button>
+                <button class="btn btn-secondary" onclick="toggleLastRequestBody()">查看上次请求体</button>
                 <button class="btn btn-danger" onclick="clearDashboardLogs()">清空</button>
             </div>
         </div>
+    </div>
+    <div id="last-request-body-panel" class="card" style="display:none; padding:14px 16px; margin-bottom:16px; border-left:4px solid var(--primary);">
+        <div style="display:flex; justify-content:space-between; gap:12px; align-items:center; margin-bottom:8px;">
+            <div>
+                <div style="font-weight:700; font-size:14px;">上次发送给上游模型的请求体</div>
+                <div id="last-request-body-meta" style="color:var(--text-muted); font-size:12px; margin-top:2px;"></div>
+            </div>
+            <button class="btn btn-sm" onclick="toggleLastRequestBody(false)">收起</button>
+        </div>
+        <pre id="last-request-body-content" style="max-height:520px; overflow:auto; white-space:pre-wrap; word-break:break-word; font-size:12px; line-height:1.55; background:rgba(15,23,42,.05); border:1px solid var(--border); border-radius:8px; padding:12px; margin:0;"></pre>
     </div>
     <div id="dashboard-log-list" style="display:flex; flex-direction:column; gap:10px;"></div>
 </section>

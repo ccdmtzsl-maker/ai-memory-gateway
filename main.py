@@ -51,6 +51,9 @@ API_BASE_URL = os.getenv("API_BASE_URL", "https://openrouter.ai/api/v1/chat/comp
 # 默认模型（如果客户端没指定就用这个）
 DEFAULT_MODEL = os.getenv("DEFAULT_MODEL", "anthropic/claude-sonnet-4")
 
+# 主聊天温度参数；留空则不覆盖客户端请求
+CHAT_TEMPERATURE = os.getenv("CHAT_TEMPERATURE", "")
+
 # 网关端口
 PORT = int(os.getenv("PORT", "8080"))
 
@@ -203,7 +206,7 @@ async def lifespan(app: FastAPI):
                 db_cfg = await get_all_gateway_config()
                 if db_cfg:
                     _RESTORE_MAIN = {
-                        "API_BASE_URL": str, "API_KEY": str, "DEFAULT_MODEL": str,
+                        "API_BASE_URL": str, "API_KEY": str, "DEFAULT_MODEL": str, "CHAT_TEMPERATURE": str,
                         "MEMORY_ENABLED": lambda v: _parse_bool(v),
                         "MAX_MEMORIES_INJECT": int, "MEMORY_EXTRACT_INTERVAL": int,
                         "CACHE_PARTITION_ENABLED": lambda v: _parse_bool(v),
@@ -1489,6 +1492,13 @@ async def chat_completions(request: Request):
         model = DEFAULT_MODEL
     body["model"] = model
     
+    # ---------- 温度参数注入 ----------
+    if str(CHAT_TEMPERATURE).strip() != "":
+        try:
+            body["temperature"] = float(CHAT_TEMPERATURE)
+        except Exception:
+            print(f"⚠️ CHAT_TEMPERATURE 无效，跳过注入: {CHAT_TEMPERATURE}")
+
     # ---------- cache_control 兼容性处理 ----------
     if CACHE_PARTITION_ENABLED and not _is_anthropic_model(model):
         _strip_cache_control(body.get("messages", []))
@@ -2848,6 +2858,7 @@ async def get_settings():
             "API_BASE_URL":     db.get("API_BASE_URL") or str(API_BASE_URL),
             "API_KEY":          _mask_key(api_key_raw),
             "DEFAULT_MODEL":    db.get("DEFAULT_MODEL") or str(DEFAULT_MODEL),
+        "CHAT_TEMPERATURE": db.get("CHAT_TEMPERATURE") or str(CHAT_TEMPERATURE),
 
             # 记忆系统
             "MEMORY_ENABLED":          _parse_bool(db.get("MEMORY_ENABLED"), MEMORY_ENABLED),
@@ -2967,6 +2978,7 @@ async def save_settings(request: Request):
             "API_BASE_URL":          str,
             "API_KEY":               str,
             "DEFAULT_MODEL":         str,
+            "CHAT_TEMPERATURE":      str,
             "MEMORY_API_KEY":        str,
             "MEMORY_API_BASE_URL":   str,
             "MEMORY_ENABLED":        lambda v: _parse_bool(v),
@@ -3094,4 +3106,6 @@ if __name__ == "__main__":
         print(f"⚡ 强制流式传输：开启")
     if REASONING_EFFORT:
         print(f"🧠 推理参数注入：{REASONING_EFFORT}")
+    if str(CHAT_TEMPERATURE).strip() != "":
+        print(f"🌡️ 聊天温度参数：{CHAT_TEMPERATURE}")
     uvicorn.run(app, host="0.0.0.0", port=PORT)

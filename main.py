@@ -513,6 +513,53 @@ def extract_environment_bundle_from_text(text: str) -> tuple[str, str, str]:
     return cleaned, env_text, attachment_time
 
 
+def extract_operit_memory_attachment_from_text(text: str) -> tuple[str, str]:
+    """识别 Operit 原生记忆库手动注入的相关记忆附件。
+    返回: (清理后的用户文本, 格式化后的记忆上下文)
+    """
+    if not isinstance(text, str) or "<attachment" not in text or "相关记忆" not in text:
+        return text, ""
+
+    memory_bodies = []
+
+    def repl(match):
+        attrs = match.group(1) or ""
+        body = (match.group(2) or "").strip()
+        filename_match = re.search(r'filename="([^"]+)"', attrs)
+        filename = filename_match.group(1) if filename_match else ""
+
+        if filename != "相关记忆" and "【相关记忆】" not in body:
+            return match.group(0)
+        if not body:
+            return ""
+
+        memory_bodies.append(body)
+        return ""
+
+    cleaned = re.sub(r'<attachment([^>]*)>(.*?)</attachment>', repl, text, flags=re.S).strip()
+    if not memory_bodies:
+        return cleaned, ""
+
+    memory_text = "\n\n".join(memory_bodies).strip()
+    formatted = f"""【从operit记忆库中检索到的相关记忆】
+{memory_text}
+
+# 记忆应用
+- 像朋友般自然运用这些记忆，不刻意展示
+- 仅在相关话题出现时引用，避免主动提及
+- 对重要信息（如健康、日期、约定）保持一致性
+- 新信息与记忆冲突时，以新信息为准
+- 模糊记忆可表达不确定性：\"记得你似乎说过...\"
+
+# 交流方式
+- 自然引用：\"记得你说过...\"或\"上次我们聊到...\"
+- 避免机械式表达如\"根据我的记忆...\"或\"检索到的信息显示...\"
+- 共同经历可温情回忆：\"上次那个事挺好玩的\"
+
+记忆是丰富对话的工具，而非对话焦点。"""
+    return cleaned, formatted
+
+
 def extract_proxy_sender_context_from_text(text: str) -> tuple[str, str, str]:
     """识别 Operit 插件注入的 proxy_sender 上下文，例如一起听歌。
     返回: (用户真实文本, 轻量上下文, 附件时间戳)
@@ -905,6 +952,7 @@ async def build_partitioned_messages(
             )
         
         current_text, env_text, attachment_time = extract_environment_bundle_from_text(current_text)
+        current_text, operit_memory_text = extract_operit_memory_attachment_from_text(current_text)
         current_text, proxy_env_text, proxy_time = extract_proxy_sender_context_from_text(current_text)
         if proxy_env_text:
             env_text = "\n\n".join(part for part in [env_text, proxy_env_text] if part)
@@ -923,6 +971,14 @@ async def build_partitioned_messages(
             mem_text = await build_memory_text(user_message)
             if mem_text:
                 result.append({"role": "system", "content": mem_text})
+
+        # Operit 原生记忆附件放在最底部，按用户手动检索结果使用。
+        if operit_memory_text:
+            result.append({"role": "system", "content": operit_memory_text})
+
+        # Operit 原生记忆附件放在最底部，按用户手动检索结果使用。
+        if operit_memory_text:
+            result.append({"role": "system", "content": operit_memory_text})
     
     bp_count = 1 + (1 if summary_parts else 0) + (1 if cleaned_a else 0) + (1 if b_msgs else 0)
     summary_total = sum(len(p) for p in summary_parts)
@@ -967,6 +1023,7 @@ async def _build_basic_cached(
             )
         
         current_text, env_text, attachment_time = extract_environment_bundle_from_text(current_text)
+        current_text, operit_memory_text = extract_operit_memory_attachment_from_text(current_text)
         current_text, proxy_env_text, proxy_time = extract_proxy_sender_context_from_text(current_text)
         if proxy_env_text:
             env_text = "\n\n".join(part for part in [env_text, proxy_env_text] if part)
@@ -1035,6 +1092,8 @@ def clean_user_message_for_log(user_msg: str, history: list = None) -> str:
     cleaned, _env_text, attachment_time = extract_environment_bundle_from_text(cleaned)
     if attachment_time:
         time_text = attachment_time
+
+    cleaned, _operit_memory_text = extract_operit_memory_attachment_from_text(cleaned)
 
     cleaned, _proxy_env_text, proxy_time = extract_proxy_sender_context_from_text(cleaned)
     if proxy_time and not time_text:

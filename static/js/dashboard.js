@@ -1973,7 +1973,8 @@ const _SETTINGS_FIELDS = {
     str: ['API_BASE_URL', 'API_KEY', 'DEFAULT_MODEL', 'MEMORY_API_KEY', 'MEMORY_API_BASE_URL', 'MEMORY_MODEL',
           'CACHE_SUMMARY_MODEL', 'CACHE_PARTITION_TRIGGER', 'EMBEDDING_API_KEY', 'EMBEDDING_BASE_URL', 'EMBEDDING_MODEL', 'REASONING_EFFORT'],
     int: ['MAX_MEMORIES_INJECT', 'MEMORY_EXTRACT_INTERVAL', 'CACHE_PARTITION_X', 'CACHE_PARTITION_WINDOW', 'EMBEDDING_DIM'],
-    float: ['MIN_SCORE_THRESHOLD', 'CHAT_TEMPERATURE'],
+    float: ['MIN_SCORE_THRESHOLD'],
+    optionalFloat: ['CHAT_TEMPERATURE'],
     bool: ['MEMORY_ENABLED', 'CACHE_PARTITION_ENABLED', 'MEMORY_VECTOR_ENABLED', 'FORCE_STREAM'],
     range: ['MEMORY_HW_KEYWORD', 'MEMORY_HW_SEMANTIC', 'MEMORY_HW_IMPORTANCE',
             'MEMORY_HW_RECENCY', 'MEMORY_SEMANTIC_THRESHOLD'],
@@ -2014,6 +2015,11 @@ async function loadSettings() {
         _SETTINGS_FIELDS.float.forEach(k => {
             const el = document.getElementById('set-' + k);
             if (el) el.value = s[k];
+        });
+        // 可留空浮点
+        (_SETTINGS_FIELDS.optionalFloat || []).forEach(k => {
+            const el = document.getElementById('set-' + k);
+            if (el) el.value = s[k] === undefined || s[k] === null ? '' : s[k];
         });
         // 布尔（checkbox）
         _SETTINGS_FIELDS.bool.forEach(k => {
@@ -2072,6 +2078,11 @@ async function saveSettings() {
     _SETTINGS_FIELDS.float.forEach(k => {
         const el = document.getElementById('set-' + k);
         if (el) payload[k] = parseFloat(el.value) || 0;
+    });
+    // 可留空浮点
+    (_SETTINGS_FIELDS.optionalFloat || []).forEach(k => {
+        const el = document.getElementById('set-' + k);
+        if (el) payload[k] = el.value.trim() === '' ? '' : parseFloat(el.value);
     });
     // 布尔
     _SETTINGS_FIELDS.bool.forEach(k => {

@@ -489,6 +489,11 @@
                         </div>
                         <small class="form-hint"><span id="model-count-hint"></span> <a href="#" onclick="loadModelList();return false;" style="color:var(--primary);">刷新列表</a></small>
                     </div>
+                    <div class="settings-field">
+                        <label>温度参数 (CHAT_TEMPERATURE)</label>
+                        <input type="number" id="set-CHAT_TEMPERATURE" class="input" min="0" max="2" step="0.01" placeholder="留空则不覆盖客户端">
+                        <small class="form-hint">主聊天请求的 temperature；留空时沿用客户端原请求，填写后会覆盖发送给上游的温度。</small>
+                    </div>
                 </div>
 
                 <!-- 记忆系统 -->
@@ -648,6 +653,6 @@
         </main>
     </div>
 
-    <script src="/static/js/dashboard.js?v=3.8"></script>
+    <script src="/static/js/dashboard.js?v=3.9"></script>
 </body>
 </html>

@@ -1975,10 +1975,10 @@ const _SETTINGS_FIELDS = {
     int: ['MAX_MEMORIES_INJECT', 'MEMORY_EXTRACT_INTERVAL', 'CACHE_PARTITION_X', 'CACHE_PARTITION_WINDOW', 'EMBEDDING_DIM'],
     float: ['MIN_SCORE_THRESHOLD'],
     optionalFloat: ['CHAT_TEMPERATURE'],
-    bool: ['MEMORY_ENABLED', 'CACHE_PARTITION_ENABLED', 'MEMORY_VECTOR_ENABLED', 'FORCE_STREAM'],
+    bool: ['MEMORY_ENABLED', 'CACHE_PARTITION_ENABLED', 'MEMORY_VECTOR_ENABLED', 'FORCE_STREAM', 'RESPONSE_TRANSFORM_ENABLED'],
     range: ['MEMORY_HW_KEYWORD', 'MEMORY_HW_SEMANTIC', 'MEMORY_HW_IMPORTANCE',
             'MEMORY_HW_RECENCY', 'MEMORY_SEMANTIC_THRESHOLD'],
-    text: ['systemPrompt'],
+    text: ['systemPrompt', 'RESPONSE_TRANSFORM_RULES'],
 };
 
 const _MODEL_COMBOS = ['DEFAULT_MODEL', 'MEMORY_MODEL', 'CACHE_SUMMARY_MODEL'];
@@ -2032,11 +2032,11 @@ async function loadSettings() {
             if (el) { el.value = s[k]; updateSliderVal(k); }
         });
         // 长文本
-        const promptEl = document.getElementById('set-systemPrompt');
-        if (promptEl) {
-            promptEl.value = s.systemPrompt || '';
-            updatePromptCount();
-        }
+        _SETTINGS_FIELDS.text.forEach(k => {
+            const el = document.getElementById('set-' + k);
+            if (el) el.value = s[k] || '';
+        });
+        updatePromptCount();
         // REASONING_EFFORT 下拉
         const reEl = document.getElementById('set-REASONING_EFFORT');
         if (reEl) reEl.value = s.REASONING_EFFORT || '';
@@ -2095,8 +2095,10 @@ async function saveSettings() {
         if (el) payload[k] = parseFloat(el.value) || 0;
     });
     // 长文本
-    const promptEl = document.getElementById('set-systemPrompt');
-    if (promptEl) payload.systemPrompt = promptEl.value;
+    _SETTINGS_FIELDS.text.forEach(k => {
+        const el = document.getElementById('set-' + k);
+        if (el) payload[k] = el.value;
+    });
 
     try {
         const resp = await fetch('/api/settings', {

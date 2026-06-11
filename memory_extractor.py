@@ -37,6 +37,41 @@ def get_memory_api_base_url() -> str:
     return MEMORY_API_BASE_URL
 
 
+def _parse_json_array_from_text(text: str):
+    """Parse a JSON array from model output that may contain extra prose or fences."""
+    cleaned = (text or "").strip()
+    if cleaned.startswith("```json"):
+        cleaned = cleaned[7:]
+    if cleaned.startswith("```"):
+        cleaned = cleaned[3:]
+    if cleaned.endswith("```"):
+        cleaned = cleaned[:-3]
+    cleaned = cleaned.strip()
+
+    try:
+        parsed = json.loads(cleaned)
+        if isinstance(parsed, list):
+            return parsed
+    except json.JSONDecodeError:
+        pass
+
+    starts = [idx for idx, char in enumerate(cleaned) if char == "["]
+    ends = [idx for idx, char in enumerate(cleaned) if char == "]"]
+    for start in starts:
+        for end in reversed(ends):
+            if end <= start:
+                continue
+            candidate = cleaned[start:end + 1]
+            try:
+                parsed = json.loads(candidate)
+                if isinstance(parsed, list):
+                    return parsed
+            except json.JSONDecodeError:
+                continue
+
+    raise json.JSONDecodeError("No valid JSON array found in model output", cleaned, 0)
+
+
 EXTRACTION_PROMPT = """你是信息提取专家，负责从对话中识别并提取值得长期记住的关键信息。
 
 # 提取重点
@@ -167,35 +202,12 @@ async def extract_memories(messages: List[Dict[str, str]], existing_memories: Li
             # 打印模型原始返回（截断防刷屏）
             print(f"📝 记忆模型原始返回:\n{text[:500]}", flush=True)
 
-            # 清理可能的 markdown 格式
-            text = text.strip()
-            if text.startswith("```json"):
-                text = text[7:]
-            if text.startswith("```"):
-                text = text[3:]
-            if text.endswith("```"):
-                text = text[:-3]
-            text = text.strip()
-
-            # 强力JSON提取：如果上面清理后仍然解析失败，用正则兜底
             try:
-                memories = json.loads(text)
-            except json.JSONDecodeError:
-                # 尝试从文本中提取第一个 [...] 结构
-                import re
-                match = re.search(r'\[.*\]', text, re.DOTALL)
-                if match:
-                    try:
-                        memories = json.loads(match.group())
-                        print(f"📝 JSON正则兜底提取成功")
-                    except json.JSONDecodeError as e:
-                        LAST_EXTRACTION_DEBUG = {"status": "json_error", "message": str(e), "model": MEMORY_MODEL, "base_url": get_memory_api_base_url()}
-                        print(f"⚠️  记忆提取结果解析失败: {e}")
-                        return []
-                else:
-                    LAST_EXTRACTION_DEBUG = {"status": "json_error", "message": "返回中未找到JSON数组", "model": MEMORY_MODEL, "base_url": get_memory_api_base_url()}
-                    print(f"⚠️  记忆提取结果中未找到JSON数组")
-                    return []
+                memories = _parse_json_array_from_text(text)
+            except json.JSONDecodeError as e:
+                LAST_EXTRACTION_DEBUG = {"status": "json_error", "message": str(e), "model": MEMORY_MODEL, "base_url": get_memory_api_base_url()}
+                print(f"⚠️  记忆提取结果解析失败: {e}")
+                return []
 
             if not isinstance(memories, list):
                 LAST_EXTRACTION_DEBUG = {"status": "json_error", "message": "返回JSON不是数组", "model": MEMORY_MODEL, "base_url": get_memory_api_base_url()}

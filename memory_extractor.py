@@ -27,8 +27,6 @@ MEMORY_API_KEY = os.getenv("MEMORY_API_KEY", "")
 
 # 用来提取记忆的模型（便宜的就行）
 MEMORY_MODEL = os.getenv("MEMORY_MODEL", "anthropic/claude-haiku-4")
-MEMORY_MAX_INPUT_CHARS = int(os.getenv("MEMORY_MAX_INPUT_CHARS", "12000"))
-MEMORY_MAX_EXISTING_CHARS = int(os.getenv("MEMORY_MAX_EXISTING_CHARS", "6000"))
 
 # 最近一次提取状态，供主流程判断是否移动“提取书签”
 LAST_EXTRACTION_DEBUG = {"status": "idle"}
@@ -208,15 +206,9 @@ async def extract_memories(messages: List[Dict[str, str]], existing_memories: Li
         LAST_EXTRACTION_DEBUG = {"status": "empty_input", "message": "输入消息没有 user/assistant 文本", "model": MEMORY_MODEL, "base_url": get_memory_api_base_url()}
         return []
 
-    # 限制请求体大小，避免中转站/Cloudflare WAF 因大 body 拦截。
-    if len(conversation_text) > MEMORY_MAX_INPUT_CHARS:
-        conversation_text = conversation_text[-MEMORY_MAX_INPUT_CHARS:]
-
     # 格式化已有记忆
     if existing_memories:
         memories_text = "\n".join(f"- {m}" for m in existing_memories)
-        if len(memories_text) > MEMORY_MAX_EXISTING_CHARS:
-            memories_text = memories_text[-MEMORY_MAX_EXISTING_CHARS:]
     else:
         memories_text = "（暂无已知信息）"
 
@@ -231,8 +223,8 @@ async def extract_memories(messages: List[Dict[str, str]], existing_memories: Li
                 headers={
                     "Authorization": f"Bearer {get_memory_api_key()}",
                     "Content-Type": "application/json",
-                    "Accept": "application/json",
-                    "User-Agent": "ai-memory-gateway/1.0",
+                    "HTTP-Referer": "https://midsummer-gateway.local",
+                    "X-Title": "Midsummer Memory Extraction",
                 },
                 json={
                     "model": MEMORY_MODEL,

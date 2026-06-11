@@ -1443,7 +1443,23 @@ async def chat_completions(request: Request):
     
     body = await request.json()
     messages = body.get("messages", [])
-    
+
+    # ---------- 入口诊断日志（无条件打印，定位请求是否真的进入网关） ----------
+    try:
+        _entry_msg_count = len(messages)
+        _entry_body_chars = len(json.dumps(body, ensure_ascii=False))
+        _entry_has_summary = any(
+            ("摘要" in str(m.get("content", ""))) or ("summary" in str(m.get("content", "")).lower())
+            for m in messages
+        )
+        add_dashboard_log(
+            "info",
+            f"入口收到主对话请求：messages={_entry_msg_count}，body≈{_entry_body_chars}字，含摘要关键词={_entry_has_summary}",
+            category="chat",
+        )
+    except Exception as _e:
+        print(f"⚠️ 入口诊断日志失败: {_e}", flush=True)
+
     # ---------- 检测是否应跳过对话存储 ----------
     # 客户端通过header显式声明（如标题生成等辅助请求）
     skip_conversation_log = request.headers.get("X-Skip-Conversation-Log", "").lower() == "true"

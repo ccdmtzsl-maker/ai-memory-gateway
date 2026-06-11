@@ -691,7 +691,7 @@ async def generate_summary(messages: list, session_id: str = "") -> str:
             print("⚠️ 摘要生成跳过: MEMORY_API_BASE_URL 未设置（不会回退到主 API_BASE_URL）")
             return ""
 
-        summary_model = os.getenv("MEMORY_MODEL", "anthropic/claude-haiku-4")
+        summary_model = CACHE_SUMMARY_MODEL or os.getenv("MEMORY_MODEL", "anthropic/claude-haiku-4")
 
         if "openrouter" in memory_api_base_url:
             headers["HTTP-Referer"] = EXTRA_REFERER
@@ -700,15 +700,22 @@ async def generate_summary(messages: list, session_id: str = "") -> str:
         async with httpx.AsyncClient(timeout=60) as client:
             response = await client.post(memory_api_base_url, headers=headers, json={
                 "model": summary_model,
-                "max_tokens": 1500,
+                "max_tokens": 3000,
                 "temperature": 0.2,
                 "messages": [{"role": "user", "content": prompt}],
             })
             if response.status_code == 200:
                 data = response.json()
                 if "choices" in data:
-                    summary = data["choices"][0]["message"]["content"].strip()
-                    print(f"📝 摘要生成完成: {len(summary)}字 (压缩{len(messages)}条消息)")
+                    choice = data["choices"][0]
+                    summary = choice["message"]["content"].strip()
+                    finish_reason = choice.get("finish_reason", "")
+                    if finish_reason:
+                        print(f"📝 摘要生成完成: {len(summary)}字 (压缩{len(messages)}条消息, finish_reason={finish_reason})")
+                    else:
+                        print(f"📝 摘要生成完成: {len(summary)}字 (压缩{len(messages)}条消息)")
+                    if finish_reason in ("length", "max_tokens"):
+                        print("⚠️ 摘要可能被上游截断：finish_reason=length/max_tokens")
                     return summary
 
         print(f"⚠️ 摘要生成失败: HTTP {response.status_code} {response.text[:500]}")
@@ -2652,7 +2659,7 @@ async def api_partition_status():
         "enabled": CACHE_PARTITION_ENABLED,
         "active_session_id": active_sid,
         "partition_x": CACHE_PARTITION_X,
-        "summary_model": os.getenv("MEMORY_MODEL", "anthropic/claude-haiku-4"),
+        "summary_model": CACHE_SUMMARY_MODEL or os.getenv("MEMORY_MODEL", "anthropic/claude-haiku-4"),
         "summary": '\n\n'.join(state.get('summary_parts', [])),
         "summary_parts": state.get('summary_parts', []),
         "summary_count": len(state.get('summary_parts', [])),

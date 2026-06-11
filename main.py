@@ -1730,6 +1730,15 @@ async def chat_completions(request: Request):
                             "status": response.status_code,
                         }
                     }
+                msg_count = len(body.get("messages", []) or [])
+                body_chars = len(json.dumps(body, ensure_ascii=False))
+                preview = response.text[:180]
+                add_dashboard_log(
+                    "error",
+                    f"主对话上游失败 HTTP {response.status_code}，对话线={session_id}，messages={msg_count}，body≈{body_chars}字，返回片段={preview}",
+                    category="chat",
+                    session_id=session_id,
+                )
                 return JSONResponse(status_code=response.status_code, content=error_content)
 
 
@@ -1758,7 +1767,15 @@ async def stream_and_capture(headers: dict, body: dict, session_id: str, user_me
             if is_error:
                 raw_error = await response.aread()
                 error_text = raw_error.decode("utf-8", errors="ignore")[:1000]
+                msg_count = len(body.get("messages", []) or [])
+                body_chars = len(json.dumps(body, ensure_ascii=False))
                 print(f"❌ 上游错误内容: {error_text[:500]}", flush=True)
+                add_dashboard_log(
+                    "error",
+                    f"主对话上游失败 HTTP {response.status_code}，对话线={session_id}，messages={msg_count}，body≈{body_chars}字，返回片段={error_text[:180]}",
+                    category="chat",
+                    session_id=session_id,
+                )
                 safe_error = {
                     "id": f"chatcmpl-error-{uuid.uuid4().hex[:12]}",
                     "object": "chat.completion.chunk",

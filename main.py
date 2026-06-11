@@ -1720,7 +1720,17 @@ async def chat_completions(request: Request):
                 
                 return JSONResponse(status_code=200, content=resp_data)
             else:
-                return JSONResponse(status_code=response.status_code, content=response.json())
+                try:
+                    error_content = response.json()
+                except Exception:
+                    error_content = {
+                        "error": {
+                            "message": response.text[:1000],
+                            "type": "upstream_error",
+                            "status": response.status_code,
+                        }
+                    }
+                return JSONResponse(status_code=response.status_code, content=error_content)
 
 
 async def stream_and_capture(headers: dict, body: dict, session_id: str, user_message: str, model: str, original_messages: list = None, skip_conversation_log: bool = False, tool_messages: list = None):
@@ -1744,14 +1754,29 @@ async def stream_and_capture(headers: dict, body: dict, session_id: str, user_me
             
             error_body_parts = []
             is_error = response.status_code != 200
+
+            if is_error:
+                raw_error = await response.aread()
+                error_text = raw_error.decode("utf-8", errors="ignore")[:1000]
+                print(f"❌ 上游错误内容: {error_text[:500]}", flush=True)
+                safe_error = {
+                    "id": f"chatcmpl-error-{uuid.uuid4().hex[:12]}",
+                    "object": "chat.completion.chunk",
+                    "created": int(datetime.now(timezone.utc).timestamp()),
+                    "model": body.get("model", model),
+                    "choices": [{
+                        "index": 0,
+                        "delta": {"content": f"上游接口请求失败：HTTP {response.status_code}。请在网关后台日志查看详情。"},
+                        "finish_reason": "stop",
+                    }],
+                }
+                yield f"data: {json.dumps(safe_error, ensure_ascii=False)}\n\n".encode("utf-8")
+                yield b"data: [DONE]\n\n"
+                return
             
             async for chunk in response.aiter_bytes():
                 # 原始字节直接透传给客户端
                 yield chunk
-                
-                if is_error:
-                    error_body_parts.append(chunk)
-                    continue
                 
                 # 旁路解析：从字节流中提取assistant回复内容，用于后续记忆提取
                 text = chunk.decode("utf-8", errors="ignore")
@@ -1805,11 +1830,7 @@ async def stream_and_capture(headers: dict, body: dict, session_id: str, user_me
     if assistant_reasoning:
         print(f"🧠 Stream response 包含 reasoning_content ({len(assistant_reasoning)}字符)")
     
-    # 打印上游错误内容
-    if error_body_parts:
-        error_text = b"".join(error_body_parts).decode("utf-8", errors="ignore")[:500]
-        print(f"❌ 上游错误内容: {error_text}", flush=True)
-    
+    # 上游非 200 已在流开始时转成 OpenAI 兼容 SSE 错误，不再透传 HTML/JSON 错误页。
     if assistant_tool_calls:
         print(f"🔧 Stream response 包含 {len(assistant_tool_calls)} 个工具调用")
     

@@ -102,7 +102,7 @@ def _parse_json_array_from_text(text: str):
                 continue
 
     fallback = []
-    for match in re.finditer(r'"content"\s*:\s*"((?:\\.|[^"\\])*)"', cleaned, flags=re.S):
+    for match in re.finditer(r'"content"\s*:\s*"((?:\\.|[^"\\])*)("?)', cleaned, flags=re.S):
         raw_content = match.group(1)
         try:
             content = json.loads(f'"{raw_content}"')
@@ -228,7 +228,8 @@ async def extract_memories(messages: List[Dict[str, str]], existing_memories: Li
                 },
                 json={
                     "model": MEMORY_MODEL,
-                    "max_tokens": 1000,
+                    "max_tokens": 4000,
+                    "temperature": 0,
                     "messages": [
                         {"role": "system", "content": prompt},
                         {"role": "user", "content": f"请从以下对话中提取新的记忆：\n\n{conversation_text}"},

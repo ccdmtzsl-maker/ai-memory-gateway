@@ -1368,12 +1368,18 @@ async def process_memories_background(session_id: str, user_msg: str, assistant_
                 source_session=session_id,
             )
         
-        extract_status = getattr(_me_mod, "LAST_EXTRACTION_DEBUG", {}).get("status")
+        extract_debug = getattr(_me_mod, "LAST_EXTRACTION_DEBUG", {}) or {}
+        extract_status = extract_debug.get("status")
         if extract_status == "parsed":
             await set_gateway_config(cursor_key, str(extract_end_round))
             add_dashboard_log("success", f"🔖 记忆提取书签已移动到第 {extract_end_round} 轮", session_id=session_id)
         else:
-            add_dashboard_log("warn", f"⚠️ 记忆提取未确认成功，书签停在第 {last_extracted_round} 轮（状态: {extract_status}）", session_id=session_id)
+            detail = extract_debug.get("message") or ""
+            raw_preview = extract_debug.get("raw_preview") or ""
+            suffix = f"：{detail}" if detail else ""
+            if raw_preview:
+                suffix += f"；返回片段：{raw_preview[:180]}"
+            add_dashboard_log("warn", f"⚠️ 记忆提取未确认成功，书签停在第 {last_extracted_round} 轮（状态: {extract_status}）{suffix}", session_id=session_id)
 
         if filtered_memories:
             total = await get_all_memories_count()

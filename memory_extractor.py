@@ -48,10 +48,25 @@ def _parse_json_array_from_text(text: str):
         cleaned = cleaned[:-3]
     cleaned = cleaned.strip()
 
-    try:
-        parsed = json.loads(cleaned)
+    def normalize(parsed):
         if isinstance(parsed, list):
             return parsed
+        if isinstance(parsed, dict):
+            if "content" in parsed:
+                return [parsed]
+            for key in ("memories", "memory", "items", "data", "result", "results"):
+                value = parsed.get(key)
+                if isinstance(value, list):
+                    return value
+                if isinstance(value, dict) and "content" in value:
+                    return [value]
+        return None
+
+    try:
+        parsed = json.loads(cleaned)
+        normalized = normalize(parsed)
+        if normalized is not None:
+            return normalized
     except json.JSONDecodeError:
         pass
 
@@ -64,12 +79,28 @@ def _parse_json_array_from_text(text: str):
             candidate = cleaned[start:end + 1]
             try:
                 parsed = json.loads(candidate)
-                if isinstance(parsed, list):
-                    return parsed
+                normalized = normalize(parsed)
+                if normalized is not None:
+                    return normalized
             except json.JSONDecodeError:
                 continue
 
-    raise json.JSONDecodeError("No valid JSON array found in model output", cleaned, 0)
+    object_starts = [idx for idx, char in enumerate(cleaned) if char == "{"]
+    object_ends = [idx for idx, char in enumerate(cleaned) if char == "}"]
+    for start in object_starts:
+        for end in reversed(object_ends):
+            if end <= start:
+                continue
+            candidate = cleaned[start:end + 1]
+            try:
+                parsed = json.loads(candidate)
+                normalized = normalize(parsed)
+                if normalized is not None:
+                    return normalized
+            except json.JSONDecodeError:
+                continue
+
+    raise json.JSONDecodeError("No valid memory JSON found in model output", cleaned, 0)
 
 
 EXTRACTION_PROMPT = """你是信息提取专家，负责从对话中识别并提取值得长期记住的关键信息。
@@ -205,8 +236,8 @@ async def extract_memories(messages: List[Dict[str, str]], existing_memories: Li
             try:
                 memories = _parse_json_array_from_text(text)
             except json.JSONDecodeError as e:
-                LAST_EXTRACTION_DEBUG = {"status": "json_error", "message": str(e), "model": MEMORY_MODEL, "base_url": get_memory_api_base_url()}
-                print(f"⚠️  记忆提取结果解析失败: {e}")
+                LAST_EXTRACTION_DEBUG = {"status": "json_error", "message": str(e), "raw_preview": text[:300], "model": MEMORY_MODEL, "base_url": get_memory_api_base_url()}
+                print(f"⚠️  记忆提取结果解析失败: {e}; raw={text[:300]}")
                 return []
 
             if not isinstance(memories, list):

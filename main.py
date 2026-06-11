@@ -665,13 +665,21 @@ async def generate_summary(messages: list, session_id: str = "") -> str:
         content = msg['content'] if isinstance(msg['content'], str) else str(msg['content'])
         conversation_text += f"{role_label}: {content}\n\n"
     
-    prompt = f"""请将以下对话压缩成简洁摘要。保留关键信息（事件、决定、情感、约定），去掉日常寒暄和重复内容。用第三人称叙述，控制在300字以内。
+    prompt = f"""请为分区缓存生成一段可长期承接上下文的滚动摘要。
+
+要求：
+- 保留用户明确说过的重要事实、偏好、计划、约定、情绪变化、项目进展和关键互动
+- 保留会影响后续对话理解的细节，不要只写一句泛泛总结
+- 去掉纯寒暄、重复内容和无意义语气词
+- 使用第三人称或中性叙述，避免加入模型没有看到的新信息
+- 如果内容较多，按要点分段；不要强行压缩到几十字
+- 目标长度约 600-1000 字，信息少时可以更短
 
 ---
 {conversation_text}
 ---
 
-摘要："""
+滚动摘要："""
     
     try:
         headers = {
@@ -692,7 +700,8 @@ async def generate_summary(messages: list, session_id: str = "") -> str:
         async with httpx.AsyncClient(timeout=60) as client:
             response = await client.post(memory_api_base_url, headers=headers, json={
                 "model": summary_model,
-                "max_tokens": 500,
+                "max_tokens": 1500,
+                "temperature": 0.2,
                 "messages": [{"role": "user", "content": prompt}],
             })
             if response.status_code == 200:

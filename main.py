@@ -427,57 +427,6 @@ def _strip_cache_control(messages: list):
 
 
 
-def normalize_tool_pairing(messages: list) -> list:
-    """
-    严格规范化消息序列中的 assistant(tool_calls) 与 tool 配对，
-    保证发送给上游的一定是合法序列。规则：
-
-    1. 收集每条 assistant(tool_calls) 声明的 tool_call_id；
-    2. 在整个列表里找它们对应的 tool 消息（按 id 匹配）；
-    3. 若该 assistant 声明的 tool 全部齐全 -> 输出 assistant，紧跟其 tool（按声明顺序）；
-    4. 若有任何声明的 tool 缺失 -> 把该 assistant 降级为普通 assistant（去掉 tool_calls）；
-    5. 任何没有被匹配 assistant 消费的 tool -> 作为孤立 tool 丢弃。
-
-    该函数与顺序无关、可重复执行（幂等）。
-    """
-    # 建立 tool_call_id -> tool message 的索引（同 id 多条时取第一条）
-    tool_by_id = {}
-    for m in messages:
-        if m.get("role") == "tool":
-            tid = m.get("tool_call_id")
-            if tid and tid not in tool_by_id:
-                tool_by_id[tid] = m
-
-    result = []
-    consumed_tool_ids = set()
-    downgraded = 0
-    for m in messages:
-        role = m.get("role")
-        if role == "tool":
-            # tool 由 assistant 分支统一输出，这里跳过；孤立的最后统计
-            continue
-        if role == "assistant" and m.get("tool_calls"):
-            declared = [tc.get("id") for tc in m["tool_calls"] if tc.get("id")]
-            # 检查声明的 tool 是否全部存在
-            if declared and all(tid in tool_by_id for tid in declared):
-                result.append(m)
-                for tid in declared:
-                    result.append(tool_by_id[tid])
-                    consumed_tool_ids.add(tid)
-            else:
-                # 缺失 tool -> 降级为普通 assistant
-                downgraded += 1
-                result.append({"role": "assistant", "content": m.get("content") or ""})
-        else:
-            result.append(m)
-
-    orphan_ids = [tid for tid in tool_by_id if tid not in consumed_tool_ids]
-    if orphan_ids:
-        print(f"🛡️ normalize_tool_pairing: 丢弃{len(orphan_ids)}条孤立tool (ids: {orphan_ids})")
-    if downgraded:
-        print(f"🛡️ normalize_tool_pairing: 降级{downgraded}条缺失tool结果的assistant(tool_calls)")
-    return result
-
 
 def _convert_replacement_groups(replacement: str) -> str:
     """把 Dashboard 里更直观的 $1/$2 替换写法转成 Python re.sub 的 \\1/\\2。"""
@@ -967,24 +916,7 @@ async def build_partitioned_messages(
         print(f"⚠️ 清理了 {orphan_count} 条孤立tool消息")
     history = cleaned
     
-    # 清洗悬空的 assistant(tool_calls)（后面没有跟 tool 的）
-    # 这些可能来自失败的工具轮残留，会导致上游 429
-    cleaned2 = []
-    dangling_ast_count = 0
-    for i, msg in enumerate(history):
-        if msg.get('role') == 'assistant' and msg.get('tool_calls'):
-            # 检查后面是否紧跟 tool
-            next_msg = history[i + 1] if i + 1 < len(history) else None
-            if next_msg and next_msg.get('role') == 'tool':
-                cleaned2.append(msg)
-            else:
-                dangling_ast_count += 1
-        else:
-            cleaned2.append(msg)
-    if dangling_ast_count > 0:
-        print(f"⚠️ 清理了 {dangling_ast_count} 条悬空assistant(tool_calls)")
-    history = cleaned2
-    
+
     # 按逻辑轮分组（解决tool消息导致的轮计数错乱）
     rounds = group_by_rounds(history)
     total_rounds = len(rounds)
@@ -1788,21 +1720,15 @@ async def chat_completions(request: Request):
                                     break
         all_msgs = db_msgs + client_new_msgs
         
-        # 同步更新tool_messages用于存储：从原始messages里取当前轮tool（带完整content），
-        # 避免用被去重处理过的client_new_msgs（可能丢content或漏当前轮）
-        if last_tc_ast:
-            _cur_tc_ids = {tc.get("id") for tc in last_tc_ast.get("tool_calls", []) if tc.get("id")}
-            tool_messages = [m for m in messages if m.get("role") == "tool" and m.get("tool_call_id") in _cur_tc_ids]
-        else:
-            tool_messages = [m for m in client_new_msgs if m.get("role") == "tool"]
+        # 同步更新tool_messages，避免process_memories_background存重复的旧tool
+        tool_messages = [m for m in client_new_msgs if m.get("role") == "tool"]
         
         print(f"📦 分区模式: DB历史{len(db_msgs)}条 + 客户端消息{len(client_new_msgs)}条")
         
         messages = await build_partitioned_messages(
             session_id, all_msgs, partition_base_prompt, user_message
         )
-        # 最终安全网：用统一的规范化函数保证发送序列的 tool 配对一定合法
-        messages = normalize_tool_pairing(messages)
+
         body["messages"] = messages
     
     else:
@@ -2767,31 +2693,13 @@ async def api_conversation_messages(session_id: str, limit: int = 50, offset: in
                 "SELECT COUNT(*) FROM conversations WHERE session_id = $1", session_id
             )
             rows = await conn.fetch("""
-                SELECT id, role, content, metadata, created_at
+                SELECT id, role, content, created_at
                 FROM conversations WHERE session_id = $1
                 ORDER BY created_at DESC
                 LIMIT $2 OFFSET $3
             """, session_id, limit, offset)
-        msgs = []
-        for r in rows:
-            item = {"id": r["id"], "role": r["role"], "content": r["content"],
-                    "created_at": r["created_at"].isoformat() if r.get("created_at") else None}
-            meta_raw = r.get("metadata")
-            if meta_raw:
-                try:
-                    meta = json.loads(meta_raw) if isinstance(meta_raw, str) else meta_raw
-                    if isinstance(meta, dict):
-                        if meta.get("tool_calls"):
-                            item["tool_calls"] = meta["tool_calls"]
-                        if meta.get("tool_call_id"):
-                            item["tool_call_id"] = meta["tool_call_id"]
-                        if meta.get("name"):
-                            item["name"] = meta["name"]
-                        if meta.get("reasoning_content"):
-                            item["reasoning_content"] = meta["reasoning_content"]
-                except (json.JSONDecodeError, TypeError):
-                    pass
-            msgs.append(item)
+        msgs = [{"id": r["id"], "role": r["role"], "content": r["content"], 
+                 "created_at": r["created_at"].isoformat() if r.get("created_at") else None} for r in rows]
         return {"messages": msgs, "total": total}
     except Exception as e:
         return {"error": str(e)}

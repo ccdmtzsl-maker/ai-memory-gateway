@@ -1616,19 +1616,55 @@ async def chat_completions(request: Request):
             else:
                 # DB在等待tool → 只保留匹配当前轮次assistant(tool_calls)的tool
                 expected_tool_ids = {tc.get("id") for tc in db_last.get("tool_calls", []) if tc.get("id")}
+                client_tool_ids_set = {m.get("tool_call_id") for m in client_tools if m.get("tool_call_id")}
                 new_tools = [m for m in client_tools if m.get("tool_call_id") in expected_tool_ids]
                 stale_tools = [m for m in client_tools if m.get("tool_call_id") not in expected_tool_ids]
                 
-                if stale_tools:
-                    print(f"🔧 去重: 丢弃{len(stale_tools)}条非当前轮次tool (ids: {[m.get('tool_call_id','?') for m in stale_tools]})")
-                if new_tools:
-                    print(f"🔧 保留{len(new_tools)}条当前轮次tool (ids: {[m.get('tool_call_id','?') for m in new_tools]})")
+                if not new_tools and client_tool_ids_set and not (expected_tool_ids & client_tool_ids_set):
+                    # DB末尾的assistant(tool_calls)是旧的残留，ID完全不匹配当前工具结果
+                    # 把它移除，然后走延迟防护分支从客户端原始messages里补正确的
+                    db_msgs.pop()
+                    print(f"🔧 分区模式: DB末尾assistant(tool_calls)是旧残留(ids={expected_tool_ids})，与当前tool(ids={client_tool_ids_set})不匹配，移除并回退到客户端补充")
+                    # 重新走延迟防护逻辑
+                    matching_ast = None
+                    for m in messages:
+                        if m.get("role") == "assistant" and m.get("tool_calls"):
+                            ast_tc_ids = {tc.get("id") for tc in m["tool_calls"] if tc.get("id")}
+                            if client_tool_ids_set & ast_tc_ids:
+                                matching_ast = m
+                                break
+                    if matching_ast:
+                        matched_ids = {tc.get("id") for tc in matching_ast["tool_calls"] if tc.get("id")}
+                        kept_tools = [m for m in client_tools if m.get('tool_call_id') in matched_ids]
+                        preceding_user = None
+                        for idx_m, orig_m in enumerate(messages):
+                            if orig_m is matching_ast:
+                                for back in range(idx_m - 1, -1, -1):
+                                    if messages[back].get("role") == "user":
+                                        preceding_user = messages[back]
+                                        break
+                                break
+                        client_new_msgs = []
+                        if preceding_user and not db_msgs:
+                            client_new_msgs.append(preceding_user)
+                        client_new_msgs.append(matching_ast)
+                        client_new_msgs.extend(kept_tools)
+                        print(f"⚠️ 旧残留修复: 从客户端补充assistant(tool_calls) + {len(kept_tools)}条tool")
+                    else:
+                        # 客户端也找不到匹配，丢弃tool
+                        print(f"🔧 去重: DB旧残留+客户端无匹配assistant，丢弃{len(client_tools)}条tool")
+                        client_new_msgs = [m for m in client_new_msgs if m.get("role") != "tool"]
+                else:
+                    if stale_tools:
+                        print(f"🔧 去重: 丢弃{len(stale_tools)}条非当前轮次tool (ids: {[m.get('tool_call_id','?') for m in stale_tools]})")
+                    if new_tools:
+                        print(f"🔧 保留{len(new_tools)}条当前轮次tool (ids: {[m.get('tool_call_id','?') for m in new_tools]})")
                 
-                # 重建 client_new_msgs：只保留tool结果
-                # 注意：工具结果轮次不能再追加末尾的重复user（Operit会把原始问题贴在末尾），
-                # 否则它会被build_partitioned_messages当成current_user_msg，
-                # 导致assistant(tool_calls)+tool链失去末尾锚点、被甩进A区剥离掉。
-                client_new_msgs = new_tools[:]
+                    # 重建 client_new_msgs：只保留tool结果
+                    # 注意：工具结果轮次不能再追加末尾的重复user（Operit会把原始问题贴在末尾），
+                    # 否则它会被build_partitioned_messages当成current_user_msg，
+                    # 导致assistant(tool_calls)+tool链失去末尾锚点、被甩进A区剥离掉。
+                    client_new_msgs = new_tools[:]
                 
                 if new_tools:
                     # Race condition 防护：DB的assistant(tool_calls)已确认存在（db_expecting_tool=True），

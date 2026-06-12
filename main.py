@@ -1759,6 +1759,25 @@ async def chat_completions(request: Request):
             orphan_ids = [m.get("tool_call_id", "?") for m in orphan_tools]
             body["messages"] = [m for m in body["messages"] if not (m.get("role") == "tool" and m.get("tool_call_id") not in declared_tc_ids)]
             print(f"🛡️ 最终安全网: 移除{len(orphan_tools)}条孤立tool (ids: {orphan_ids})")
+        # 移除孤立tool后，检查是否有assistant(tool_calls)变成悬空（它声明的tool_call全被移除了）
+        remaining_tool_ids = {m.get("tool_call_id") for m in body["messages"] if m.get("role") == "tool" and m.get("tool_call_id")}
+        cleaned_msgs = []
+        stripped_ast_count = 0
+        for m in body["messages"]:
+            if m.get("role") == "assistant" and m.get("tool_calls"):
+                m_tc_ids = {tc.get("id") for tc in m["tool_calls"] if tc.get("id")}
+                if m_tc_ids & remaining_tool_ids:
+                    cleaned_msgs.append(m)
+                else:
+                    # 所有tool_call都没有对应tool结果，降级为普通assistant
+                    stripped = {"role": "assistant", "content": m.get("content") or ""}
+                    cleaned_msgs.append(stripped)
+                    stripped_ast_count += 1
+            else:
+                cleaned_msgs.append(m)
+        if stripped_ast_count:
+            body["messages"] = cleaned_msgs
+            print(f"🛡️ 最终安全网: 降级{stripped_ast_count}条悬空assistant(tool_calls)为普通assistant")
     
     else:
         # ---------- 原有逻辑：system prompt + 记忆注入 ----------

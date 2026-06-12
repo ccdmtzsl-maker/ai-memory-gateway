@@ -1721,6 +1721,10 @@ async def chat_completions(request: Request):
         except Exception:
             print(f"⚠️ CHAT_TEMPERATURE 无效，跳过注入: {CHAT_TEMPERATURE}")
 
+    # ---------- tool_calls/tool 配对兜底（发送上游前最后一道关）----------
+    if CACHE_PARTITION_ENABLED:
+        _sanitize_tool_pairing(body.get("messages", []))
+
     # ---------- cache_control 兼容性处理 ----------
     if CACHE_PARTITION_ENABLED and not _is_anthropic_model(model):
         _strip_cache_control(body.get("messages", []))

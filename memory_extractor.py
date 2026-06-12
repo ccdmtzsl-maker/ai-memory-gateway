@@ -213,7 +213,7 @@ async def extract_memories(messages: List[Dict[str, str]], existing_memories: Li
         memories_text = "（暂无已知信息）"
 
     # 把已有记忆填入prompt
-    prompt = EXTRACTION_PROMPT.format(existing_memories=memories_text)
+    prompt = get_extraction_prompt().format(existing_memories=memories_text)
 
     # 调用 LLM 提取记忆
     try:

@@ -1588,11 +1588,26 @@ async def chat_completions(request: Request):
                     stale_tools = [m for m in client_tools if m.get('tool_call_id') not in matched_ids]
                     if stale_tools:
                         print(f"🔧 去重: 丢弃{len(stale_tools)}条非当前轮次tool (ids: {[m.get('tool_call_id','?') for m in stale_tools]})")
-                    # 重建client_new_msgs: assistant(tool_calls) + tool results
-                    # 注意：工具结果轮次不能再追加末尾的重复user，否则会被当成current_user_msg
-                    # 把工具链甩出B区导致tool配对丢失。让tool结果作为真正的末尾。
-                    client_new_msgs = [matching_ast] + kept_tools
-                    print(f"⚠️ DB延迟防护: 从客户端补充assistant(tool_calls) + {len(kept_tools)}条tool（丢弃末尾冗余user）")
+                    # 从客户端原始messages里找到matching_ast前面最近的user，一起补进来
+                    # 否则DB为空时all_msgs里没有user，模型不知道用户问了什么
+                    preceding_user = None
+                    for idx_m, orig_m in enumerate(messages):
+                        if orig_m is matching_ast:
+                            # 往前找最近的user
+                            for back in range(idx_m - 1, -1, -1):
+                                if messages[back].get("role") == "user":
+                                    preceding_user = messages[back]
+                                    break
+                            break
+                    # 重建client_new_msgs: [user] + assistant(tool_calls) + tool results
+                    # 让tool结果作为真正的末尾，不追加重复user。
+                    client_new_msgs = []
+                    if preceding_user and not db_msgs:
+                        client_new_msgs.append(preceding_user)
+                    client_new_msgs.append(matching_ast)
+                    client_new_msgs.extend(kept_tools)
+                    has_user = "user+" if (preceding_user and not db_msgs) else ""
+                    print(f"⚠️ DB延迟防护: 从客户端补充{has_user}assistant(tool_calls) + {len(kept_tools)}条tool")
                 else:
                     # 客户端也没有匹配的assistant(tool_calls)，确实是历史残留
                     stale_ids = [m.get('tool_call_id', '?') for m in client_tools]

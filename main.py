@@ -948,14 +948,6 @@ async def build_partitioned_messages(
     history = non_system[:]
     if history and history[-1].get('role') == 'user':
         current_user_msg = history.pop()
-        # 工具结果轮：Operit 末尾会带一条重复 user，但 pop 之后 history 末尾是 tool。
-        # 此时不能把这条 user 当作"当前轮"追加到序列末尾，否则会变成
-        # ...assistant(tool_calls) -> tool -> user，把工具结果推到 user 前面，
-        # 破坏 tool 配对、让上游无法基于工具结果生成正文。
-        # 正确做法：丢弃这条重复 user，让序列以 tool 结尾。
-        if history and history[-1].get('role') == 'tool':
-            print("🔧 工具结果轮：丢弃末尾重复 user，保持序列以 tool 结尾")
-            current_user_msg = None
     
     # 清洗孤立的tool消息（前面不是 assistant(tool_calls) 或另一条 tool 的）
     # 防止DB里的重复tool消息导致消息乱序

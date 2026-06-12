@@ -700,7 +700,7 @@ async def generate_summary(messages: list, session_id: str = "") -> str:
         async with httpx.AsyncClient(timeout=60) as client:
             response = await client.post(memory_api_base_url, headers=headers, json={
                 "model": summary_model,
-                "max_tokens": 3000,
+                "max_tokens": 9000,
                 "temperature": 0.2,
                 "messages": [{"role": "user", "content": prompt}],
             })

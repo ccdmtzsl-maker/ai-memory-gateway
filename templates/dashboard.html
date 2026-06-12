@@ -654,6 +654,16 @@
                     </div>
                 </div>
 
+                <!-- 记忆提取提示词 -->
+                <div class="card settings-card">
+                    <h3 class="settings-group-title">记忆提取提示词</h3>
+                    <div class="settings-field">
+                        <textarea id="set-extractionPrompt" class="textarea" rows="14" placeholder="留空则使用默认提取提示词"></textarea>
+                        <small class="form-hint" id="extraction-prompt-char-count"></small>
+                        <small class="form-hint">提示词中必须保留 {existing_memories} 占位符。留空恢复默认。</small>
+                    </div>
+                </div>
+
                 <!-- 保存按钮 -->
                 <div style="text-align:center; padding:24px 0 40px;">
                     <button class="btn btn-primary btn-lg" onclick="saveSettings()" id="save-settings-btn" style="min-width:200px;">保存设置</button>

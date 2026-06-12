@@ -1574,12 +1574,11 @@ async def chat_completions(request: Request):
                     stale_tools = [m for m in client_tools if m.get('tool_call_id') not in matched_ids]
                     if stale_tools:
                         print(f"🔧 去重: 丢弃{len(stale_tools)}条非当前轮次tool (ids: {[m.get('tool_call_id','?') for m in stale_tools]})")
-                    # 重建client_new_msgs: assistant(tool_calls) + tool results + user
-                    last_msg = client_new_msgs[-1] if client_new_msgs else None
+                    # 重建client_new_msgs: assistant(tool_calls) + tool results
+                    # 注意：工具结果轮次不能再追加末尾的重复user，否则会被当成current_user_msg
+                    # 把工具链甩出B区导致tool配对丢失。让tool结果作为真正的末尾。
                     client_new_msgs = [matching_ast] + kept_tools
-                    if last_msg and last_msg.get("role") == "user":
-                        client_new_msgs.append(last_msg)
-                    print(f"⚠️ DB延迟防护: 从客户端补充assistant(tool_calls) + {len(kept_tools)}条tool")
+                    print(f"⚠️ DB延迟防护: 从客户端补充assistant(tool_calls) + {len(kept_tools)}条tool（丢弃末尾冗余user）")
                 else:
                     # 客户端也没有匹配的assistant(tool_calls)，确实是历史残留
                     stale_ids = [m.get('tool_call_id', '?') for m in client_tools]
@@ -1596,11 +1595,11 @@ async def chat_completions(request: Request):
                 if new_tools:
                     print(f"🔧 保留{len(new_tools)}条当前轮次tool (ids: {[m.get('tool_call_id','?') for m in new_tools]})")
                 
-                # 重建 client_new_msgs
-                last_msg = client_new_msgs[-1] if client_new_msgs else None
+                # 重建 client_new_msgs：只保留tool结果
+                # 注意：工具结果轮次不能再追加末尾的重复user（Operit会把原始问题贴在末尾），
+                # 否则它会被build_partitioned_messages当成current_user_msg，
+                # 导致assistant(tool_calls)+tool链失去末尾锚点、被甩进A区剥离掉。
                 client_new_msgs = new_tools[:]
-                if last_msg and last_msg.get("role") == "user":
-                    client_new_msgs.append(last_msg)
                 
                 if new_tools:
                     # Race condition 防护：DB的assistant(tool_calls)已确认存在（db_expecting_tool=True），

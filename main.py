@@ -427,6 +427,58 @@ def _strip_cache_control(messages: list):
 
 
 
+def normalize_tool_pairing(messages: list) -> list:
+    """
+    严格规范化消息序列中的 assistant(tool_calls) 与 tool 配对，
+    保证发送给上游的一定是合法序列。规则：
+
+    1. 收集每条 assistant(tool_calls) 声明的 tool_call_id；
+    2. 在整个列表里找它们对应的 tool 消息（按 id 匹配）；
+    3. 若该 assistant 声明的 tool 全部齐全 -> 输出 assistant，紧跟其 tool（按声明顺序）；
+    4. 若有任何声明的 tool 缺失 -> 把该 assistant 降级为普通 assistant（去掉 tool_calls）；
+    5. 任何没有被匹配 assistant 消费的 tool -> 作为孤立 tool 丢弃。
+
+    该函数与顺序无关、可重复执行（幂等）。
+    """
+    # 建立 tool_call_id -> tool message 的索引（同 id 多条时取第一条）
+    tool_by_id = {}
+    for m in messages:
+        if m.get("role") == "tool":
+            tid = m.get("tool_call_id")
+            if tid and tid not in tool_by_id:
+                tool_by_id[tid] = m
+
+    result = []
+    consumed_tool_ids = set()
+    downgraded = 0
+    for m in messages:
+        role = m.get("role")
+        if role == "tool":
+            # tool 由 assistant 分支统一输出，这里跳过；孤立的最后统计
+            continue
+        if role == "assistant" and m.get("tool_calls"):
+            declared = [tc.get("id") for tc in m["tool_calls"] if tc.get("id")]
+            # 检查声明的 tool 是否全部存在
+            if declared and all(tid in tool_by_id for tid in declared):
+                result.append(m)
+                for tid in declared:
+                    result.append(tool_by_id[tid])
+                    consumed_tool_ids.add(tid)
+            else:
+                # 缺失 tool -> 降级为普通 assistant
+                downgraded += 1
+                result.append({"role": "assistant", "content": m.get("content") or ""})
+        else:
+            result.append(m)
+
+    orphan_ids = [tid for tid in tool_by_id if tid not in consumed_tool_ids]
+    if orphan_ids:
+        print(f"🛡️ normalize_tool_pairing: 丢弃{len(orphan_ids)}条孤立tool (ids: {orphan_ids})")
+    if downgraded:
+        print(f"🛡️ normalize_tool_pairing: 降级{downgraded}条缺失tool结果的assistant(tool_calls)")
+    return result
+
+
 def _convert_replacement_groups(replacement: str) -> str:
     """把 Dashboard 里更直观的 $1/$2 替换写法转成 Python re.sub 的 \\1/\\2。"""
     return re.sub(r'\$(\d+)', r'\\\1', replacement or "")

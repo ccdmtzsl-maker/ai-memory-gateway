@@ -915,6 +915,24 @@ async def build_partitioned_messages(
         print(f"⚠️ 清理了 {orphan_count} 条孤立tool消息")
     history = cleaned
     
+    # 清洗悬空的 assistant(tool_calls)（后面没有跟 tool 的）
+    # 这些可能来自失败的工具轮残留，会导致上游 429
+    cleaned2 = []
+    dangling_ast_count = 0
+    for i, msg in enumerate(history):
+        if msg.get('role') == 'assistant' and msg.get('tool_calls'):
+            # 检查后面是否紧跟 tool
+            next_msg = history[i + 1] if i + 1 < len(history) else None
+            if next_msg and next_msg.get('role') == 'tool':
+                cleaned2.append(msg)
+            else:
+                dangling_ast_count += 1
+        else:
+            cleaned2.append(msg)
+    if dangling_ast_count > 0:
+        print(f"⚠️ 清理了 {dangling_ast_count} 条悬空assistant(tool_calls)")
+    history = cleaned2
+    
     # 按逻辑轮分组（解决tool消息导致的轮计数错乱）
     rounds = group_by_rounds(history)
     total_rounds = len(rounds)

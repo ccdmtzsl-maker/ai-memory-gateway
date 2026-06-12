@@ -424,6 +424,62 @@ def _strip_cache_control(messages: list):
         print(f"🔧 兼容性处理: 剥离了 {stripped} 个 cache_control 字段（非 Claude 模型）")
 
 
+def _sanitize_tool_pairing(messages: list):
+    """
+    发送上游前的最后兜底：保证 tool_calls 与 tool 结果严格配对。
+    - assistant(tool_calls) 后面若没有对应的 tool 结果 → 剥掉 tool_calls，降级为普通 assistant
+    - tool 消息前面若没有 assistant(tool_calls) 声明它 → 丢弃该孤立 tool
+    这样无论分区如何切分，都不会产生 'No tool output found' / 孤立tool 的非法序列。
+    """
+    if not messages:
+        return
+
+    # 第一遍：收集每条 assistant(tool_calls) 声明的 id，以及紧随其后实际出现的 tool 结果 id
+    n = len(messages)
+    drop_indices = set()
+
+    i = 0
+    while i < n:
+        m = messages[i]
+        if m.get("role") == "assistant" and m.get("tool_calls"):
+            declared_ids = {tc.get("id") for tc in m["tool_calls"] if tc.get("id")}
+            # 向后扫描紧跟的 tool 结果
+            seen_ids = set()
+            j = i + 1
+            while j < n and messages[j].get("role") == "tool":
+                tcid = messages[j].get("tool_call_id")
+                if tcid:
+                    seen_ids.add(tcid)
+                j += 1
+            missing = declared_ids - seen_ids
+            if missing:
+                # 有声明但没结果 → 剥掉 tool_calls，降级为普通 assistant
+                content = m.get("content")
+                if not content:
+                    m["content"] = ""
+                m.pop("tool_calls", None)
+                print(f"🔧 配对兜底: msgs[{i}] assistant(tool_calls) 缺少结果 {missing}，已降级为普通assistant")
+            i = j
+        else:
+            i += 1
+
+    # 第二遍：丢弃孤立 tool（前面不是 assistant(tool_calls) 或另一条 tool）
+    cleaned = []
+    for idx, m in enumerate(messages):
+        if m.get("role") == "tool":
+            prev = cleaned[-1] if cleaned else None
+            if prev and (prev.get("role") == "tool" or
+                        (prev.get("role") == "assistant" and prev.get("tool_calls"))):
+                cleaned.append(m)
+            else:
+                print(f"🔧 配对兜底: 丢弃孤立 tool msgs[{idx}] (id={m.get('tool_call_id','?')})")
+        else:
+            cleaned.append(m)
+
+    if len(cleaned) != len(messages):
+        messages[:] = cleaned
+
+
 def _convert_replacement_groups(replacement: str) -> str:
     """把 Dashboard 里更直观的 $1/$2 替换写法转成 Python re.sub 的 \\1/\\2。"""
     return re.sub(r'\$(\d+)', r'\\\1', replacement or "")

@@ -1557,10 +1557,34 @@ async def chat_completions(request: Request):
             db_expecting_tool = (db_last and db_last.get("role") == "assistant" and db_last.get("tool_calls"))
             
             if not db_expecting_tool:
-                # DB不在等待tool结果 → 客户端的所有tool都是历史残留（含手动删除后的幽灵）
-                stale_ids = [m.get('tool_call_id', '?') for m in client_tools]
-                print(f"🔧 去重: DB未在等待tool结果，丢弃{len(client_tools)}条客户端tool (ids: {stale_ids})")
-                client_new_msgs = [m for m in client_new_msgs if m.get("role") != "tool"]
+                # DB不在等待tool结果，但可能是异步存储延迟（process_memories_background还没写完）
+                # 先检查客户端原始messages里是否有匹配的assistant(tool_calls)
+                client_tool_ids = {m.get('tool_call_id') for m in client_tools if m.get('tool_call_id')}
+                matching_ast = None
+                for m in messages:
+                    if m.get("role") == "assistant" and m.get("tool_calls"):
+                        ast_tc_ids = {tc.get("id") for tc in m["tool_calls"] if tc.get("id")}
+                        if client_tool_ids & ast_tc_ids:
+                            matching_ast = m
+                            break
+                if matching_ast:
+                    # 客户端有匹配的assistant(tool_calls)，说明是DB延迟，保留tool结果并补充assistant
+                    matched_ids = {tc.get("id") for tc in matching_ast["tool_calls"] if tc.get("id")}
+                    kept_tools = [m for m in client_tools if m.get('tool_call_id') in matched_ids]
+                    stale_tools = [m for m in client_tools if m.get('tool_call_id') not in matched_ids]
+                    if stale_tools:
+                        print(f"🔧 去重: 丢弃{len(stale_tools)}条非当前轮次tool (ids: {[m.get('tool_call_id','?') for m in stale_tools]})")
+                    # 重建client_new_msgs: assistant(tool_calls) + tool results + user
+                    last_msg = client_new_msgs[-1] if client_new_msgs else None
+                    client_new_msgs = [matching_ast] + kept_tools
+                    if last_msg and last_msg.get("role") == "user":
+                        client_new_msgs.append(last_msg)
+                    print(f"⚠️ DB延迟防护: 从客户端补充assistant(tool_calls) + {len(kept_tools)}条tool")
+                else:
+                    # 客户端也没有匹配的assistant(tool_calls)，确实是历史残留
+                    stale_ids = [m.get('tool_call_id', '?') for m in client_tools]
+                    print(f"🔧 去重: DB未在等待tool结果且客户端无匹配assistant，丢弃{len(client_tools)}条客户端tool (ids: {stale_ids})")
+                    client_new_msgs = [m for m in client_new_msgs if m.get("role") != "tool"]
             else:
                 # DB在等待tool → 只保留匹配当前轮次assistant(tool_calls)的tool
                 expected_tool_ids = {tc.get("id") for tc in db_last.get("tool_calls", []) if tc.get("id")}

@@ -30,7 +30,7 @@ from fastapi.templating import Jinja2Templates
 
 from database import init_tables, close_pool, save_message, search_memories, save_memory, get_all_memories_count, get_recent_memories, get_all_memories, get_pool, get_all_memories_detail, update_memory, delete_memory, delete_memories_batch, get_gateway_config, set_gateway_config, get_all_gateway_config, get_conversation_messages, get_session_cache_state, save_session_cache_state, delete_session_cache_state, save_token_usage, ensure_token_usage_table, get_conversations_paginated, delete_conversation, batch_delete_conversations, merge_sessions_to_target, list_all_session_cache_states, export_all_conversations, import_conversations, get_last_user_content, update_last_assistant_message, db_row_to_message, backfill_memory_embeddings, get_pending_memory_embedding_count, search_conversations, update_message_content, rename_session_id, get_fragments_by_date, get_fragments_by_date_range, create_event_memory, deactivate_memories, promote_to_core, merge_memories, check_duplicate_memory, update_memory_with_layer, get_layer_statistics, cleanup_old_fragments, revert_merge
 import database as _db_module  # 用于 /api/settings 热更新 database.py 全局变量
-from memory_extractor import extract_memories, score_memories
+from memory_extractor import extract_memories, score_memories, get_extraction_prompt, set_extraction_prompt, _DEFAULT_EXTRACTION_PROMPT
 
 # ============================================================
 # 配置项 —— 全部从环境变量读取，部署时在云平台面板里设置
@@ -3084,6 +3084,9 @@ async def get_settings():
 
             # System Prompt
             "systemPrompt": db.get("systemPrompt") or _DEFAULT_SYSTEM_PROMPT or "",
+
+            # 记忆提取提示词
+            "extractionPrompt": db.get("extractionPrompt") or _DEFAULT_EXTRACTION_PROMPT or "",
         }
 
         return {"status": "ok", "settings": settings}
@@ -3230,6 +3233,13 @@ async def save_settings(request: Request):
                 invalidate_system_prompt_cache()
                 updated.append("systemPrompt")
                 print(f"[settings] systemPrompt 已更新（{len(str(value))} 字）")
+                continue
+
+            # --- extractionPrompt 特殊处理 ---
+            if key == "extractionPrompt":
+                await set_gateway_config("extractionPrompt", str(value))
+                set_extraction_prompt(str(value))
+                updated.append("extractionPrompt")
                 continue
 
             # --- 常规字段 ---

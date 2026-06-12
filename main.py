@@ -2767,13 +2767,31 @@ async def api_conversation_messages(session_id: str, limit: int = 50, offset: in
                 "SELECT COUNT(*) FROM conversations WHERE session_id = $1", session_id
             )
             rows = await conn.fetch("""
-                SELECT id, role, content, created_at
+                SELECT id, role, content, metadata, created_at
                 FROM conversations WHERE session_id = $1
                 ORDER BY created_at DESC
                 LIMIT $2 OFFSET $3
             """, session_id, limit, offset)
-        msgs = [{"id": r["id"], "role": r["role"], "content": r["content"], 
-                 "created_at": r["created_at"].isoformat() if r.get("created_at") else None} for r in rows]
+        msgs = []
+        for r in rows:
+            item = {"id": r["id"], "role": r["role"], "content": r["content"],
+                    "created_at": r["created_at"].isoformat() if r.get("created_at") else None}
+            meta_raw = r.get("metadata")
+            if meta_raw:
+                try:
+                    meta = json.loads(meta_raw) if isinstance(meta_raw, str) else meta_raw
+                    if isinstance(meta, dict):
+                        if meta.get("tool_calls"):
+                            item["tool_calls"] = meta["tool_calls"]
+                        if meta.get("tool_call_id"):
+                            item["tool_call_id"] = meta["tool_call_id"]
+                        if meta.get("name"):
+                            item["name"] = meta["name"]
+                        if meta.get("reasoning_content"):
+                            item["reasoning_content"] = meta["reasoning_content"]
+                except (json.JSONDecodeError, TypeError):
+                    pass
+            msgs.append(item)
         return {"messages": msgs, "total": total}
     except Exception as e:
         return {"error": str(e)}

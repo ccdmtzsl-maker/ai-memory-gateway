@@ -1611,6 +1611,12 @@ async def chat_completions(request: Request):
                 else:
                     # 客户端也没有匹配的assistant(tool_calls)，确实是历史残留
                     stale_ids = [m.get('tool_call_id', '?') for m in client_tools]
+                    # 诊断：打印两边ID，看为什么匹配失败
+                    all_ast_in_messages = []
+                    for m in messages:
+                        if m.get("role") == "assistant" and m.get("tool_calls"):
+                            all_ast_in_messages.append([tc.get("id") for tc in m["tool_calls"]])
+                    print(f"❌ 工具配对失败诊断: client_tool_ids={stale_ids}, 原始messages中的assistant tool_calls ids={all_ast_in_messages}, db_msgs末尾role={db_msgs[-1].get('role') if db_msgs else 'empty'}")
                     print(f"🔧 去重: DB未在等待tool结果且客户端无匹配assistant，丢弃{len(client_tools)}条客户端tool (ids: {stale_ids})")
                     client_new_msgs = [m for m in client_new_msgs if m.get("role") != "tool"]
             else:

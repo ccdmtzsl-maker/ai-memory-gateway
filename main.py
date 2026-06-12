@@ -1573,7 +1573,12 @@ async def chat_completions(request: Request):
             client_new_msgs.append(last_user)
             print(f"🔧 去重: 过滤{len(user_msgs)-1}条冗余user，保留最后1条")
         # 工具结果轮次处理：基于DB状态 + 当前轮次tool_call_id精确判断
-        client_tools = [m for m in client_new_msgs if m.get("role") == "tool"]
+        # 只取匹配当前轮 assistant(tool_calls) 的 tool，历史轮的 tool 已在 DB 中
+        if last_tc_ast:
+            current_tc_ids = {tc.get("id") for tc in last_tc_ast.get("tool_calls", []) if tc.get("id")}
+            client_tools = [m for m in client_new_msgs if m.get("role") == "tool" and m.get("tool_call_id") in current_tc_ids]
+        else:
+            client_tools = [m for m in client_new_msgs if m.get("role") == "tool"]
         if not client_tools:
             # 本轮没有工具结果时，不能把DB里末尾悬空的 assistant(tool_calls) 当历史发给上游。
             # 这通常来自上一次工具轮失败/中断；继续发送会触发 upstream 400/429：

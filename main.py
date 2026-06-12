@@ -1544,8 +1544,23 @@ async def chat_completions(request: Request):
         # 提取客户端新消息（非系统级消息），可能是user、tool、或带tool_calls的assistant
         client_new_msgs = [m for m in messages if m.get("role") not in system_like_roles]
         # 分区模式下，普通assistant消息来自上一轮response（DB里已存），过滤掉避免重复
-        # 但带tool_calls的assistant必须保留——它是当前工具轮的一部分，需要和tool配对
-        client_new_msgs = [m for m in client_new_msgs if m.get("role") != "assistant" or m.get("tool_calls")]
+        # 但带tool_calls的assistant必须保留最后一条——它是当前工具轮的一部分，需要和tool配对
+        # （历史里的旧assistant(tool_calls)已在DB中，不需要重复带入）
+        last_tc_ast = None
+        for m in reversed(client_new_msgs):
+            if m.get("role") == "assistant" and m.get("tool_calls"):
+                last_tc_ast = m
+                break
+        client_new_msgs = [m for m in client_new_msgs if m.get("role") != "assistant"]
+        if last_tc_ast:
+            # 把当前轮的assistant(tool_calls)插回它在原始消息中的相对位置（tool之前）
+            # 找到第一条tool的位置
+            insert_pos = len(client_new_msgs)
+            for i, m in enumerate(client_new_msgs):
+                if m.get("role") == "tool":
+                    insert_pos = i
+                    break
+            client_new_msgs.insert(insert_pos, last_tc_ast)
         # 分区模式下DB已有完整历史，客户端发来的旧user是冗余的，只保留最后一条
         user_msgs = [m for m in client_new_msgs if m.get("role") == "user"]
         if len(user_msgs) > 1:

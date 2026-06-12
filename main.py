@@ -1546,15 +1546,19 @@ async def chat_completions(request: Request):
         # 分区模式下，普通assistant消息来自上一轮response（DB里已存），过滤掉避免重复
         # 但带tool_calls的assistant必须保留最后一条——它是当前工具轮的一部分，需要和tool配对
         # （历史里的旧assistant(tool_calls)已在DB中，不需要重复带入）
+        # 找到客户端带的最后一条 assistant(tool_calls)（当前轮工具调用）
         last_tc_ast = None
         for m in reversed(client_new_msgs):
             if m.get("role") == "assistant" and m.get("tool_calls"):
                 last_tc_ast = m
                 break
+        # 过滤掉所有 assistant（DB里已有历史）
         client_new_msgs = [m for m in client_new_msgs if m.get("role") != "assistant"]
-        if last_tc_ast:
-            # 把当前轮的assistant(tool_calls)插回它在原始消息中的相对位置（tool之前）
-            # 找到第一条tool的位置
+        # 只在有 tool 结果时才把当前轮 assistant(tool_calls) 插回（配对用）
+        # 普通消息轮不需要它，否则会产生悬空 tool_calls
+        has_tool_in_client = any(m.get("role") == "tool" for m in client_new_msgs)
+        if last_tc_ast and has_tool_in_client:
+            # 插到第一条 tool 之前，保持 assistant(tc) → tool 的正确顺序
             insert_pos = len(client_new_msgs)
             for i, m in enumerate(client_new_msgs):
                 if m.get("role") == "tool":

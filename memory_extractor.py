@@ -163,6 +163,22 @@ importance 分数 1-10，10 最重要。
 如果没有值得记住的新信息，返回空数组：[]
 """
 
+_DEFAULT_EXTRACTION_PROMPT = EXTRACTION_PROMPT
+
+def get_extraction_prompt() -> str:
+    """获取当前生效的提取提示词"""
+    return EXTRACTION_PROMPT or _DEFAULT_EXTRACTION_PROMPT
+
+def set_extraction_prompt(new_prompt: str):
+    """仪表盘热更新提取提示词（传空字符串恢复默认）"""
+    global EXTRACTION_PROMPT
+    if new_prompt and new_prompt.strip():
+        EXTRACTION_PROMPT = new_prompt.strip()
+        print(f"📝 记忆提取提示词已更新 ({len(EXTRACTION_PROMPT)}字)")
+    else:
+        EXTRACTION_PROMPT = _DEFAULT_EXTRACTION_PROMPT
+        print(f"📝 记忆提取提示词已恢复默认")
+
 
 async def extract_memories(messages: List[Dict[str, str]], existing_memories: List[str] = None) -> List[Dict]:
     """

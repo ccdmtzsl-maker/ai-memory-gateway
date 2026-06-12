@@ -1736,8 +1736,13 @@ async def chat_completions(request: Request):
                                     break
         all_msgs = db_msgs + client_new_msgs
         
-        # 同步更新tool_messages，避免process_memories_background存重复的旧tool
-        tool_messages = [m for m in client_new_msgs if m.get("role") == "tool"]
+        # 同步更新tool_messages用于存储：从原始messages里取当前轮tool（带完整content），
+        # 避免用被去重处理过的client_new_msgs（可能丢content或漏当前轮）
+        if last_tc_ast:
+            _cur_tc_ids = {tc.get("id") for tc in last_tc_ast.get("tool_calls", []) if tc.get("id")}
+            tool_messages = [m for m in messages if m.get("role") == "tool" and m.get("tool_call_id") in _cur_tc_ids]
+        else:
+            tool_messages = [m for m in client_new_msgs if m.get("role") == "tool"]
         
         print(f"📦 分区模式: DB历史{len(db_msgs)}条 + 客户端消息{len(client_new_msgs)}条")
         

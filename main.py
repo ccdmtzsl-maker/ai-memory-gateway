@@ -1666,21 +1666,6 @@ async def chat_completions(request: Request):
         except Exception:
             print(f"⚠️ CHAT_TEMPERATURE 无效，跳过注入: {CHAT_TEMPERATURE}")
 
-    # ---------- 诊断日志：发送前检查 tool_calls/tool 配对 ----------
-    _diag_msgs = body.get("messages", [])
-    _diag_roles = [(i, m.get('role'), bool(m.get('tool_calls')), m.get('tool_call_id', '')) for i, m in enumerate(_diag_msgs)]
-    _diag_tc_indices = [x for x in _diag_roles if x[2] or x[1] == 'tool']
-    if _diag_tc_indices:
-        print(f"🔍 发送前tool诊断({len(_diag_msgs)}条): {_diag_tc_indices}", flush=True)
-        # 检查每个 assistant(tool_calls) 后面是否紧跟 tool
-        for idx, role, has_tc, tcid in _diag_roles:
-            if has_tc and role == 'assistant':
-                next_idx = idx + 1
-                if next_idx >= len(_diag_msgs) or _diag_msgs[next_idx].get('role') != 'tool':
-                    next_role = _diag_msgs[next_idx].get('role') if next_idx < len(_diag_msgs) else 'END'
-                    print(f"❌ 断裂! msgs[{idx}]=assistant(tool_calls) 后面是 msgs[{next_idx}]={next_role}，不是tool", flush=True)
-                    add_dashboard_log("error", f"tool配对断裂: msgs[{idx}]=assistant(tool_calls), 下一条msgs[{next_idx}]={next_role}", category="chat", session_id=session_id)
-
     # ---------- cache_control 兼容性处理 ----------
     if CACHE_PARTITION_ENABLED and not _is_anthropic_model(model):
         _strip_cache_control(body.get("messages", []))

@@ -474,28 +474,6 @@ def _normalize_tool_chains_by_id(messages: list) -> list:
     return normalized
 
 
-def _drop_legacy_tool_text_when_protocol_exists(messages: list) -> list:
-    """已有真实 tool_calls/tool 协议链时，移除旧版文本化工具摘要。"""
-    if not messages:
-        return messages
-    has_protocol_tool_chain = any(m.get("role") == "assistant" and m.get("tool_calls") for m in messages) and any(m.get("role") == "tool" for m in messages)
-    if not has_protocol_tool_chain:
-        return messages
-    cleaned = []
-    dropped = 0
-    for m in messages:
-        content = m.get("content")
-        if (
-            m.get("role") == "assistant"
-            and isinstance(content, str)
-            and (content.startswith("工具调用:") or content.startswith("工具结果("))
-        ):
-            dropped += 1
-            continue
-        cleaned.append(m)
-    if dropped:
-        print(f"🔧 分区模式: 移除{dropped}条旧版文本化工具摘要，保留协议格式工具链")
-    return cleaned
 
 
 def _drop_orphan_tool_messages(messages: list) -> list:
@@ -2054,7 +2032,6 @@ async def chat_completions(request: Request):
             session_id, all_msgs, partition_base_prompt, user_message
         )
         messages = _normalize_tool_chains_by_id(messages)
-        messages = _drop_legacy_tool_text_when_protocol_exists(messages)
         messages = _drop_orphan_tool_messages(messages)
 
         body["messages"] = messages

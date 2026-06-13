@@ -537,7 +537,21 @@ def _drop_orphan_tool_messages(messages: list) -> list:
                 pending_tools.append(msg)
                 pending_tool_ids.discard(tool_call_id)
                 continue
-            orphan_tools_by_id.setdefault(tool_call_id or "unknown", []).append(msg)
+            # 只有后面还存在对应 assistant(tool_calls) 时才暂存等待归组；
+            # 否则原地降级，避免工具结果被统一追加到整段消息末尾、跑到新user下面。
+            has_future_ast = False
+            if tool_call_id:
+                for future in messages[(messages.index(msg) + 1):]:
+                    if future.get("role") == "assistant" and future.get("tool_calls"):
+                        future_ids = {tc.get("id") for tc in future.get("tool_calls", []) if tc.get("id")}
+                        if tool_call_id in future_ids:
+                            has_future_ast = True
+                            break
+            if has_future_ast:
+                orphan_tools_by_id.setdefault(tool_call_id or "unknown", []).append(msg)
+            else:
+                content = msg.get("content") or ""
+                cleaned.append({"role": "assistant", "content": f"工具结果({tool_call_id or 'unknown'}): {content}"})
             sanitized_tools += 1
             continue
 

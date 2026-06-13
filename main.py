@@ -426,23 +426,39 @@ def _strip_cache_control(messages: list):
 
 def _drop_orphan_tool_messages(messages: list) -> list:
     """
-    清理不完整工具链，避免上游 tool_call_id 429。
-    - 孤立 tool：前面没有紧邻匹配 assistant(tool_calls) → 丢弃 tool
-    - 缺结果的 assistant(tool_calls)：后面没有收齐全部 tool → 整组丢弃
+    清理会触发上游 tool_call_id 错误的消息，但不静默丢历史信息。
+    完整 assistant(tool_calls)+tool 链按协议保留；不完整/孤立的历史工具信息降级成普通 assistant 文本。
     """
     cleaned = []
     pending_ast = None
     pending_tools = []
     pending_tool_ids = set()
-    dropped_tools = 0
-    dropped_ast = 0
+    sanitized_tools = 0
+    sanitized_ast = 0
 
-    def flush_pending(complete_only: bool = True):
-        nonlocal pending_ast, pending_tools, pending_tool_ids, dropped_ast
+    def _tool_call_summary(ast: dict, tools: list) -> str:
+        lines = []
+        if ast and ast.get("tool_calls"):
+            for tc in ast.get("tool_calls", []):
+                fn = tc.get("function") or {}
+                name = fn.get("name") or tc.get("name") or "unknown"
+                args = fn.get("arguments") or tc.get("arguments") or ""
+                lines.append(f"工具调用: {name}" + (f" 参数: {args}" if args else ""))
+        for tool in tools:
+            content = tool.get("content") or ""
+            tool_call_id = tool.get("tool_call_id") or "unknown"
+            lines.append(f"工具结果({tool_call_id}): {content}")
+        return "\n".join(lines).strip()
+
+    def flush_pending():
+        nonlocal pending_ast, pending_tools, pending_tool_ids, sanitized_ast
         if not pending_ast:
             return
         if pending_tool_ids:
-            dropped_ast += 1
+            summary = _tool_call_summary(pending_ast, pending_tools)
+            if summary:
+                cleaned.append({"role": "assistant", "content": summary})
+            sanitized_ast += 1
         else:
             cleaned.append(pending_ast)
             cleaned.extend(pending_tools)
@@ -459,7 +475,7 @@ def _drop_orphan_tool_messages(messages: list) -> list:
             pending_tools = []
             pending_tool_ids = {tc.get("id") for tc in msg.get("tool_calls", []) if tc.get("id")}
             if not pending_tool_ids:
-                cleaned.append(msg)
+                cleaned.append({"role": "assistant", "content": _tool_call_summary(msg, [])})
                 pending_ast = None
             continue
 
@@ -469,7 +485,9 @@ def _drop_orphan_tool_messages(messages: list) -> list:
                 pending_tools.append(msg)
                 pending_tool_ids.discard(tool_call_id)
                 continue
-            dropped_tools += 1
+            content = msg.get("content") or ""
+            cleaned.append({"role": "assistant", "content": f"工具结果({tool_call_id or 'unknown'}): {content}"})
+            sanitized_tools += 1
             continue
 
         flush_pending()
@@ -477,8 +495,8 @@ def _drop_orphan_tool_messages(messages: list) -> list:
 
     flush_pending()
 
-    if dropped_tools or dropped_ast:
-        print(f"🔧 分区模式: 发上游前清理不完整工具链 assistant={dropped_ast} tool={dropped_tools}，避免tool_call_id不匹配")
+    if sanitized_tools or sanitized_ast:
+        print(f"🔧 分区模式: 发上游前降级不完整工具历史 assistant={sanitized_ast} tool={sanitized_tools}，保留内容并避免tool_call_id不匹配")
     return cleaned
 
 

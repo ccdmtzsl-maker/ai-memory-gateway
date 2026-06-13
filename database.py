@@ -1330,15 +1330,23 @@ def db_row_to_message(row: dict) -> dict:
     msg = {"role": row["role"], "content": row.get("content") or ""}
     
     meta_str = row.get("metadata")
-    # 兼容历史坏数据：早期兜底曾把工具调用降级成普通assistant文本
-    # （如“工具调用: ...”）。这类记录没有tool_calls metadata，不能再作为普通文本发给上游。
-    if (
-        row.get("role") == "assistant"
-        and not meta_str
-        and isinstance(msg.get("content"), str)
-        and msg.get("content", "").startswith("工具调用:")
-    ):
-        msg["content"] = " "
+    # 兼容历史坏数据：早期兜底曾把工具调用/工具结果降级成普通assistant文本。
+    # - “工具调用: ...” 没有结构化id，不能可靠恢复为 tool_calls，只置为空格避免污染上游。
+    # - “工具结果(call_xxx): ...” 带 tool_call_id，可以恢复为 OpenAI tool 消息。
+    if row.get("role") == "assistant" and not meta_str and isinstance(msg.get("content"), str):
+        content = msg.get("content", "")
+        if content.startswith("工具调用:"):
+            msg["content"] = " "
+        elif content.startswith("工具结果("):
+            end_idx = content.find("):")
+            if end_idx > len("工具结果("):
+                tool_call_id = content[len("工具结果("):end_idx]
+                tool_content = content[end_idx + 2:].lstrip()
+                msg = {
+                    "role": "tool",
+                    "content": tool_content,
+                    "tool_call_id": tool_call_id,
+                }
     if meta_str:
         try:
             meta = _json.loads(meta_str)

@@ -1330,6 +1330,15 @@ def db_row_to_message(row: dict) -> dict:
     msg = {"role": row["role"], "content": row.get("content") or ""}
     
     meta_str = row.get("metadata")
+    # 兼容历史坏数据：早期兜底曾把工具调用降级成普通assistant文本
+    # （如“工具调用: ...”）。这类记录没有tool_calls metadata，不能再作为普通文本发给上游。
+    if (
+        row.get("role") == "assistant"
+        and not meta_str
+        and isinstance(msg.get("content"), str)
+        and msg.get("content", "").startswith("工具调用:")
+    ):
+        msg["content"] = " "
     if meta_str:
         try:
             meta = _json.loads(meta_str)

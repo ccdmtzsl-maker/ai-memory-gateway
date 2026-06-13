@@ -1748,6 +1748,23 @@ async def chat_completions(request: Request):
                             break
                 else:
                     messages.insert(0, {"role": "system", "content": enhanced_prompt})
+
+        # 非分区模式下也要兜一下工具轮次：
+        # Operit 有时会把原始 user 又贴到末尾，导致上游把它当成新问题，
+        # 进而让本轮 tool 结果看起来“没接上”。这里只移除工具消息后面的重复 user，
+        # 不碰正常的纯文本对话。
+        if tool_messages:
+            last_tool_idx = -1
+            for i in range(len(messages) - 1, -1, -1):
+                if messages[i].get("role") == "tool":
+                    last_tool_idx = i
+                    break
+            if last_tool_idx >= 0:
+                old_len = len(messages)
+                while len(messages) > last_tool_idx + 1 and messages[-1].get("role") == "user":
+                    messages.pop()
+                if len(messages) != old_len:
+                    print(f"🔧 非分区模式: 去掉末尾重复user，messages {old_len}->{len(messages)}")
         
         body["messages"] = messages
     

@@ -1253,11 +1253,24 @@ async function loadConvMessages(sessionId, append = false) {
         
         for (const msg of messages) {
             const isUser = msg.role === 'user';
-            const roleLabel = isUser ? '👤 用户' : '🤖 助手';
-            const bgColor = isUser ? 'var(--bg-user, rgba(59,130,246,0.08))' : 'var(--bg-assistant, rgba(0,0,0,0.02))';
+            const isTool = msg.role === 'tool';
+            const roleLabel = isUser ? '👤 用户' : (isTool ? '🧰 工具结果' : '🤖 助手');
+            const bgColor = isUser ? 'var(--bg-user, rgba(59,130,246,0.08))' : (isTool ? 'rgba(245,158,11,0.08)' : 'var(--bg-assistant, rgba(0,0,0,0.02))');
             const timeStr = msg.created_at ? formatConvTime(msg.created_at) : '';
             const msgId = msg.id || '';
-            const content = escapeHtml(msg.content || '');
+            const meta = msg.metadata || {};
+            let displayContent = msg.content || '';
+            if (!displayContent && meta.tool_calls && Array.isArray(meta.tool_calls)) {
+                displayContent = meta.tool_calls.map(tc => {
+                    const fn = tc.function || {};
+                    const name = fn.name || '(未知工具)';
+                    const args = fn.arguments || '';
+                    return `🔧 工具调用：${name}${args ? `\n参数：${args}` : ''}`;
+                }).join('\n\n');
+            } else if (isTool && meta.tool_call_id) {
+                displayContent = `tool_call_id: ${meta.tool_call_id}\n\n${displayContent}`;
+            }
+            const content = escapeHtml(displayContent);
             
             html += `
             <div style="padding: 12px; margin-bottom: 8px; border-radius: 8px; background: ${bgColor}; position: relative;" id="msg-${msgId}">

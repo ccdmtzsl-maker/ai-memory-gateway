@@ -2747,13 +2747,26 @@ async def api_conversation_messages(session_id: str, limit: int = 50, offset: in
                 "SELECT COUNT(*) FROM conversations WHERE session_id = $1", session_id
             )
             rows = await conn.fetch("""
-                SELECT id, role, content, created_at
+                SELECT id, role, content, metadata, created_at
                 FROM conversations WHERE session_id = $1
                 ORDER BY created_at DESC
                 LIMIT $2 OFFSET $3
             """, session_id, limit, offset)
-        msgs = [{"id": r["id"], "role": r["role"], "content": r["content"], 
-                 "created_at": r["created_at"].isoformat() if r.get("created_at") else None} for r in rows]
+        msgs = []
+        for r in rows:
+            metadata = None
+            if r.get("metadata"):
+                try:
+                    metadata = json.loads(r["metadata"])
+                except Exception:
+                    metadata = r["metadata"]
+            msgs.append({
+                "id": r["id"],
+                "role": r["role"],
+                "content": r["content"],
+                "metadata": metadata,
+                "created_at": r["created_at"].isoformat() if r.get("created_at") else None,
+            })
         return {"messages": msgs, "total": total}
     except Exception as e:
         return {"error": str(e)}

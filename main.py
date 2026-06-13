@@ -1213,11 +1213,34 @@ async def process_memories_background(session_id: str, user_msg: str, assistant_
             # 工具结果轮次：存tool消息 + assistant回复（user消息在之前的轮次已存过）
             for tm in tool_messages:
                 meta_dict = {}
-                if tm.get("tool_call_id"):
-                    meta_dict["tool_call_id"] = tm["tool_call_id"]
+                tool_call_id = tm.get("tool_call_id")
+                if tool_call_id:
+                    meta_dict["tool_call_id"] = tool_call_id
                 if tm.get("name"):
                     meta_dict["name"] = tm["name"]
                 meta = json.dumps(meta_dict) if meta_dict else None
+
+                if tool_call_id:
+                    try:
+                        pool = await get_pool()
+                        async with pool.acquire() as conn:
+                            exists = await conn.fetchval(
+                                """
+                                SELECT 1
+                                FROM conversations
+                                WHERE session_id = $1
+                                  AND role = 'tool'
+                                  AND metadata::jsonb ->> 'tool_call_id' = $2
+                                LIMIT 1
+                                """,
+                                session_id, tool_call_id
+                            )
+                        if exists:
+                            print(f"🔧 存储: 跳过重复tool结果 id={tool_call_id}")
+                            continue
+                    except Exception as e:
+                        print(f"⚠️ tool结果查重失败，继续保存: {e}")
+
                 await save_message(session_id, "tool", tm.get("content", ""), model, metadata=meta)
             
             if assistant_msg or assistant_tool_calls:

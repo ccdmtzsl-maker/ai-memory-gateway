@@ -425,32 +425,60 @@ def _strip_cache_control(messages: list):
 
 
 def _drop_orphan_tool_messages(messages: list) -> list:
-    """丢弃不属于紧邻 assistant(tool_calls) 的 tool，避免上游 tool_call_id 429。"""
+    """
+    清理不完整工具链，避免上游 tool_call_id 429。
+    - 孤立 tool：前面没有紧邻匹配 assistant(tool_calls) → 丢弃 tool
+    - 缺结果的 assistant(tool_calls)：后面没有收齐全部 tool → 整组丢弃
+    """
     cleaned = []
+    pending_ast = None
+    pending_tools = []
     pending_tool_ids = set()
-    dropped = 0
+    dropped_tools = 0
+    dropped_ast = 0
+
+    def flush_pending(complete_only: bool = True):
+        nonlocal pending_ast, pending_tools, pending_tool_ids, dropped_ast
+        if not pending_ast:
+            return
+        if pending_tool_ids:
+            dropped_ast += 1
+        else:
+            cleaned.append(pending_ast)
+            cleaned.extend(pending_tools)
+        pending_ast = None
+        pending_tools = []
+        pending_tool_ids = set()
 
     for msg in messages or []:
         role = msg.get("role")
+
         if role == "assistant" and msg.get("tool_calls"):
+            flush_pending()
+            pending_ast = msg
+            pending_tools = []
             pending_tool_ids = {tc.get("id") for tc in msg.get("tool_calls", []) if tc.get("id")}
-            cleaned.append(msg)
+            if not pending_tool_ids:
+                cleaned.append(msg)
+                pending_ast = None
             continue
 
         if role == "tool":
             tool_call_id = msg.get("tool_call_id")
-            if pending_tool_ids and tool_call_id in pending_tool_ids:
-                cleaned.append(msg)
+            if pending_ast and tool_call_id in pending_tool_ids:
+                pending_tools.append(msg)
                 pending_tool_ids.discard(tool_call_id)
-            else:
-                dropped += 1
+                continue
+            dropped_tools += 1
             continue
 
-        pending_tool_ids = set()
+        flush_pending()
         cleaned.append(msg)
 
-    if dropped:
-        print(f"🔧 分区模式: 发上游前丢弃{dropped}条孤立/旧tool消息，避免tool_call_id不匹配")
+    flush_pending()
+
+    if dropped_tools or dropped_ast:
+        print(f"🔧 分区模式: 发上游前清理不完整工具链 assistant={dropped_ast} tool={dropped_tools}，避免tool_call_id不匹配")
     return cleaned
 
 

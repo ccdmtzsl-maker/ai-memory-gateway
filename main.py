@@ -1580,6 +1580,14 @@ async def chat_completions(request: Request):
 
         # 提取客户端新消息（非系统级消息），可能是user、tool、或带tool_calls的assistant
         client_new_msgs = [m for m in messages if m.get("role") not in system_like_roles]
+        # 如果客户端最后一条非系统消息是 user，这就是普通用户新一轮。
+        # Operit 可能同时带着历史 assistant(tool_calls)+tool，但那些不是本轮工具结果，
+        # 不能让旧 tool 链劫持当前 user，否则新用户消息会被丢掉。
+        last_client_msg = client_new_msgs[-1] if client_new_msgs else None
+        client_ends_with_user = bool(last_client_msg and last_client_msg.get("role") == "user")
+        if client_ends_with_user:
+            client_new_msgs = [last_client_msg]
+            print("🔧 分区模式: 客户端最后一条是user，忽略随请求携带的旧tool历史")
         # 分区模式下，普通assistant消息来自上一轮response（DB里已存），过滤掉避免重复
         # 但带tool_calls的assistant必须保留最后一条——它是当前工具轮的一部分，需要和tool配对
         # （历史里的旧assistant(tool_calls)已在DB中，不需要重复带入）

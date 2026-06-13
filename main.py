@@ -1786,22 +1786,24 @@ async def chat_completions(request: Request):
 
         # 非分区模式下也要兜一下工具轮次：
         # Operit 有时会把原始 user 又贴到末尾，导致上游把它当成新问题，
-        # 进而让本轮 tool 结果看起来“没接上”。这里只移除工具消息后面的重复 user，
-        # 不碰正常的纯文本对话。
+        # 进而让本轮 tool 结果看起来“没接上”。这里只给上游请求生成裁剪副本，
+        # 不原地修改原始 messages，避免影响对话存储/下一轮用户消息。
+        upstream_messages = messages
         if tool_messages:
+            upstream_messages = list(messages)
             last_tool_idx = -1
-            for i in range(len(messages) - 1, -1, -1):
-                if messages[i].get("role") == "tool":
+            for i in range(len(upstream_messages) - 1, -1, -1):
+                if upstream_messages[i].get("role") == "tool":
                     last_tool_idx = i
                     break
             if last_tool_idx >= 0:
-                old_len = len(messages)
-                while len(messages) > last_tool_idx + 1 and messages[-1].get("role") == "user":
-                    messages.pop()
-                if len(messages) != old_len:
-                    print(f"🔧 非分区模式: 去掉末尾重复user，messages {old_len}->{len(messages)}")
+                old_len = len(upstream_messages)
+                while len(upstream_messages) > last_tool_idx + 1 and upstream_messages[-1].get("role") == "user":
+                    upstream_messages.pop()
+                if len(upstream_messages) != old_len:
+                    print(f"🔧 非分区模式: 去掉上游请求末尾重复user，messages {old_len}->{len(upstream_messages)}")
         
-        body["messages"] = messages
+        body["messages"] = upstream_messages
     
     # ---------- 模型处理 ----------
     model = body.get("model", DEFAULT_MODEL)

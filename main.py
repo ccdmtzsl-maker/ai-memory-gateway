@@ -518,10 +518,9 @@ def _drop_orphan_tool_messages(messages: list) -> list:
             for call_id in list(call_ids):
                 matched_orphans.extend(orphan_tools_by_id.pop(call_id, []))
             if matched_orphans:
-                summary = _tool_call_summary(msg, matched_orphans)
-                if summary:
-                    cleaned.append({"role": "assistant", "content": summary})
-                sanitized_ast += 1
+                # 找到对应工具结果时，保持 OpenAI 工具协议格式，不能降级成普通文本。
+                cleaned.append(msg)
+                cleaned.extend(matched_orphans)
                 continue
             pending_ast = msg
             pending_tools = []

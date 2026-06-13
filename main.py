@@ -435,6 +435,7 @@ def _drop_orphan_tool_messages(messages: list) -> list:
     pending_tool_ids = set()
     sanitized_tools = 0
     sanitized_ast = 0
+    orphan_tools_by_id = {}
 
     def _tool_call_summary(ast: dict, tools: list) -> str:
         lines = []
@@ -471,9 +472,19 @@ def _drop_orphan_tool_messages(messages: list) -> list:
 
         if role == "assistant" and msg.get("tool_calls"):
             flush_pending()
+            call_ids = {tc.get("id") for tc in msg.get("tool_calls", []) if tc.get("id")}
+            matched_orphans = []
+            for call_id in list(call_ids):
+                matched_orphans.extend(orphan_tools_by_id.pop(call_id, []))
+            if matched_orphans:
+                summary = _tool_call_summary(msg, matched_orphans)
+                if summary:
+                    cleaned.append({"role": "assistant", "content": summary})
+                sanitized_ast += 1
+                continue
             pending_ast = msg
             pending_tools = []
-            pending_tool_ids = {tc.get("id") for tc in msg.get("tool_calls", []) if tc.get("id")}
+            pending_tool_ids = call_ids
             if not pending_tool_ids:
                 cleaned.append({"role": "assistant", "content": _tool_call_summary(msg, [])})
                 pending_ast = None
@@ -485,8 +496,7 @@ def _drop_orphan_tool_messages(messages: list) -> list:
                 pending_tools.append(msg)
                 pending_tool_ids.discard(tool_call_id)
                 continue
-            content = msg.get("content") or ""
-            cleaned.append({"role": "assistant", "content": f"工具结果({tool_call_id or 'unknown'}): {content}"})
+            orphan_tools_by_id.setdefault(tool_call_id or "unknown", []).append(msg)
             sanitized_tools += 1
             continue
 
@@ -494,6 +504,11 @@ def _drop_orphan_tool_messages(messages: list) -> list:
         cleaned.append(msg)
 
     flush_pending()
+    for orphan_list in orphan_tools_by_id.values():
+        for tool in orphan_list:
+            content = tool.get("content") or ""
+            tool_call_id = tool.get("tool_call_id") or "unknown"
+            cleaned.append({"role": "assistant", "content": f"工具结果({tool_call_id}): {content}"})
 
     if sanitized_tools or sanitized_ast:
         print(f"🔧 分区模式: 发上游前降级不完整工具历史 assistant={sanitized_ast} tool={sanitized_tools}，保留内容并避免tool_call_id不匹配")

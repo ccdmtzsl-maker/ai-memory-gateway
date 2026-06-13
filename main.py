@@ -3028,10 +3028,18 @@ async def api_conversation_messages(session_id: str, limit: int = 50, offset: in
                     metadata = json.loads(r["metadata"])
                 except Exception:
                     metadata = r["metadata"]
+            content = r["content"]
+            if (
+                r.get("role") == "assistant"
+                and not metadata
+                and isinstance(content, str)
+                and content.startswith("工具调用:")
+            ):
+                content = " "
             msgs.append({
                 "id": r["id"],
                 "role": r["role"],
-                "content": r["content"],
+                "content": content,
                 "metadata": metadata,
                 "created_at": r["created_at"].isoformat() if r.get("created_at") else None,
             })

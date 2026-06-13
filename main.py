@@ -1882,12 +1882,25 @@ async def chat_completions(request: Request):
                 except Exception as e:
                     print(f"⚠️ 分区模式: tool写入后重读历史失败: {e}")
 
-        all_msgs = db_msgs + client_new_msgs
+        # 最终归一化：分区请求 = DB历史 + 本轮增量。
+        # - 工具结果轮：tool 已同步写入 DB，本次只从 DB 构造，不再拼客户端 tool/assistant/user
+        # - 普通用户轮：只追加客户端最后一条 user，避免旧 tool 历史替换用户消息
+        if tool_messages:
+            client_increment = []
+        else:
+            last_user_msg = None
+            for m in reversed([m for m in messages if m.get("role") not in system_like_roles]):
+                if m.get("role") == "user":
+                    last_user_msg = m
+                    break
+            client_increment = [last_user_msg] if last_user_msg else []
+
+        all_msgs = db_msgs + client_increment
         
-        # 同步更新tool_messages，避免process_memories_background存重复的旧tool
+        # 后台保存仍只接收本轮真实tool；已同步写过的会被tool_call_id查重跳过
         tool_messages = [m for m in tool_messages if m.get("role") == "tool"]
         
-        print(f"📦 分区模式: DB历史{len(db_msgs)}条 + 客户端消息{len(client_new_msgs)}条")
+        print(f"📦 分区模式: DB历史{len(db_msgs)}条 + 本轮增量{len(client_increment)}条")
         
         messages = await build_partitioned_messages(
             session_id, all_msgs, partition_base_prompt, user_message

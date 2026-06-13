@@ -1883,10 +1883,33 @@ async def chat_completions(request: Request):
                     print(f"⚠️ 分区模式: tool写入后重读历史失败: {e}")
 
         # 最终归一化：分区请求 = DB历史 + 本轮增量。
-        # - 工具结果轮：tool 已同步写入 DB，本次只从 DB 构造，不再拼客户端 tool/assistant/user
-        # - 普通用户轮：只追加客户端最后一条 user，避免旧 tool 历史替换用户消息
+        # - 工具结果轮：如果当前DB快照还没有本轮tool，就把Operit刚返回的tool作为增量发给上游
+        # - 普通用户轮：只追加客户端最后一条user，避免旧tool历史替换用户消息
         if tool_messages:
+            db_tool_ids = {m.get("tool_call_id") for m in db_msgs if m.get("role") == "tool" and m.get("tool_call_id")}
+            increment_tools = [m for m in tool_messages if m.get("tool_call_id") and m.get("tool_call_id") not in db_tool_ids]
             client_increment = []
+            if increment_tools:
+                increment_tool_ids = {m.get("tool_call_id") for m in increment_tools if m.get("tool_call_id")}
+                db_has_matching_ast = False
+                for m in reversed(db_msgs):
+                    if m.get("role") == "assistant" and m.get("tool_calls"):
+                        ast_ids = {tc.get("id") for tc in m.get("tool_calls", []) if tc.get("id")}
+                        if increment_tool_ids & ast_ids:
+                            db_has_matching_ast = True
+                        break
+                if not db_has_matching_ast:
+                    matching_ast = None
+                    for m in reversed(messages):
+                        if m.get("role") == "assistant" and m.get("tool_calls"):
+                            ast_ids = {tc.get("id") for tc in m.get("tool_calls", []) if tc.get("id")}
+                            if increment_tool_ids & ast_ids:
+                                matching_ast = m
+                                break
+                    if matching_ast:
+                        client_increment.append(matching_ast)
+                        print("⚠️ 分区模式: DB当前快照缺少assistant(tool_calls)，从客户端补当前工具请求")
+                client_increment.extend(increment_tools)
         else:
             last_user_msg = None
             for m in reversed([m for m in messages if m.get("role") not in system_like_roles]):

@@ -1490,7 +1490,19 @@ async def chat_completions(request: Request):
     # ---------- 检测工具调用消息 ----------
     tool_messages = [m for m in messages if m.get("role") == "tool"]
     if tool_messages:
-        print(f"🔧 检测到 {len(tool_messages)} 条工具结果消息")
+        # 只把“当前轮”的工具消息算进去：如果最后一条 assistant(tool_calls) 后面已经有最终 assistant，
+        # 说明这是历史消息，不要把旧 tool 重新当成本轮工具结果。
+        last_tool_idx = max((i for i, m in enumerate(messages) if m.get("role") == "tool"), default=-1)
+        last_assistant_idx = max((i for i, m in enumerate(messages) if m.get("role") == "assistant"), default=-1)
+        last_tool_call_idx = max((i for i, m in enumerate(messages) if m.get("role") == "assistant" and m.get("tool_calls")), default=-1)
+        if last_tool_idx < 0 or last_assistant_idx < 0 or last_tool_idx < last_assistant_idx:
+            tool_messages = []
+        elif last_tool_call_idx >= 0 and last_tool_call_idx < last_tool_idx:
+            tool_messages = [m for m in messages[last_tool_call_idx + 1:] if m.get("role") == "tool"]
+        else:
+            tool_messages = []
+        if tool_messages:
+            print(f"🔧 检测到 {len(tool_messages)} 条工具结果消息")
     
     # ---------- 生成 session ID ----------
     # OpenAI 兼容请求本身通常不带会话 ID。之前这里每次随机生成 uuid，

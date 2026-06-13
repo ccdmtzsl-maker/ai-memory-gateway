@@ -424,6 +424,36 @@ def _strip_cache_control(messages: list):
         print(f"🔧 兼容性处理: 剥离了 {stripped} 个 cache_control 字段（非 Claude 模型）")
 
 
+def _drop_orphan_tool_messages(messages: list) -> list:
+    """丢弃不属于紧邻 assistant(tool_calls) 的 tool，避免上游 tool_call_id 429。"""
+    cleaned = []
+    pending_tool_ids = set()
+    dropped = 0
+
+    for msg in messages or []:
+        role = msg.get("role")
+        if role == "assistant" and msg.get("tool_calls"):
+            pending_tool_ids = {tc.get("id") for tc in msg.get("tool_calls", []) if tc.get("id")}
+            cleaned.append(msg)
+            continue
+
+        if role == "tool":
+            tool_call_id = msg.get("tool_call_id")
+            if pending_tool_ids and tool_call_id in pending_tool_ids:
+                cleaned.append(msg)
+                pending_tool_ids.discard(tool_call_id)
+            else:
+                dropped += 1
+            continue
+
+        pending_tool_ids = set()
+        cleaned.append(msg)
+
+    if dropped:
+        print(f"🔧 分区模式: 发上游前丢弃{dropped}条孤立/旧tool消息，避免tool_call_id不匹配")
+    return cleaned
+
+
 
 
 
@@ -1779,6 +1809,7 @@ async def chat_completions(request: Request):
         messages = await build_partitioned_messages(
             session_id, all_msgs, partition_base_prompt, user_message
         )
+        messages = _drop_orphan_tool_messages(messages)
 
         body["messages"] = messages
     

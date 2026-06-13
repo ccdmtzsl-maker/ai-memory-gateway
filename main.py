@@ -491,17 +491,15 @@ def _drop_orphan_tool_messages(messages: list) -> list:
 
     def _tool_call_summary(ast: dict, tools: list) -> str:
         lines = []
-        if ast and ast.get("tool_calls"):
-            for tc in ast.get("tool_calls", []):
-                fn = tc.get("function") or {}
-                name = fn.get("name") or tc.get("name") or "unknown"
-                args = fn.get("arguments") or tc.get("arguments") or ""
-                lines.append(f"工具调用: {name}" + (f" 参数: {args}" if args else ""))
+        # 历史坏链里缺结果的 assistant(tool_calls) 不再降级成“工具调用: ...”文本；
+        # 按用户要求置为空格，避免污染上游上下文。
+        if ast and ast.get("tool_calls") and not tools:
+            return " "
         for tool in tools:
             content = tool.get("content") or ""
             tool_call_id = tool.get("tool_call_id") or "unknown"
             lines.append(f"工具结果({tool_call_id}): {content}")
-        return "\n".join(lines).strip()
+        return "\n".join(lines).strip() or " "
 
     def flush_pending():
         nonlocal pending_ast, pending_tools, pending_tool_ids, sanitized_ast

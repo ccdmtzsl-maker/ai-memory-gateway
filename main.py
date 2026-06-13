@@ -1837,10 +1837,55 @@ async def chat_completions(request: Request):
                                     client_new_msgs.insert(0, m)
                                     print(f"⚠️ Race防护: 从客户端补充assistant(tool_calls)")
                                     break
+        # 分区模式以 DB 历史为准：如果本次是工具结果轮，先把当前 tool 结果写入历史，
+        # 再重新读取 DB 构造 A/B 分区。这样后续请求不再依赖客户端携带完整历史。
+        tool_messages = [m for m in client_new_msgs if m.get("role") == "tool"]
+        if tool_messages:
+            persisted_tools = 0
+            for tm in tool_messages:
+                tool_call_id = tm.get("tool_call_id")
+                if not tool_call_id:
+                    continue
+                try:
+                    pool = await get_pool()
+                    async with pool.acquire() as conn:
+                        exists = await conn.fetchval(
+                            """
+                            SELECT 1
+                            FROM conversations
+                            WHERE session_id = $1
+                              AND role = 'tool'
+                              AND metadata::jsonb ->> 'tool_call_id' = $2
+                            LIMIT 1
+                            """,
+                            session_id, tool_call_id
+                        )
+                    if exists:
+                        continue
+                    meta_dict = {"tool_call_id": tool_call_id}
+                    if tm.get("name"):
+                        meta_dict["name"] = tm["name"]
+                    await save_message(session_id, "tool", tm.get("content", ""), model, metadata=json.dumps(meta_dict))
+                    persisted_tools += 1
+                except Exception as e:
+                    print(f"⚠️ 分区模式: 同步保存tool结果失败 id={tool_call_id}: {e}")
+            if persisted_tools:
+                print(f"🔧 分区模式: 已先写入{persisted_tools}条tool结果到DB，再重建历史")
+                try:
+                    db_history = await get_conversation_messages(session_id, limit=10000)
+                    db_msgs = []
+                    for m in (db_history or []):
+                        msg = db_row_to_message(m)
+                        msg['created_at'] = m.get('created_at')
+                        db_msgs.append(msg)
+                    client_new_msgs = [m for m in client_new_msgs if m.get("role") != "tool"]
+                except Exception as e:
+                    print(f"⚠️ 分区模式: tool写入后重读历史失败: {e}")
+
         all_msgs = db_msgs + client_new_msgs
         
         # 同步更新tool_messages，避免process_memories_background存重复的旧tool
-        tool_messages = [m for m in client_new_msgs if m.get("role") == "tool"]
+        tool_messages = [m for m in tool_messages if m.get("role") == "tool"]
         
         print(f"📦 分区模式: DB历史{len(db_msgs)}条 + 客户端消息{len(client_new_msgs)}条")
         

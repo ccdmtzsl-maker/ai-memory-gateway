@@ -1648,10 +1648,15 @@ async def chat_completions(request: Request):
             probe = client_new_msgs[idx]
             if probe.get("role") == "assistant" and probe.get("tool_calls"):
                 probe_ids = {tc.get("id") for tc in probe.get("tool_calls", []) if tc.get("id")}
-                active_tool_result_in_client = any(
-                    m.get("role") == "tool" and m.get("tool_call_id") in probe_ids
-                    for m in client_new_msgs[idx + 1:]
-                )
+                saw_matching_tool = False
+                completed_by_assistant = False
+                for tail in client_new_msgs[idx + 1:]:
+                    if tail.get("role") == "assistant" and not tail.get("tool_calls"):
+                        completed_by_assistant = True
+                        break
+                    if tail.get("role") == "tool" and tail.get("tool_call_id") in probe_ids:
+                        saw_matching_tool = True
+                active_tool_result_in_client = saw_matching_tool and not completed_by_assistant
                 break
         if client_ends_with_user and not active_tool_result_in_client:
             client_new_msgs = [last_client_msg]

@@ -1593,23 +1593,31 @@ async def chat_completions(request: Request):
         # （历史里的旧assistant(tool_calls)已在DB中，不需要重复带入）
         # 找到客户端带的最后一条 assistant(tool_calls)（当前轮工具调用）
         last_tc_ast = None
-        for m in reversed(client_new_msgs):
+        last_tc_idx = -1
+        for i in range(len(client_new_msgs) - 1, -1, -1):
+            m = client_new_msgs[i]
             if m.get("role") == "assistant" and m.get("tool_calls"):
                 last_tc_ast = m
+                last_tc_idx = i
                 break
-        # 过滤掉所有 assistant（DB里已有历史）
-        client_new_msgs = [m for m in client_new_msgs if m.get("role") != "assistant"]
-        # 只在有 tool 结果时才把当前轮 assistant(tool_calls) 插回（配对用）
-        # 普通消息轮不需要它，否则会产生悬空 tool_calls
-        has_tool_in_client = any(m.get("role") == "tool" for m in client_new_msgs)
-        if last_tc_ast and has_tool_in_client:
-            # 插到第一条 tool 之前，保持 assistant(tc) → tool 的正确顺序
-            insert_pos = len(client_new_msgs)
-            for i, m in enumerate(client_new_msgs):
-                if m.get("role") == "tool":
-                    insert_pos = i
-                    break
-            client_new_msgs.insert(insert_pos, last_tc_ast)
+        # 如果这是工具结果轮，只允许最后一条 assistant(tool_calls) 后面的 tool 进入本轮。
+        # Operit 可能把更早历史里的 tool 也一起带来，不能把它们夹到最新 tool_call 前面。
+        if last_tc_ast and last_tc_idx >= 0:
+            current_tc_ids = {tc.get("id") for tc in last_tc_ast.get("tool_calls", []) if tc.get("id")}
+            trailing_tools = [
+                m for m in client_new_msgs[last_tc_idx + 1:]
+                if m.get("role") == "tool" and m.get("tool_call_id") in current_tc_ids
+            ]
+            if trailing_tools:
+                dropped_tools = [m for m in client_new_msgs if m.get("role") == "tool" and m not in trailing_tools]
+                if dropped_tools:
+                    print(f"🔧 分区模式: 丢弃{len(dropped_tools)}条最新tool_call之前的旧tool")
+                client_new_msgs = [last_tc_ast] + trailing_tools
+            else:
+                client_new_msgs = [m for m in client_new_msgs if m.get("role") != "assistant"]
+        else:
+            # 过滤掉所有 assistant（DB里已有历史）
+            client_new_msgs = [m for m in client_new_msgs if m.get("role") != "assistant"]
         # 分区模式下DB已有完整历史，客户端发来的旧user是冗余的，只保留最后一条
         user_msgs = [m for m in client_new_msgs if m.get("role") == "user"]
         if len(user_msgs) > 1:

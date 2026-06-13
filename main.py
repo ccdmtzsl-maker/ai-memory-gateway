@@ -424,6 +424,47 @@ def _strip_cache_control(messages: list):
         print(f"🔧 兼容性处理: 剥离了 {stripped} 个 cache_control 字段（非 Claude 模型）")
 
 
+def _normalize_tool_chains_by_id(messages: list) -> list:
+    """按 tool_call_id 把历史工具结果归位到对应 assistant(tool_calls) 后面。"""
+    if not messages:
+        return messages
+
+    tools_by_id = {}
+    for msg in messages:
+        if msg.get("role") == "tool" and msg.get("tool_call_id"):
+            tools_by_id.setdefault(msg.get("tool_call_id"), []).append(msg)
+
+    if not tools_by_id:
+        return messages
+
+    normalized = []
+    consumed_tool_ids = set()
+    moved_tools = 0
+
+    for msg in messages:
+        if msg.get("role") == "tool" and msg.get("tool_call_id") in consumed_tool_ids:
+            continue
+
+        normalized.append(msg)
+
+        if msg.get("role") == "assistant" and msg.get("tool_calls"):
+            for tc in msg.get("tool_calls", []):
+                call_id = tc.get("id")
+                if not call_id or call_id in consumed_tool_ids:
+                    continue
+                tools = tools_by_id.get(call_id) or []
+                if tools:
+                    # 如果对应tool原本已经紧跟在assistant后面，追加同一个对象后会被下面跳过原位置；
+                    # 如果散落在别处，则在这里归位。
+                    normalized.extend(tools)
+                    consumed_tool_ids.add(call_id)
+                    moved_tools += len(tools)
+
+    if moved_tools:
+        print(f"🔧 分区模式: 按tool_call_id归位{moved_tools}条历史tool结果")
+    return normalized
+
+
 def _drop_orphan_tool_messages(messages: list) -> list:
     """
     清理会触发上游 tool_call_id 错误的消息，但不静默丢历史信息。
@@ -1966,6 +2007,7 @@ async def chat_completions(request: Request):
         messages = await build_partitioned_messages(
             session_id, all_msgs, partition_base_prompt, user_message
         )
+        messages = _normalize_tool_chains_by_id(messages)
         messages = _drop_orphan_tool_messages(messages)
 
         body["messages"] = messages

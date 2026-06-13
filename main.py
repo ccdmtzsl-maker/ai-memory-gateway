@@ -491,10 +491,12 @@ def _drop_orphan_tool_messages(messages: list) -> list:
 
     def _tool_call_summary(ast: dict, tools: list) -> str:
         lines = []
-        # 历史坏链里缺结果的 assistant(tool_calls) 不再降级成“工具调用: ...”文本；
-        # 按用户要求置为空格，避免污染上游上下文。
-        if ast and ast.get("tool_calls") and not tools:
-            return " "
+        if ast and ast.get("tool_calls"):
+            for tc in ast.get("tool_calls", []):
+                fn = tc.get("function") or {}
+                name = fn.get("name") or tc.get("name") or "unknown"
+                args = fn.get("arguments") or tc.get("arguments") or ""
+                lines.append(f"工具调用: {name}" + (f" 参数: {args}" if args else ""))
         for tool in tools:
             content = tool.get("content") or ""
             tool_call_id = tool.get("tool_call_id") or "unknown"
@@ -559,7 +561,7 @@ def _drop_orphan_tool_messages(messages: list) -> list:
                 orphan_tools_by_id.setdefault(tool_call_id or "unknown", []).append(msg)
             else:
                 content = msg.get("content") or ""
-                cleaned.append({"role": "assistant", "content": " "})
+                cleaned.append({"role": "assistant", "content": f"工具结果({tool_call_id or 'unknown'}): {content}"})
             sanitized_tools += 1
             continue
 
@@ -571,7 +573,7 @@ def _drop_orphan_tool_messages(messages: list) -> list:
         for tool in orphan_list:
             content = tool.get("content") or ""
             tool_call_id = tool.get("tool_call_id") or "unknown"
-            cleaned.append({"role": "assistant", "content": " "})
+            cleaned.append({"role": "assistant", "content": f"工具结果({tool_call_id}): {content}"})
 
     if sanitized_tools or sanitized_ast:
         print(f"🔧 分区模式: 发上游前降级不完整工具历史 assistant={sanitized_ast} tool={sanitized_tools}，保留内容并避免tool_call_id不匹配")
@@ -1052,23 +1054,9 @@ async def build_partitioned_messages(
     if history and history[-1].get('role') == 'user':
         current_user_msg = history.pop()
     
-    # 清洗孤立的tool消息（前面不是 assistant(tool_calls) 或另一条 tool 的）
-    # 防止DB里的重复tool消息导致消息乱序
-    cleaned = []
-    orphan_count = 0
-    for msg in history:
-        if msg.get('role') == 'tool':
-            prev = cleaned[-1] if cleaned else None
-            if prev and (prev.get('role') == 'tool' or 
-                        (prev.get('role') == 'assistant' and prev.get('tool_calls'))):
-                cleaned.append(msg)
-            else:
-                orphan_count += 1
-        else:
-            cleaned.append(msg)
-    if orphan_count > 0:
-        print(f"⚠️ 清理了 {orphan_count} 条孤立tool消息")
-    history = cleaned
+    # 不在分区构造阶段按“相邻顺序”删除 tool。历史工具链可能乱序，
+    # 进入本函数前已按 tool_call_id 尽量归组；剩余非法链统一交给最终 sanitizer 处理，
+    # 避免本来可恢复的 tool 在 _normalize_tool_chains_by_id 之前被提前丢弃。
     
 
     # 按逻辑轮分组（解决tool消息导致的轮计数错乱）
@@ -2020,6 +2008,7 @@ async def chat_completions(request: Request):
             client_increment = [last_user_msg] if last_user_msg else []
 
         all_msgs = db_msgs + client_increment
+        all_msgs = _normalize_tool_chains_by_id(all_msgs)
         
         # 后台保存仍只接收本轮真实tool；已同步写过的会被tool_call_id查重跳过
         tool_messages = [m for m in tool_messages if m.get("role") == "tool"]

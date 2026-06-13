@@ -559,7 +559,7 @@ def _drop_orphan_tool_messages(messages: list) -> list:
                 orphan_tools_by_id.setdefault(tool_call_id or "unknown", []).append(msg)
             else:
                 content = msg.get("content") or ""
-                cleaned.append({"role": "assistant", "content": f"工具结果({tool_call_id or 'unknown'}): {content}"})
+                cleaned.append({"role": "assistant", "content": " "})
             sanitized_tools += 1
             continue
 
@@ -571,7 +571,7 @@ def _drop_orphan_tool_messages(messages: list) -> list:
         for tool in orphan_list:
             content = tool.get("content") or ""
             tool_call_id = tool.get("tool_call_id") or "unknown"
-            cleaned.append({"role": "assistant", "content": f"工具结果({tool_call_id}): {content}"})
+            cleaned.append({"role": "assistant", "content": " "})
 
     if sanitized_tools or sanitized_ast:
         print(f"🔧 分区模式: 发上游前降级不完整工具历史 assistant={sanitized_ast} tool={sanitized_tools}，保留内容并避免tool_call_id不匹配")

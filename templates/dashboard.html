@@ -739,6 +739,7 @@
       if (document.getElementById('preset-url-input')) document.getElementById('preset-url-input').value = '';
       if (document.getElementById('preset-key-input')) document.getElementById('preset-key-input').value = '';
       renderModelPresets();
+      showToast('已添加预设: ' + name);
     }
 
     function removePreset(idx) {
@@ -764,6 +765,7 @@
       _origSaveBtn.onclick = async function(e) {
         // 先注入 modelPresets 到隐藏字段
         let hiddenInput = document.getElementById('set-modelPresets');
+        if (!hiddenInput) {
           hiddenInput = document.createElement('input');
           hiddenInput.type = 'hidden';
           hiddenInput.id = 'set-modelPresets';

@@ -1261,12 +1261,7 @@ async function loadConvMessages(sessionId, append = false) {
             const meta = msg.metadata || {};
             let displayContent = msg.content || '';
             if (!displayContent && meta.tool_calls && Array.isArray(meta.tool_calls)) {
-                displayContent = meta.tool_calls.map(tc => {
-                    const fn = tc.function || {};
-                    const name = fn.name || '(未知工具)';
-                    const args = fn.arguments || '';
-                    return `🔧 工具调用：${name}${args ? `\n参数：${args}` : ''}`;
-                }).join('\n\n');
+                displayContent = ' ';
             } else if (isTool && meta.tool_call_id) {
                 displayContent = `tool_call_id: ${meta.tool_call_id}\n\n${displayContent}`;
             }

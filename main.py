@@ -3968,29 +3968,30 @@ async def save_settings(request: Request):
                 await set_gateway_config("extractionPrompt", str(value))
                 set_extraction_prompt(str(value))
                 updated.append("extractionPrompt")
-
-        # --- consolidationPrompt 特殊处理 ---
-        if key == "consolidationPrompt":
-            await set_gateway_config("consolidationPrompt", str(value))
-            set_consolidation_prompt(str(value))
-            updated.append("consolidationPrompt")
-            continue
-
-        # --- modelPresets 特殊处理 ---
-        if key == "modelPresets":
-            presets_json = json.dumps(value) if isinstance(value, list) else str(value)
-            await set_gateway_config("modelPresets", presets_json)
-            updated.append("modelPresets")
-            continue
-
-        # --- activatePreset 特殊处理（激活某个预设 → 切换 DEFAULT_MODEL）---
-        if key == "activatePreset":
-            new_model = str(value)
-            globals()["DEFAULT_MODEL"] = new_model
-            await set_gateway_config("DEFAULT_MODEL", new_model)
-            updated.append(f"DEFAULT_MODEL→{new_model}")
-            continue
                 continue
+
+            # --- consolidationPrompt 特殊处理 ---
+            if key == "consolidationPrompt":
+                await set_gateway_config("consolidationPrompt", str(value))
+                set_consolidation_prompt(str(value))
+                updated.append("consolidationPrompt")
+                continue
+
+            # --- modelPresets 特殊处理 ---
+            if key == "modelPresets":
+                presets_json = json.dumps(value) if isinstance(value, list) else str(value)
+                await set_gateway_config("modelPresets", presets_json)
+                updated.append("modelPresets")
+                continue
+
+            # --- activatePreset 特殊处理（激活某个预设 → 切换 DEFAULT_MODEL）---
+            if key == "activatePreset":
+                new_model = str(value)
+                globals()["DEFAULT_MODEL"] = new_model
+                await set_gateway_config("DEFAULT_MODEL", new_model)
+                updated.append(f"DEFAULT_MODEL→{new_model}")
+                continue
+
 
             # --- 常规字段 ---
             await set_gateway_config(key, str(value))

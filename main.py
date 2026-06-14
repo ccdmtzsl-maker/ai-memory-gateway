@@ -1991,11 +1991,35 @@ async def chat_completions(request: Request):
         # 再重新读取 DB 构造 A/B 分区。这样后续请求不再依赖客户端携带完整历史。
         tool_messages = [m for m in client_new_msgs if m.get("role") == "tool"]
         if tool_messages:
+            # 构建客户端短id→DB原始长id映射（Operit可能缩短tool_call_id）
+            _id_map = {}
+            _db_ast_ids = []
+            for _m in db_msgs:
+                if _m.get("role") == "assistant" and _m.get("tool_calls"):
+                    for _tc in _m.get("tool_calls", []):
+                        if _tc.get("id"):
+                            _db_ast_ids.append(_tc["id"])
+            for _tm in tool_messages:
+                _tcid = _tm.get("tool_call_id")
+                if not _tcid:
+                    continue
+                if _tcid in _db_ast_ids:
+                    _id_map[_tcid] = _tcid
+                else:
+                    for _db_id in _db_ast_ids:
+                        if _db_id.endswith(_tcid) or _tcid.endswith(_db_id):
+                            _id_map[_tcid] = _db_id
+                            break
+            _mapped_diff = {k: v for k, v in _id_map.items() if k != v}
+            if _mapped_diff:
+                add_dashboard_log("info", f"🔧 tool_call_id映射(分区保存): {_mapped_diff}", category="chat", session_id=session_id)
+
             persisted_tools = 0
             for tm in tool_messages:
                 tool_call_id = tm.get("tool_call_id")
                 if not tool_call_id:
                     continue
+                db_tool_call_id = _id_map.get(tool_call_id, tool_call_id)
                 try:
                     pool = await get_pool()
                     async with pool.acquire() as conn:
@@ -2008,17 +2032,17 @@ async def chat_completions(request: Request):
                               AND metadata::jsonb ->> 'tool_call_id' = $2
                             LIMIT 1
                             """,
-                            session_id, tool_call_id
+                            session_id, db_tool_call_id
                         )
                     if exists:
                         continue
-                    meta_dict = {"tool_call_id": tool_call_id}
+                    meta_dict = {"tool_call_id": db_tool_call_id}
                     if tm.get("name"):
                         meta_dict["name"] = tm["name"]
                     await save_message(session_id, "tool", tm.get("content", ""), model, metadata=json.dumps(meta_dict))
                     persisted_tools += 1
                 except Exception as e:
-                    print(f"⚠️ 分区模式: 同步保存tool结果失败 id={tool_call_id}: {e}")
+                    print(f"⚠️ 分区模式: 同步保存tool结果失败 id={db_tool_call_id}: {e}")
             if persisted_tools:
                 print(f"🔧 分区模式: 已先写入{persisted_tools}条tool结果到DB，再重建历史")
                 try:

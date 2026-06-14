@@ -478,49 +478,6 @@ def _normalize_tool_chains_by_id(messages: list) -> list:
 
 
 
-def _drop_incomplete_tool_chains(messages: list, reason: str = "") -> list:
-    """移除没有完整 tool 结果的历史 assistant(tool_calls) 及其残留 tool，避免普通用户轮再次污染上游请求。"""
-    if not messages:
-        return messages
-
-    available_tool_ids = {m.get("tool_call_id") for m in messages if m.get("role") == "tool" and m.get("tool_call_id")}
-    kept_call_ids = set()
-    dropped_call_ids = set()
-
-    for msg in messages:
-        if msg.get("role") == "assistant" and msg.get("tool_calls"):
-            call_ids = {tc.get("id") for tc in msg.get("tool_calls", []) if tc.get("id")}
-            if call_ids and call_ids.issubset(available_tool_ids):
-                kept_call_ids.update(call_ids)
-            else:
-                dropped_call_ids.update(call_ids)
-
-    if not dropped_call_ids:
-        return messages
-
-    cleaned = []
-    dropped_ast = 0
-    dropped_tools = 0
-    for msg in messages:
-        if msg.get("role") == "assistant" and msg.get("tool_calls"):
-            call_ids = {tc.get("id") for tc in msg.get("tool_calls", []) if tc.get("id")}
-            if call_ids and call_ids.issubset(available_tool_ids):
-                cleaned.append(msg)
-            else:
-                dropped_ast += 1
-            continue
-        if msg.get("role") == "tool":
-            tool_call_id = msg.get("tool_call_id")
-            if tool_call_id in kept_call_ids:
-                cleaned.append(msg)
-            else:
-                dropped_tools += 1
-            continue
-        cleaned.append(msg)
-
-    print(f"🔧 分区模式: 移除不完整历史工具链 reason={reason} assistant={dropped_ast} tool={dropped_tools} ids={sorted(dropped_call_ids)}")
-    return cleaned
-
 
 def _drop_orphan_tool_messages(messages: list) -> list:
     """
@@ -555,8 +512,6 @@ def _drop_orphan_tool_messages(messages: list) -> list:
             return
         if pending_tool_ids:
             summary = _tool_call_summary(pending_ast, pending_tools)
-            pending_ids = [tc.get("id") for tc in pending_ast.get("tool_calls", []) if tc.get("id")]
-            print(f"🔧 sanitizer: assistant(tool_calls)缺少结果，降级为文本 ids={pending_ids}")
             if summary:
                 cleaned.append({"role": "assistant", "content": summary})
             sanitized_ast += 1
@@ -609,7 +564,6 @@ def _drop_orphan_tool_messages(messages: list) -> list:
                 orphan_tools_by_id.setdefault(tool_call_id or "unknown", []).append(msg)
             else:
                 content = msg.get("content") or ""
-                print(f"🔧 sanitizer: tool结果找不到对应assistant，降级为文本 id={tool_call_id or 'unknown'}")
                 cleaned.append({"role": "assistant", "content": f"工具结果({tool_call_id or 'unknown'}): {content}"})
             sanitized_tools += 1
             continue
@@ -1412,47 +1366,6 @@ async def persist_assistant_tool_calls_sync(session_id: str, user_msg: str, assi
         return False
 
 
-async def persist_recovered_tool_call_request(session_id: str, matching_ast: dict, preceding_user: dict, model: str, save_user: bool = False, reason: str = "") -> bool:
-    """工具结果轮发现 DB 缺 assistant(tool_calls) 时，把客户端携带的匹配调用补写进 DB。"""
-    tool_calls = matching_ast.get("tool_calls") if matching_ast else None
-    if not tool_calls:
-        return False
-    tool_call_ids = [tc.get("id") for tc in tool_calls if tc.get("id")]
-    if not tool_call_ids:
-        return False
-    try:
-        pool = await get_pool()
-        async with pool.acquire() as conn:
-            exists = await conn.fetchval(
-                """
-                SELECT 1
-                FROM conversations
-                WHERE session_id = $1
-                  AND role = 'assistant'
-                  AND metadata IS NOT NULL
-                  AND EXISTS (
-                    SELECT 1
-                    FROM jsonb_array_elements(metadata::jsonb -> 'tool_calls') AS elem
-                    WHERE elem ->> 'id' = ANY($2::text[])
-                  )
-                LIMIT 1
-                """,
-                session_id, tool_call_ids
-            )
-        if exists:
-            print(f"🔧 工具链修复: DB已存在assistant(tool_calls)，不重复补写 reason={reason} ids={tool_call_ids}")
-            return False
-
-        if save_user and preceding_user and preceding_user.get("content"):
-            await save_message(session_id, "user", preceding_user.get("content") or "", model)
-        ast_meta = json.dumps({"tool_calls": tool_calls})
-        await save_message(session_id, "assistant", matching_ast.get("content") or "", model, metadata=ast_meta)
-        print(f"🔧 工具链修复: 已补写assistant(tool_calls)到DB reason={reason} ids={tool_call_ids}")
-        return True
-    except Exception as e:
-        print(f"⚠️ 工具链修复: 补写assistant(tool_calls)失败 reason={reason} ids={tool_call_ids}: {e}")
-        return False
-
 
 async def process_memories_background(session_id: str, user_msg: str, assistant_msg: str, model: str, context_messages: list = None, skip_conversation_log: bool = False, tool_messages: list = None, assistant_tool_calls: list = None, assistant_reasoning: str = None):
     """
@@ -1938,7 +1851,6 @@ async def chat_completions(request: Request):
                 dangling_count += 1
             if dangling_count:
                 print(f"🔧 分区模式: 清理{dangling_count}条末尾悬空assistant(tool_calls)")
-            db_msgs = _drop_incomplete_tool_chains(db_msgs, reason="普通用户轮无tool结果")
 
         if client_tools:
             # 判断DB是否处于"等待tool结果"状态（最后一条是assistant(tool_calls)）
@@ -1981,11 +1893,7 @@ async def chat_completions(request: Request):
                                     preceding_user = messages[back]
                                     break
                             break
-                    await persist_recovered_tool_call_request(
-                        session_id, matching_ast, preceding_user, model,
-                        save_user=bool(preceding_user and not db_msgs),
-                        reason="DB延迟防护"
-                    )
+
                     # 重建client_new_msgs: [user] + assistant(tool_calls) + tool results
                     # 让tool结果作为真正的末尾，不追加重复user。
                     client_new_msgs = []
@@ -2037,11 +1945,7 @@ async def chat_completions(request: Request):
                                         preceding_user = messages[back]
                                         break
                                 break
-                        await persist_recovered_tool_call_request(
-                            session_id, matching_ast, preceding_user, model,
-                            save_user=bool(preceding_user and not db_msgs),
-                            reason="DB旧残留回退"
-                        )
+
                         client_new_msgs = []
                         if preceding_user and not db_msgs:
                             client_new_msgs.append(preceding_user)

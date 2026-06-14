@@ -2189,6 +2189,7 @@ async def chat_completions(request: Request):
             client_increment = [last_user_msg] if last_user_msg else []
 
         all_msgs = db_msgs + client_increment
+        all_msgs = _repair_tool_call_ids_by_adjacency(all_msgs, session_id=session_id, reason="all_msgs")
 
         # 诊断：打印 db_msgs 中工具链结构到仪表盘日志
         _diag_tool_chains = []
@@ -2226,6 +2227,7 @@ async def chat_completions(request: Request):
         messages = await build_partitioned_messages(
             session_id, all_msgs, partition_base_prompt, user_message
         )
+        messages = _repair_tool_call_ids_by_adjacency(messages, session_id=session_id, reason="final_messages")
         messages = _normalize_tool_chains_by_id(messages)
         messages = _drop_orphan_tool_messages(messages)
 

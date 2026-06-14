@@ -476,6 +476,40 @@ def _normalize_tool_chains_by_id(messages: list) -> list:
 
 
 
+def _recover_legacy_textual_tool_messages(messages: list) -> list:
+    """把旧版文本化工具结果恢复为协议 tool 消息；工具调用文本无法可靠恢复，置为空格。"""
+    recovered = []
+    converted_results = 0
+    blanked_calls = 0
+    for msg in messages or []:
+        if msg.get("role") == "assistant" and not msg.get("tool_calls"):
+            content = msg.get("content")
+            if isinstance(content, str):
+                stripped = content.lstrip()
+                if stripped.startswith("工具结果("):
+                    end_idx = stripped.find("):")
+                    if end_idx > len("工具结果("):
+                        tool_call_id = stripped[len("工具结果("):end_idx]
+                        tool_content = stripped[end_idx + 2:].lstrip()
+                        recovered.append({
+                            "role": "tool",
+                            "content": tool_content,
+                            "tool_call_id": tool_call_id,
+                        })
+                        converted_results += 1
+                        continue
+                if stripped.startswith("工具调用:") or stripped.startswith("工具调用："):
+                    m = dict(msg)
+                    m["content"] = " "
+                    recovered.append(m)
+                    blanked_calls += 1
+                    continue
+        recovered.append(msg)
+    if converted_results or blanked_calls:
+        print(f"🔧 分区模式: 恢复旧文本工具结果{converted_results}条，置空旧文本工具调用{blanked_calls}条")
+    return recovered
+
+
 def _drop_orphan_tool_messages(messages: list) -> list:
     """
     清理会触发上游 tool_call_id 错误的消息，但不静默丢历史信息。
@@ -2008,6 +2042,7 @@ async def chat_completions(request: Request):
             client_increment = [last_user_msg] if last_user_msg else []
 
         all_msgs = db_msgs + client_increment
+        all_msgs = _recover_legacy_textual_tool_messages(all_msgs)
         all_msgs = _normalize_tool_chains_by_id(all_msgs)
         
         # 后台保存仍只接收本轮真实tool；已同步写过的会被tool_call_id查重跳过

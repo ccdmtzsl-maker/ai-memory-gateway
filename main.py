@@ -1322,25 +1322,12 @@ async def build_partitioned_messages(
         result.append(m)
     
     if current_user_msg:
-        time_text = ""
-
-        current_text = current_user_msg['content']
-        if isinstance(current_text, list):
-            current_text = " ".join(
-                item.get("text", "") for item in current_text
-                if isinstance(item, dict) and item.get("type") == "text"
-            )
-        
-        current_text, env_text, attachment_time = extract_environment_bundle_from_text(current_text)
-        current_text, operit_memory_text = extract_operit_memory_attachment_from_text(current_text)
-        current_text, proxy_env_text, proxy_time = extract_proxy_sender_context_from_text(current_text)
-        if proxy_env_text:
-            env_text = "\n\n".join(part for part in [env_text, proxy_env_text] if part)
-        if attachment_time or proxy_time:
-            time_text = _shorten_client_timestamp(attachment_time or proxy_time, history)
-        if time_text:
-            current_text = f"{time_text}{current_text}"
-        result.append({"role": "user", "content": current_text})
+        current_content, env_text, operit_memory_text = _clean_current_user_content_preserve_multimodal(
+            current_user_msg.get('content', ''),
+            history=history,
+            shorten_time=True,
+        )
+        result.append({"role": "user", "content": current_content})
 
         # 环境/插件上下文后置为轻量 system 消息，避免原始注入污染用户正文。
         if env_text:
@@ -1389,25 +1376,12 @@ async def _build_basic_cached(
         result.append(m)
     
     if current_user_msg:
-        time_text = ""
-
-        current_text = current_user_msg['content']
-        if isinstance(current_text, list):
-            current_text = " ".join(
-                item.get("text", "") for item in current_text
-                if isinstance(item, dict) and item.get("type") == "text"
-            )
-        
-        current_text, env_text, attachment_time = extract_environment_bundle_from_text(current_text)
-        current_text, operit_memory_text = extract_operit_memory_attachment_from_text(current_text)
-        current_text, proxy_env_text, proxy_time = extract_proxy_sender_context_from_text(current_text)
-        if proxy_env_text:
-            env_text = "\n\n".join(part for part in [env_text, proxy_env_text] if part)
-        if attachment_time or proxy_time:
-            time_text = attachment_time or proxy_time
-        if time_text:
-            current_text = f"{time_text}{current_text}"
-        result.append({"role": "user", "content": current_text})
+        current_content, env_text, operit_memory_text = _clean_current_user_content_preserve_multimodal(
+            current_user_msg.get('content', ''),
+            history=history,
+            shorten_time=False,
+        )
+        result.append({"role": "user", "content": current_content})
 
         # 环境/插件上下文后置为轻量 system 消息，避免原始注入污染用户正文。
         if env_text:

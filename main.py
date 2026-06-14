@@ -1501,31 +1501,19 @@ async def process_memories_background(session_id: str, user_msg: str, assistant_
             print(f"⏭️  跳过对话存储（辅助请求）")
         elif tool_messages:
             # 工具结果轮次：存tool消息 + assistant回复（user消息在之前的轮次已存过）
-            # 构建客户端短id→DB原始长id映射（Operit可能缩短tool_call_id）
+            # 构建客户端短id→DB原始长id映射：按最近未满足的 assistant(tool_calls) 顺序配对
             _bg_id_map = {}
             try:
-                _bg_recent = await get_conversation_messages(session_id, limit=50)
-                _bg_db_ids = []
-                for _row in (_bg_recent or []):
-                    if _row.get("role") == "assistant" and _row.get("metadata"):
-                        try:
-                            _meta = json.loads(_row["metadata"])
-                            for _tc in _meta.get("tool_calls", []):
-                                if _tc.get("id"):
-                                    _bg_db_ids.append(_tc["id"])
-                        except Exception:
-                            pass
-                for _tm in tool_messages:
-                    _tcid = _tm.get("tool_call_id")
-                    if not _tcid:
-                        continue
-                    if _tcid in _bg_db_ids:
-                        _bg_id_map[_tcid] = _tcid
-                    else:
-                        for _db_id in _bg_db_ids:
-                            if _db_id.endswith(_tcid) or _tcid.endswith(_db_id):
-                                _bg_id_map[_tcid] = _db_id
-                                break
+                _bg_recent_rows = await get_conversation_messages(session_id, limit=50)
+                _bg_recent_msgs = []
+                for _row in (_bg_recent_rows or []):
+                    _msg = db_row_to_message(_row)
+                    _msg["created_at"] = _row.get("created_at")
+                    _bg_recent_msgs.append(_msg)
+                _bg_id_map = _map_tool_ids_to_db_pending(_bg_recent_msgs, tool_messages)
+                _bg_mapped_diff = {k: v for k, v in _bg_id_map.items() if k != v}
+                if _bg_mapped_diff:
+                    add_dashboard_log("info", f"🔧 tool_call_id映射(后台保存): {_bg_mapped_diff}", category="chat", session_id=session_id)
             except Exception as _e:
                 print(f"⚠️后台存储: id映射构建失败: {_e}")
 

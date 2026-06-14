@@ -1412,6 +1412,48 @@ async def persist_assistant_tool_calls_sync(session_id: str, user_msg: str, assi
         return False
 
 
+async def persist_recovered_tool_call_request(session_id: str, matching_ast: dict, preceding_user: dict, model: str, save_user: bool = False, reason: str = "") -> bool:
+    """工具结果轮发现 DB 缺 assistant(tool_calls) 时，把客户端携带的匹配调用补写进 DB。"""
+    tool_calls = matching_ast.get("tool_calls") if matching_ast else None
+    if not tool_calls:
+        return False
+    tool_call_ids = [tc.get("id") for tc in tool_calls if tc.get("id")]
+    if not tool_call_ids:
+        return False
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            exists = await conn.fetchval(
+                """
+                SELECT 1
+                FROM conversations
+                WHERE session_id = $1
+                  AND role = 'assistant'
+                  AND metadata IS NOT NULL
+                  AND EXISTS (
+                    SELECT 1
+                    FROM jsonb_array_elements(metadata::jsonb -> 'tool_calls') AS elem
+                    WHERE elem ->> 'id' = ANY($2::text[])
+                  )
+                LIMIT 1
+                """,
+                session_id, tool_call_ids
+            )
+        if exists:
+            print(f"🔧 工具链修复: DB已存在assistant(tool_calls)，不重复补写 reason={reason} ids={tool_call_ids}")
+            return False
+
+        if save_user and preceding_user and preceding_user.get("content"):
+            await save_message(session_id, "user", preceding_user.get("content") or "", model)
+        ast_meta = json.dumps({"tool_calls": tool_calls})
+        await save_message(session_id, "assistant", matching_ast.get("content") or "", model, metadata=ast_meta)
+        print(f"🔧 工具链修复: 已补写assistant(tool_calls)到DB reason={reason} ids={tool_call_ids}")
+        return True
+    except Exception as e:
+        print(f"⚠️ 工具链修复: 补写assistant(tool_calls)失败 reason={reason} ids={tool_call_ids}: {e}")
+        return False
+
+
 async def process_memories_background(session_id: str, user_msg: str, assistant_msg: str, model: str, context_messages: list = None, skip_conversation_log: bool = False, tool_messages: list = None, assistant_tool_calls: list = None, assistant_reasoning: str = None):
     """
     后台异步：存储对话 + 提取记忆（不阻塞主流程）
@@ -1939,6 +1981,11 @@ async def chat_completions(request: Request):
                                     preceding_user = messages[back]
                                     break
                             break
+                    await persist_recovered_tool_call_request(
+                        session_id, matching_ast, preceding_user, model,
+                        save_user=bool(preceding_user and not db_msgs),
+                        reason="DB延迟防护"
+                    )
                     # 重建client_new_msgs: [user] + assistant(tool_calls) + tool results
                     # 让tool结果作为真正的末尾，不追加重复user。
                     client_new_msgs = []
@@ -1990,6 +2037,11 @@ async def chat_completions(request: Request):
                                         preceding_user = messages[back]
                                         break
                                 break
+                        await persist_recovered_tool_call_request(
+                            session_id, matching_ast, preceding_user, model,
+                            save_user=bool(preceding_user and not db_msgs),
+                            reason="DB旧残留回退"
+                        )
                         client_new_msgs = []
                         if preceding_user and not db_msgs:
                             client_new_msgs.append(preceding_user)

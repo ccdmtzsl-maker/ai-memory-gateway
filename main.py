@@ -2104,25 +2104,8 @@ async def chat_completions(request: Request):
         # 再重新读取 DB 构造 A/B 分区。这样后续请求不再依赖客户端携带完整历史。
         tool_messages = [m for m in client_new_msgs if m.get("role") == "tool"]
         if tool_messages:
-            # 构建客户端短id→DB原始长id映射（Operit可能缩短tool_call_id）
-            _id_map = {}
-            _db_ast_ids = []
-            for _m in db_msgs:
-                if _m.get("role") == "assistant" and _m.get("tool_calls"):
-                    for _tc in _m.get("tool_calls", []):
-                        if _tc.get("id"):
-                            _db_ast_ids.append(_tc["id"])
-            for _tm in tool_messages:
-                _tcid = _tm.get("tool_call_id")
-                if not _tcid:
-                    continue
-                if _tcid in _db_ast_ids:
-                    _id_map[_tcid] = _tcid
-                else:
-                    for _db_id in _db_ast_ids:
-                        if _db_id.endswith(_tcid) or _tcid.endswith(_db_id):
-                            _id_map[_tcid] = _db_id
-                            break
+            # 构建客户端短id→DB原始长id映射：按最近未满足的 assistant(tool_calls) 顺序配对
+            _id_map = _map_tool_ids_to_db_pending(db_msgs, tool_messages)
             _mapped_diff = {k: v for k, v in _id_map.items() if k != v}
             if _mapped_diff:
                 add_dashboard_log("info", f"🔧 tool_call_id映射(分区保存): {_mapped_diff}", category="chat", session_id=session_id)

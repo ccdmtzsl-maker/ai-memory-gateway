@@ -2237,34 +2237,8 @@ async def chat_completions(request: Request):
         all_msgs = db_msgs + client_increment
         all_msgs = _repair_tool_call_ids_by_adjacency(all_msgs, session_id=session_id, reason="all_msgs")
 
-        # 诊断：打印 db_msgs 中工具链结构到仪表盘日志
-        _diag_tool_chains = []
-        for _i, _m in enumerate(db_msgs):
-            _r = _m.get("role")
-            if _r == "assistant" and _m.get("tool_calls"):
-                _ids = [tc.get("id", "?") for tc in _m.get("tool_calls", [])]
-                _diag_tool_chains.append(f"#{_i} ast(tc={_ids})")
-            elif _r == "tool":
-                _tcid = _m.get("tool_call_id", "MISSING")
-                _diag_tool_chains.append(f"#{_i} tool(id={_tcid})")
-        if _diag_tool_chains:
-            add_dashboard_log("info", f"🔎 DB工具链诊断(归组前): {' | '.join(_diag_tool_chains)}", category="chat", session_id=session_id)
-
         all_msgs = _normalize_tool_chains_by_id(all_msgs)
 
-        # 诊断：归组后工具链结构
-        _diag_after = []
-        for _i, _m in enumerate(all_msgs):
-            _r = _m.get("role")
-            if _r == "assistant" and _m.get("tool_calls"):
-                _ids = [tc.get("id", "?") for tc in _m.get("tool_calls", [])]
-                _diag_after.append(f"#{_i} ast(tc={_ids})")
-            elif _r == "tool":
-                _tcid = _m.get("tool_call_id", "MISSING")
-                _diag_after.append(f"#{_i} tool(id={_tcid})")
-        if _diag_after:
-            add_dashboard_log("info", f"🔎 工具链诊断(归组后): {' | '.join(_diag_after)}", category="chat", session_id=session_id)
-        
         # 后台保存仍只接收本轮真实tool；已同步写过的会被tool_call_id查重跳过
         tool_messages = [m for m in tool_messages if m.get("role") == "tool"]
         

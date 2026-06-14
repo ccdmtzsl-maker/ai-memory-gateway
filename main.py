@@ -2870,7 +2870,7 @@ async def consolidate_memories_for_date_range(start_date, end_date):
                     json={
                         "model": consolidation_model,
                         "messages": [{"role": "user", "content": prompt}],
-                        "max_tokens": 2000
+                        "max_tokens": 9000
                     }
                 )
 
@@ -2922,7 +2922,7 @@ async def consolidate_memories_for_date_range(start_date, end_date):
                                 json={
                                     "model": consolidation_model,
                                     "messages": [{"role": "user", "content": f"请修复以下JSON的语法错误，只输出修复后的JSON数组，不要其他内容：\n{json_str[:2000]}"}],
-                                    "max_tokens": 2000
+                                    "max_tokens": 9000
                                 }
                             )
                             if fix_resp.status_code == 200:

@@ -760,6 +760,78 @@ def _format_hm_duration(text: str) -> str:
     return (text or "").strip().replace(" ", "")
 
 
+def _clean_current_user_content_preserve_multimodal(content, history: list = None, shorten_time: bool = False) -> tuple:
+    """
+    清理当前用户消息里的 Operit 环境/记忆/proxy 文本附件，同时保留多模态内容。
+
+    规则：
+    - str content：沿用旧逻辑，清理白名单附件，不匹配的附件原样保留。
+    - list content：只处理 type=text 的文本块；image_url/input_image/file 等非文本块原样保留。
+    - 不匹配环境/记忆/proxy 规则的 <attachment> 由 extract_* 内部原样返回，不删除。
+    """
+    env_parts = []
+    operit_memory_parts = []
+    time_text = ""
+
+    def _clean_one_text(text: str) -> str:
+        nonlocal time_text
+        if not isinstance(text, str):
+            return text
+
+        cleaned, env_text, attachment_time = extract_environment_bundle_from_text(text)
+        cleaned, operit_memory_text = extract_operit_memory_attachment_from_text(cleaned)
+        cleaned, proxy_env_text, proxy_time = extract_proxy_sender_context_from_text(cleaned)
+
+        if env_text:
+            env_parts.append(env_text)
+        if proxy_env_text:
+            env_parts.append(proxy_env_text)
+        if operit_memory_text:
+            operit_memory_parts.append(operit_memory_text)
+
+        raw_time = attachment_time or proxy_time
+        if raw_time and not time_text:
+            time_text = _shorten_client_timestamp(raw_time, history) if shorten_time else raw_time
+
+        return cleaned
+
+    if isinstance(content, list):
+        new_blocks = []
+        first_text_index = None
+
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "text":
+                new_text = _clean_one_text(block.get("text", ""))
+                if new_text and new_text.strip():
+                    new_block = dict(block)
+                    new_block["text"] = new_text
+                    if first_text_index is None:
+                        first_text_index = len(new_blocks)
+                    new_blocks.append(new_block)
+            else:
+                # 非文本块原样保留：image_url / input_image / file / 任何自定义附件
+                new_blocks.append(block)
+
+        if time_text:
+            if first_text_index is not None:
+                blk = dict(new_blocks[first_text_index])
+                blk["text"] = f"{time_text}{blk.get('text', '')}"
+                new_blocks[first_text_index] = blk
+            else:
+                new_blocks.insert(0, {"type": "text", "text": time_text})
+
+        cleaned_content = new_blocks if new_blocks else ""
+    else:
+        cleaned_text = _clean_one_text(content if isinstance(content, str) else str(content or ""))
+        if time_text:
+            cleaned_text = f"{time_text}{cleaned_text}"
+        cleaned_content = cleaned_text
+
+    env_text_final = "\n\n".join(part for part in env_parts if part)
+    operit_memory_final = "\n\n".join(part for part in operit_memory_parts if part)
+    return cleaned_content, env_text_final, operit_memory_final
+
+
 def extract_environment_bundle_from_text(text: str) -> tuple[str, str, str]:
     """识别并压缩 Operit 注入的 text/plain 环境附件。
     返回: (清理后的用户文本, 轻量环境上下文, 附件时间戳)

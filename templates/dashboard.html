@@ -489,6 +489,18 @@
                         </div>
                         <small class="form-hint"><span id="model-count-hint"></span> <a href="#" onclick="loadModelList();return false;" style="color:var(--primary);">刷新列表</a></small>
                     </div>
+                                        <div class="settings-field">
+                        <label>模型预设</label>
+                        <div id="model-presets-container" style="margin-bottom:8px;">
+                          <div id="model-presets-list" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px;"></div>
+                          <div style="display:flex;gap:6px;align-items:center;">
+                            <input type="text" id="preset-name-input" class="input" placeholder="名称" style="width:80px;flex:none;">
+                            <input type="text" id="preset-model-input" class="input" placeholder="模型 ID（如 anthropic/claude-sonnet-4）" style="flex:1;">
+                            <button class="btn btn-sm" onclick="addModelPreset()">添加</button>
+                          </div>
+                        </div>
+                        <small class="form-hint">点击预设名称即可快速切换当前模型。添加后需点保存设置。</small>
+                    </div>
                     <div class="settings-field">
                         <label>温度参数 (CHAT_TEMPERATURE)</label>
                         <input type="number" id="set-CHAT_TEMPERATURE" class="input" min="0" max="2" step="0.01" placeholder="留空则不覆盖客户端">
@@ -678,6 +690,80 @@
         </main>
     </div>
 
-    <script src="/static/js/dashboard.js?v=4.1"></script>
+    <script src="/static/js/dashboard.js?v=4.1">
+    // --- 模型预设管理 ---
+    let _modelPresets = [];
+
+    function renderModelPresets() {
+      const list = document.getElementById('model-presets-list');
+      const currentModel = document.getElementById('set-DEFAULT_MODEL').value;
+      list.innerHTML = _modelPresets.map((p, i) => {
+        const isActive = p.model === currentModel;
+        return '<span style="display:inline-flex;align-items:center;gap:4px;padding:4px 10px;border-radius:6px;font-size:13px;cursor:pointer;'
+          + (isActive ? 'background:#4f46e5;color:#fff;' : 'background:#f3f4f6;color:#374151;border:1px solid #e5e7eb;')
+          + '" onclick="activatePreset(' + i + ')">'
+          + p.name
+          + '<span onclick="event.stopPropagation();removePreset(' + i + ')" style="margin-left:4px;opacity:0.6;font-size:11px;cursor:pointer;">✕</span>'
+          + '</span>';
+      }).join('');
+    }
+
+    function activatePreset(idx) {
+      const preset = _modelPresets[idx];
+      document.getElementById('set-DEFAULT_MODEL').value = preset.model;
+      // 立即激活（不需要点保存）
+      fetch('/api/settings', {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({activatePreset: preset.model})
+      }).then(r => r.json()).then(d => {
+        showToast('已切换模型: ' + preset.name + ' (' + preset.model + ')');
+        renderModelPresets();
+      });
+    }
+
+    function addModelPreset() {
+      const name = document.getElementById('preset-name-input').value.trim();
+      const model = document.getElementById('preset-model-input').value.trim();
+      _modelPresets.push({name, model});
+      document.getElementById('preset-name-input').value = '';
+      document.getElementById('preset-model-input').value = '';
+      renderModelPresets();
+    }
+
+    function removePreset(idx) {
+      _modelPresets.splice(idx, 1);
+      renderModelPresets();
+    }
+
+    // loadSettings 钩子：加载预设
+    const _origLoadSettings = typeof loadSettings === 'function' ? loadSettings : null;
+    document.addEventListener('DOMContentLoaded', () => {
+      // 等原始 loadSettings 跑完后处理预设
+      setTimeout(() => {
+        fetch('/api/settings').then(r=>r.json()).then(data => {
+          if (data.modelPresets) { _modelPresets = data.modelPresets; renderModelPresets(); }
+        });
+      }, 500);
+    });
+
+    // saveSettings 时把预设一起存
+    const _origSaveBtn = document.getElementById('save-settings-btn');
+    if (_origSaveBtn) {
+      const origClick = _origSaveBtn.onclick;
+      _origSaveBtn.onclick = async function(e) {
+        // 先注入 modelPresets 到隐藏字段
+        let hiddenInput = document.getElementById('set-modelPresets');
+          hiddenInput = document.createElement('input');
+          hiddenInput.type = 'hidden';
+          hiddenInput.id = 'set-modelPresets';
+          _origSaveBtn.parentNode.appendChild(hiddenInput);
+        }
+        hiddenInput.value = JSON.stringify(_modelPresets);
+        if (origClick) return origClick.call(this, e);
+      };
+    }
+
+    </script>
 </body>
 </html>

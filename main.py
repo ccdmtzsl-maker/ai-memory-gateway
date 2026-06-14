@@ -479,6 +479,102 @@ def _normalize_tool_chains_by_id(messages: list) -> list:
 
 
 
+def _repair_tool_call_ids_by_adjacency(messages: list, session_id: str = "", reason: str = "") -> list:
+    """
+    修复同一条历史链里 assistant(tool_calls).id 与紧随其后的 tool.tool_call_id 不一致的问题。
+
+    不靠字符串相似度；只按 OpenAI 工具协议的邻接关系修：
+        assistant(tool_calls=[A])
+        tool(tool_call_id=B)
+    若 B 不属于 A 集合，则按顺序改成 A。
+    """
+    if not messages:
+        return messages
+
+    repaired = []
+    pending_ids = []
+    pending_set = set()
+    repairs = []
+
+    for msg in messages:
+        m = dict(msg)
+
+        if m.get("role") == "assistant" and m.get("tool_calls"):
+            pending_ids = [tc.get("id") for tc in (m.get("tool_calls") or []) if tc.get("id")]
+            pending_set = set(pending_ids)
+            repaired.append(m)
+            continue
+
+        if m.get("role") == "tool":
+            old_id = m.get("tool_call_id")
+            if pending_ids:
+                if old_id in pending_set:
+                    if old_id in pending_ids:
+                        pending_ids.remove(old_id)
+                else:
+                    new_id = pending_ids.pop(0)
+                    m["tool_call_id"] = new_id
+                    repairs.append(f"{old_id or 'MISSING'}->{new_id}")
+                repaired.append(m)
+                continue
+
+            repaired.append(m)
+            continue
+
+        # assistant(tool_calls) 后如果不是 tool，说明这条链已经结束/不完整，停止邻接映射。
+        pending_ids = []
+        pending_set = set()
+        repaired.append(m)
+
+    if repairs:
+        log_msg = f"🔧 tool_call_id邻接修复{f'({reason})' if reason else ''}: " + " | ".join(repairs[:20])
+        try:
+            add_dashboard_log("info", log_msg, category="chat", session_id=session_id)
+        except Exception:
+            print(log_msg)
+
+    return repaired
+
+
+def _map_tool_ids_to_db_pending(db_msgs: list, tool_messages: list) -> dict:
+    """
+    保存 tool 结果前，把客户端 tool_call_id 映射回 DB 中最近仍在等待结果的 assistant(tool_calls).id。
+    不使用字符串后缀/包含关系，只按 DB 中最近未满足的 assistant(tool_calls) 和本轮 tool 顺序配对。
+    """
+    if not db_msgs or not tool_messages:
+        return {}
+
+    saved_tool_ids = {
+        m.get("tool_call_id")
+        for m in db_msgs
+        if m.get("role") == "tool" and m.get("tool_call_id")
+    }
+
+    pending_ids = []
+    for m in reversed(db_msgs):
+        if m.get("role") == "assistant" and m.get("tool_calls"):
+            ids = [tc.get("id") for tc in (m.get("tool_calls") or []) if tc.get("id")]
+            remaining = [i for i in ids if i not in saved_tool_ids]
+            if remaining:
+                pending_ids = remaining
+                break
+
+    if not pending_ids:
+        return {}
+
+    mapping = {}
+    for tm in tool_messages:
+        cid = tm.get("tool_call_id")
+        if not cid or not pending_ids:
+            continue
+        if cid in pending_ids:
+            mapping[cid] = cid
+            pending_ids.remove(cid)
+        else:
+            mapping[cid] = pending_ids.pop(0)
+    return mapping
+
+
 def _drop_orphan_tool_messages(messages: list) -> list:
     """
     清理会触发上游 tool_call_id 错误的消息，但不静默丢历史信息。

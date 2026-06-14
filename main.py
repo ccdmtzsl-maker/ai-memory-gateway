@@ -1405,16 +1405,45 @@ async def process_memories_background(session_id: str, user_msg: str, assistant_
             print(f"⏭️  跳过对话存储（辅助请求）")
         elif tool_messages:
             # 工具结果轮次：存tool消息 + assistant回复（user消息在之前的轮次已存过）
+            # 构建客户端短id→DB原始长id映射（Operit可能缩短tool_call_id）
+            _bg_id_map = {}
+            try:
+                _bg_recent = await get_conversation_messages(session_id, limit=50)
+                _bg_db_ids = []
+                for _row in (_bg_recent or []):
+                    if _row.get("role") == "assistant" and _row.get("metadata"):
+                        try:
+                            _meta = json.loads(_row["metadata"])
+                            for _tc in _meta.get("tool_calls", []):
+                                if _tc.get("id"):
+                                    _bg_db_ids.append(_tc["id"])
+                        except Exception:
+                            pass
+                for _tm in tool_messages:
+                    _tcid = _tm.get("tool_call_id")
+                    if not _tcid:
+                        continue
+                    if _tcid in _bg_db_ids:
+                        _bg_id_map[_tcid] = _tcid
+                    else:
+                        for _db_id in _bg_db_ids:
+                            if _db_id.endswith(_tcid) or _tcid.endswith(_db_id):
+                                _bg_id_map[_tcid] = _db_id
+                                break
+            except Exception as _e:
+                print(f"⚠️后台存储: id映射构建失败: {_e}")
+
             for tm in tool_messages:
                 meta_dict = {}
                 tool_call_id = tm.get("tool_call_id")
-                if tool_call_id:
-                    meta_dict["tool_call_id"] = tool_call_id
+                db_tool_call_id = _bg_id_map.get(tool_call_id, tool_call_id) if tool_call_id else tool_call_id
+                if db_tool_call_id:
+                    meta_dict["tool_call_id"] = db_tool_call_id
                 if tm.get("name"):
                     meta_dict["name"] = tm["name"]
                 meta = json.dumps(meta_dict) if meta_dict else None
 
-                if tool_call_id:
+                if db_tool_call_id:
                     try:
                         pool = await get_pool()
                         async with pool.acquire() as conn:
@@ -1427,11 +1456,11 @@ async def process_memories_background(session_id: str, user_msg: str, assistant_
                                   AND metadata::jsonb ->> 'tool_call_id' = $2
                                 LIMIT 1
                                 """,
-                                session_id, tool_call_id
+                                session_id, db_tool_call_id
                             )
                         if exists:
-                            print(f"🔧 存储: 跳过重复tool结果 id={tool_call_id}")
-                            continue
+                            print(f"🔧 存储: 跳过重复tool结果 id={db_tool_call_id}")
+continue
                     except Exception as e:
                         print(f"⚠️ tool结果查重失败，继续保存: {e}")
 

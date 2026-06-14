@@ -478,6 +478,50 @@ def _normalize_tool_chains_by_id(messages: list) -> list:
 
 
 
+def _drop_incomplete_tool_chains(messages: list, reason: str = "") -> list:
+    """移除没有完整 tool 结果的历史 assistant(tool_calls) 及其残留 tool，避免普通用户轮再次污染上游请求。"""
+    if not messages:
+        return messages
+
+    available_tool_ids = {m.get("tool_call_id") for m in messages if m.get("role") == "tool" and m.get("tool_call_id")}
+    kept_call_ids = set()
+    dropped_call_ids = set()
+
+    for msg in messages:
+        if msg.get("role") == "assistant" and msg.get("tool_calls"):
+            call_ids = {tc.get("id") for tc in msg.get("tool_calls", []) if tc.get("id")}
+            if call_ids and call_ids.issubset(available_tool_ids):
+                kept_call_ids.update(call_ids)
+            else:
+                dropped_call_ids.update(call_ids)
+
+    if not dropped_call_ids:
+        return messages
+
+    cleaned = []
+    dropped_ast = 0
+    dropped_tools = 0
+    for msg in messages:
+        if msg.get("role") == "assistant" and msg.get("tool_calls"):
+            call_ids = {tc.get("id") for tc in msg.get("tool_calls", []) if tc.get("id")}
+            if call_ids and call_ids.issubset(available_tool_ids):
+                cleaned.append(msg)
+            else:
+                dropped_ast += 1
+            continue
+        if msg.get("role") == "tool":
+            tool_call_id = msg.get("tool_call_id")
+            if tool_call_id in kept_call_ids:
+                cleaned.append(msg)
+            else:
+                dropped_tools += 1
+            continue
+        cleaned.append(msg)
+
+    print(f"🔧 分区模式: 移除不完整历史工具链 reason={reason} assistant={dropped_ast} tool={dropped_tools} ids={sorted(dropped_call_ids)}")
+    return cleaned
+
+
 def _drop_orphan_tool_messages(messages: list) -> list:
     """
     清理会触发上游 tool_call_id 错误的消息，但不静默丢历史信息。
@@ -511,6 +555,8 @@ def _drop_orphan_tool_messages(messages: list) -> list:
             return
         if pending_tool_ids:
             summary = _tool_call_summary(pending_ast, pending_tools)
+            pending_ids = [tc.get("id") for tc in pending_ast.get("tool_calls", []) if tc.get("id")]
+            print(f"🔧 sanitizer: assistant(tool_calls)缺少结果，降级为文本 ids={pending_ids}")
             if summary:
                 cleaned.append({"role": "assistant", "content": summary})
             sanitized_ast += 1
@@ -563,6 +609,7 @@ def _drop_orphan_tool_messages(messages: list) -> list:
                 orphan_tools_by_id.setdefault(tool_call_id or "unknown", []).append(msg)
             else:
                 content = msg.get("content") or ""
+                print(f"🔧 sanitizer: tool结果找不到对应assistant，降级为文本 id={tool_call_id or 'unknown'}")
                 cleaned.append({"role": "assistant", "content": f"工具结果({tool_call_id or 'unknown'}): {content}"})
             sanitized_tools += 1
             continue
@@ -1849,6 +1896,7 @@ async def chat_completions(request: Request):
                 dangling_count += 1
             if dangling_count:
                 print(f"🔧 分区模式: 清理{dangling_count}条末尾悬空assistant(tool_calls)")
+            db_msgs = _drop_incomplete_tool_chains(db_msgs, reason="普通用户轮无tool结果")
 
         if client_tools:
             # 判断DB是否处于"等待tool结果"状态（最后一条是assistant(tool_calls)）

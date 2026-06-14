@@ -1317,6 +1317,54 @@ def clean_user_message_for_log(user_msg: str, history: list = None) -> str:
     return cleaned or user_msg
 
 
+async def persist_assistant_tool_calls_sync(session_id: str, user_msg: str, assistant_msg: str, model: str, assistant_tool_calls: list = None, assistant_reasoning: str = None) -> bool:
+    """同步保存首次工具调用的 user + assistant(tool_calls)，避免下一轮 tool 结果先到而 DB 还没写完。"""
+    if not assistant_tool_calls:
+        return False
+    tool_call_ids = [tc.get("id") for tc in assistant_tool_calls if tc.get("id")]
+    if not tool_call_ids:
+        return False
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            exists = await conn.fetchval(
+                """
+                SELECT 1
+                FROM conversations
+                WHERE session_id = $1
+                  AND role = 'assistant'
+                  AND metadata IS NOT NULL
+                  AND EXISTS (
+                    SELECT 1
+                    FROM jsonb_array_elements(metadata::jsonb -> 'tool_calls') AS elem
+                    WHERE elem ->> 'id' = ANY($2::text[])
+                  )
+                LIMIT 1
+                """,
+                session_id, tool_call_ids
+            )
+        if exists:
+            print(f"🔧 同步存储: assistant(tool_calls)已存在，跳过 ids={tool_call_ids}")
+            return False
+
+        recent_log_history = []
+        try:
+            recent_log_history = await get_conversation_messages(session_id, limit=20)
+        except Exception as e:
+            print(f"⚠️ 同步存储: 读取最近对话失败，直接保存原始user: {e}")
+        clean_user_msg = clean_user_message_for_log(user_msg, recent_log_history) if user_msg else user_msg
+        ast_meta_dict = {"tool_calls": assistant_tool_calls}
+        if assistant_reasoning:
+            ast_meta_dict["reasoning_content"] = assistant_reasoning
+        await save_message(session_id, "user", clean_user_msg or "", model)
+        await save_message(session_id, "assistant", assistant_msg or "", model, metadata=json.dumps(ast_meta_dict))
+        print(f"🔧 同步存储: user + assistant(tool_calls) 已写入DB ids={tool_call_ids}")
+        return True
+    except Exception as e:
+        print(f"⚠️ 同步存储 assistant(tool_calls) 失败，将回退后台异步保存: {e}")
+        return False
+
+
 async def process_memories_background(session_id: str, user_msg: str, assistant_msg: str, model: str, context_messages: list = None, skip_conversation_log: bool = False, tool_messages: list = None, assistant_tool_calls: list = None, assistant_reasoning: str = None):
     """
     后台异步：存储对话 + 提取记忆（不阻塞主流程）
@@ -1811,6 +1859,13 @@ async def chat_completions(request: Request):
                 # DB不在等待tool结果，但可能是异步存储延迟（process_memories_background还没写完）
                 # 先检查客户端原始messages里是否有匹配的assistant(tool_calls)
                 client_tool_ids = {m.get('tool_call_id') for m in client_tools if m.get('tool_call_id')}
+                db_matching_ast_ids = []
+                for hist_msg in db_msgs:
+                    if hist_msg.get("role") == "assistant" and hist_msg.get("tool_calls"):
+                        hist_ids = [tc.get("id") for tc in hist_msg.get("tool_calls", []) if tc.get("id")]
+                        if client_tool_ids & set(hist_ids):
+                            db_matching_ast_ids.extend([i for i in hist_ids if i in client_tool_ids])
+                print(f"🔎 工具结果race诊断: client_tool_ids={list(client_tool_ids)}, db_has_matching_ast={bool(db_matching_ast_ids)}, matched_ids={db_matching_ast_ids}")
                 matching_ast = None
                 for m in messages:
                     if m.get("role") == "assistant" and m.get("tool_calls"):
@@ -2162,9 +2217,14 @@ async def chat_completions(request: Request):
                     pass
                 
                 if MEMORY_ENABLED and (user_message or tool_messages):
+                    sync_saved_tool_call = False
+                    if assistant_tool_calls and not tool_messages and not skip_conversation_log:
+                        sync_saved_tool_call = await persist_assistant_tool_calls_sync(
+                            session_id, user_message, assistant_msg, model, assistant_tool_calls, assistant_reasoning
+                        )
                     asyncio.create_task(
                         process_memories_background(session_id, user_message, assistant_msg, model, 
-                                                    context_messages=original_messages, skip_conversation_log=skip_conversation_log,
+                                                    context_messages=original_messages, skip_conversation_log=(skip_conversation_log or sync_saved_tool_call),
                                                     tool_messages=tool_messages, assistant_tool_calls=assistant_tool_calls,
                                                     assistant_reasoning=assistant_reasoning)
                     )
@@ -2311,9 +2371,14 @@ async def stream_and_capture(headers: dict, body: dict, session_id: str, user_me
             print(f"📊 Stream Token: {pt} + {ct} = {tt}")
     
     if MEMORY_ENABLED and (user_message or tool_messages):
+        sync_saved_tool_call = False
+        if assistant_tool_calls and not tool_messages and not skip_conversation_log:
+            sync_saved_tool_call = await persist_assistant_tool_calls_sync(
+                session_id, user_message, assistant_msg, model, assistant_tool_calls, assistant_reasoning
+            )
         asyncio.create_task(
             process_memories_background(session_id, user_message, assistant_msg, model, 
-                                        context_messages=original_messages, skip_conversation_log=skip_conversation_log,
+                                        context_messages=original_messages, skip_conversation_log=(skip_conversation_log or sync_saved_tool_call),
                                         tool_messages=tool_messages, assistant_tool_calls=assistant_tool_calls,
                                         assistant_reasoning=assistant_reasoning)
         )

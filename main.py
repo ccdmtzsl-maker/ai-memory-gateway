@@ -3814,6 +3814,7 @@ async def get_settings():
             # 记忆提取提示词
             "extractionPrompt": db.get("extractionPrompt") or _DEFAULT_EXTRACTION_PROMPT or "",
             "consolidationPrompt": db.get("consolidationPrompt") or _DEFAULT_CONSOLIDATION_PROMPT or "",
+            "modelPresets": json.loads(db.get("modelPresets") or "[]"),
         }
 
         return {"status": "ok", "settings": settings}
@@ -3973,6 +3974,21 @@ async def save_settings(request: Request):
             await set_gateway_config("consolidationPrompt", str(value))
             set_consolidation_prompt(str(value))
             updated.append("consolidationPrompt")
+            continue
+
+        # --- modelPresets 特殊处理 ---
+        if key == "modelPresets":
+            presets_json = json.dumps(value) if isinstance(value, list) else str(value)
+            await set_gateway_config("modelPresets", presets_json)
+            updated.append("modelPresets")
+            continue
+
+        # --- activatePreset 特殊处理（激活某个预设 → 切换 DEFAULT_MODEL）---
+        if key == "activatePreset":
+            new_model = str(value)
+            globals()["DEFAULT_MODEL"] = new_model
+            await set_gateway_config("DEFAULT_MODEL", new_model)
+            updated.append(f"DEFAULT_MODEL→{new_model}")
             continue
                 continue
 

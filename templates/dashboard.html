@@ -493,10 +493,16 @@
                         <label>模型预设</label>
                         <div id="model-presets-container" style="margin-bottom:8px;">
                           <div id="model-presets-list" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px;"></div>
-                          <div style="display:flex;gap:6px;align-items:center;">
-                            <input type="text" id="preset-name-input" class="input" placeholder="名称" style="width:80px;flex:none;">
-                            <input type="text" id="preset-model-input" class="input" placeholder="模型 ID（如 anthropic/claude-sonnet-4）" style="flex:1;">
-                            <button class="btn btn-sm" onclick="addModelPreset()">添加</button>
+                          <div style="display:flex;flex-direction:column;gap:6px;">
+                            <div style="display:flex;gap:6px;align-items:center;">
+                              <input type="text" id="preset-name-input" class="input" placeholder="名称" style="width:80px;flex:none;">
+                              <input type="text" id="preset-model-input" class="input" placeholder="模型 ID" style="flex:1;">
+                              <button class="btn btn-sm" onclick="addModelPreset()">添加</button>
+                            </div>
+                            <div style="display:flex;gap:6px;align-items:center;">
+                              <input type="text" id="preset-url-input" class="input" placeholder="API URL（可选，留空不切换）" style="flex:1;">
+                              <input type="text" id="preset-key-input" class="input" placeholder="API Key（可选）" style="flex:1;">
+                            </div>
                           </div>
                         </div>
                         <small class="form-hint">点击预设名称即可快速切换当前模型。添加后需点保存设置。</small>
@@ -678,7 +684,7 @@
         <div class="settings-group">
           <h3 class="settings-group-title">碎片整理提示词</h3>
           <p style="font-size:12px;color:#888;margin:4px 0 8px;">碎片记忆整理成事件时使用的提示词。需包含 {fragments} 占位符。留空使用默认。</p>
-          <textarea id="set-consolidationPrompt" class="textarea" rows="14" placeholder="留空则使用默认碎片整理提示词"></textarea>
+          <textarea id="set-consolidationPrompt" class="textarea" rows="14" placeholder="加载中..."></textarea>
         </div>
                 </div>
 
@@ -702,7 +708,7 @@
         return '<span style="display:inline-flex;align-items:center;gap:4px;padding:4px 10px;border-radius:6px;font-size:13px;cursor:pointer;'
           + (isActive ? 'background:#4f46e5;color:#fff;' : 'background:#f3f4f6;color:#374151;border:1px solid #e5e7eb;')
           + '" onclick="activatePreset(' + i + ')">'
-          + p.name
+          + p.name + (p.apiBaseUrl ? ' ⚡' : '')
           + '<span onclick="event.stopPropagation();removePreset(' + i + ')" style="margin-left:4px;opacity:0.6;font-size:11px;cursor:pointer;">✕</span>'
           + '</span>';
       }).join('');
@@ -715,7 +721,7 @@
       fetch('/api/settings', {
         method: 'POST',
         headers: {'Content-Type':'application/json'},
-        body: JSON.stringify({activatePreset: preset.model})
+        body: JSON.stringify({activatePreset: preset.model, activatePresetUrl: preset.apiBaseUrl || '', activatePresetKey: preset.apiKey || ''})
       }).then(r => r.json()).then(d => {
         showToast('已切换模型: ' + preset.name + ' (' + preset.model + ')');
         renderModelPresets();
@@ -725,9 +731,13 @@
     function addModelPreset() {
       const name = document.getElementById('preset-name-input').value.trim();
       const model = document.getElementById('preset-model-input').value.trim();
-      _modelPresets.push({name, model});
+      const apiBaseUrl = (document.getElementById('preset-url-input') || {}).value || '';
+      const apiKey = (document.getElementById('preset-key-input') || {}).value || '';
+      const preset = {name, model}; if (apiBaseUrl.trim()) preset.apiBaseUrl = apiBaseUrl.trim(); if (apiKey.trim()) preset.apiKey = apiKey.trim(); _modelPresets.push(preset);
       document.getElementById('preset-name-input').value = '';
       document.getElementById('preset-model-input').value = '';
+      if (document.getElementById('preset-url-input')) document.getElementById('preset-url-input').value = '';
+      if (document.getElementById('preset-key-input')) document.getElementById('preset-key-input').value = '';
       renderModelPresets();
     }
 
@@ -743,6 +753,7 @@
       setTimeout(() => {
         fetch('/api/settings').then(r=>r.json()).then(data => {
           if (data.modelPresets) { _modelPresets = data.modelPresets; renderModelPresets(); }
+          if (data.consolidationPrompt) { document.getElementById('set-consolidationPrompt').value = data.consolidationPrompt; }
         });
       }, 500);
     });

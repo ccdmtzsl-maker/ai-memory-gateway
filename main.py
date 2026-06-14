@@ -2763,7 +2763,7 @@ async def api_batch_delete(request: Request):
 # 三层记忆架构：整理 / 合并 / 升级 / 统计
 # ============================================================
 
-CONSOLIDATION_PROMPT = """
+_DEFAULT_CONSOLIDATION_PROMPT = """
 你是记忆整理助手。请将以下对话碎片整理成完整的事件记录。
 
 要求：
@@ -2789,6 +2789,38 @@ CONSOLIDATION_PROMPT = """
 
 只输出 JSON，不要其他内容。确保 JSON 语法正确。
 """
+
+
+# 碎片整理提示词（支持面板热更新）
+_cached_consolidation_prompt = None
+_cached_consolidation_prompt_loaded = False
+
+async def get_consolidation_prompt() -> str:
+    global _cached_consolidation_prompt, _cached_consolidation_prompt_loaded
+    if _cached_consolidation_prompt_loaded:
+        return _cached_consolidation_prompt or _DEFAULT_CONSOLIDATION_PROMPT
+    try:
+        db_prompt = await get_gateway_config("consolidationPrompt", "")
+        if db_prompt:
+            _cached_consolidation_prompt = db_prompt
+        else:
+            _cached_consolidation_prompt = _DEFAULT_CONSOLIDATION_PROMPT
+        _cached_consolidation_prompt_loaded = True
+        return _cached_consolidation_prompt
+    except Exception:
+        _cached_consolidation_prompt = _DEFAULT_CONSOLIDATION_PROMPT
+        _cached_consolidation_prompt_loaded = True
+        return _cached_consolidation_prompt
+
+def set_consolidation_prompt(prompt: str):
+    global _cached_consolidation_prompt, _cached_consolidation_prompt_loaded
+    _cached_consolidation_prompt = prompt
+    _cached_consolidation_prompt_loaded = True
+
+def invalidate_consolidation_prompt_cache():
+    global _cached_consolidation_prompt, _cached_consolidation_prompt_loaded
+    _cached_consolidation_prompt = None
+    _cached_consolidation_prompt_loaded = False
 
 # 整理状态（异步执行，防重入）
 _consolidate_status = {
@@ -2822,7 +2854,7 @@ async def consolidate_memories_for_date_range(start_date, end_date):
     ])
     
     # 调用 AI 进行整理
-    prompt = CONSOLIDATION_PROMPT.format(fragments=fragments_text)
+    prompt = (await get_consolidation_prompt()).format(fragments=fragments_text)
     
     # 使用记忆模型进行整理，和记忆提取/分区摘要共用同一套 MEMORY_* 配置
     consolidation_model = os.getenv("MEMORY_MODEL", "anthropic/claude-haiku-4")
@@ -3781,6 +3813,7 @@ async def get_settings():
 
             # 记忆提取提示词
             "extractionPrompt": db.get("extractionPrompt") or _DEFAULT_EXTRACTION_PROMPT or "",
+            "consolidationPrompt": db.get("consolidationPrompt") or _DEFAULT_CONSOLIDATION_PROMPT or "",
         }
 
         return {"status": "ok", "settings": settings}
@@ -3934,6 +3967,13 @@ async def save_settings(request: Request):
                 await set_gateway_config("extractionPrompt", str(value))
                 set_extraction_prompt(str(value))
                 updated.append("extractionPrompt")
+
+        # --- consolidationPrompt 特殊处理 ---
+        if key == "consolidationPrompt":
+            await set_gateway_config("consolidationPrompt", str(value))
+            set_consolidation_prompt(str(value))
+            updated.append("consolidationPrompt")
+            continue
                 continue
 
             # --- 常规字段 ---

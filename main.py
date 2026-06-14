@@ -1460,7 +1460,7 @@ async def process_memories_background(session_id: str, user_msg: str, assistant_
                             )
                         if exists:
                             print(f"🔧 存储: 跳过重复tool结果 id={db_tool_call_id}")
-continue
+                            continue
                     except Exception as e:
                         print(f"⚠️ tool结果查重失败，继续保存: {e}")
 

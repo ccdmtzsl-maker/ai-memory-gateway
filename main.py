@@ -3984,12 +3984,26 @@ async def save_settings(request: Request):
                 updated.append("modelPresets")
                 continue
 
-            # --- activatePreset 特殊处理（激活某个预设 → 切换 DEFAULT_MODEL）---
+            # --- activatePreset 特殊处理（激活某个预设 → 切换 DEFAULT_MODEL / URL / Key）---
             if key == "activatePreset":
                 new_model = str(value)
                 globals()["DEFAULT_MODEL"] = new_model
                 await set_gateway_config("DEFAULT_MODEL", new_model)
                 updated.append(f"DEFAULT_MODEL→{new_model}")
+                continue
+
+            if key == "activatePresetUrl":
+                if value:
+                    globals()["API_BASE_URL"] = str(value)
+                    await set_gateway_config("API_BASE_URL", str(value))
+                    updated.append(f"API_BASE_URL→{value}")
+                continue
+
+            if key == "activatePresetKey":
+                if value:
+                    globals()["API_KEY"] = str(value)
+                    await set_gateway_config("API_KEY", str(value))
+                    updated.append(f"API_KEY→***")
                 continue
 
 

@@ -2314,3 +2314,114 @@ function showSettingsMsg(type, text) {
     el.textContent = text;
     setTimeout(() => { el.style.display = 'none'; }, 5000);
 }
+
+
+// ============================================================
+// 聊天记录提取
+// ============================================================
+
+let _extractedMemories = [];
+
+async function doExtractFromChat() {
+    const fileInput = document.getElementById('chatFile');
+    const textInput = document.getElementById('chatInput');
+    let text = '';
+    
+    if (fileInput && fileInput.files.length > 0) {
+        text = await fileInput.files[0].text();
+    } else if (textInput) {
+        text = textInput.value;
+    }
+    
+    if (!text.trim()) {
+        showImportMsg('error', '请输入或上传聊天记录');
+        return;
+    }
+    
+    const btn = document.getElementById('btn-extract-chat');
+    if (btn) { btn.disabled = true; btn.textContent = '提取中...'; }
+    
+    try {
+        const resp = await fetch('/api/memories/extract-from-chat', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({text: text})
+        });
+        const data = await resp.json();
+        
+        if (data.error) {
+            showImportMsg('error', '❌ ' + data.error);
+            return;
+        }
+        
+        if (!data.memories || data.memories.length === 0) {
+            showImportMsg('info', '未从聊天记录中提取到新记忆');
+            return;
+        }
+        
+        _extractedMemories = data.memories;
+        renderExtractedMemories();
+        document.getElementById('chat-extract-result').style.display = 'block';
+        showImportMsg('success', '✅ ' + data.message);
+        
+    } catch (e) {
+        showImportMsg('error', '❌ 请求失败: ' + e.message);
+    } finally {
+        if (btn) { btn.disabled = false; btn.textContent = '开始提取'; }
+    }
+}
+
+function renderExtractedMemories() {
+    const list = document.getElementById('chat-extract-list');
+    if (!list) return;
+    list.innerHTML = _extractedMemories.map((m, i) => {
+        const imp = m.importance !== undefined ? m.importance : '?';
+        return '<label style="display:flex;align-items:flex-start;gap:8px;padding:8px 12px;'
+            + 'border-radius:8px;margin-bottom:6px;background:#fafafa;border:1px solid #e5e7eb;cursor:pointer;">'
+            + '<input type="checkbox" checked class="extract-check" value="' + i + '" style="margin-top:3px;">'
+            + '<div style="flex:1;">'
+            + '<div style="font-size:13px;color:#374151;">' + escapeHtml(m.content) + '</div>'
+            + '<div style="font-size:11px;color:#9ca3af;margin-top:2px;">重要度: ' + imp + '</div>'
+            + '</div></label>';
+    }).join('');
+}
+
+async function doImportExtracted() {
+    const checked = [...document.querySelectorAll('.extract-check:checked')].map(c => parseInt(c.value));
+    if (checked.length === 0) {
+        showImportMsg('error', '请至少选择一条记忆');
+        return;
+    }
+    
+    const memories = checked.map(i => _extractedMemories[i]).filter(Boolean);
+    const lines = memories.map(m => m.content);
+    
+    // 复用纯文本导入逻辑
+    try {
+        const resp = await fetch('/api/memories/import', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                memories: memories.map(m => ({
+                    content: m.content,
+                    importance: m.importance || 0
+                })),
+                skip_score: true  // 已经有 importance 了
+            })
+        });
+        const data = await resp.json();
+        if (data.error) {
+            showImportMsg('error', '❌ ' + data.error);
+        } else {
+            showImportMsg('success', '✅ 已导入 ' + checked.length + ' 条记忆');
+            document.getElementById('chat-extract-result').style.display = 'none';
+            _extractedMemories = [];
+        }
+    } catch (e) {
+        showImportMsg('error', '❌ 导入失败: ' + e.message);
+    }
+}
+
+function escapeHtml(str) {
+    return str.replace(/&/g,'&').replace(/</g,'<').replace(/>/g,'>').replace(/"/g,'"');
+}

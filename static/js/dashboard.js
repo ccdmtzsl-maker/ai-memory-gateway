@@ -529,10 +529,10 @@ async function batchChangeDate() {
     }
     
     // 选择时段
-    const period = prompt('选择时段：\n1 = 早 (08:01)\n2 = 中 (14:01)\n3 = 晚 (20:01)\n\n直接回车默认为早', '1');
+    const period = prompt('选择时段：\n1 = 早（本地 8:01）\n2 = 中（本地 14:01）\n3 = 晚（本地 20:01）\n\n直接回车默认为早', '1');
     if (period === null) return;
     
-    const timeMap = {'1': '08:01:00', '2': '14:01:00', '3': '20:01:00'};
+    const timeMap = {'1': '00:01:00', '2': '06:01:00', '3': '12:01:00'};  // UTC: 早=本地8:01, 中=本地14:01, 晚=本地20:01
     const timeStr = timeMap[period.trim()] || '08:01:00';
     const periodName = {'1': '早', '2': '中', '3': '晚'}[period.trim()] || '早';
     

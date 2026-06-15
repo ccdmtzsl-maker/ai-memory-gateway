@@ -766,7 +766,7 @@
 
       // 立即激活
       fetch('/api/settings', {
-        method: 'POST',
+        method: 'PUT',
         headers: {'Content-Type':'application/json'},
         body: JSON.stringify({activatePreset: preset.model, activatePresetUrl: preset.apiBaseUrl || '', activatePresetKey: preset.apiKey || ''})
       }).then(r => r.json()).then(d => {
@@ -804,7 +804,7 @@
 
     function savePresetsToServer() {
       fetch('/api/settings', {
-        method: 'POST',
+        method: 'PUT',
         headers: {'Content-Type':'application/json'},
         body: JSON.stringify({modelPresets: _modelPresets})
       });

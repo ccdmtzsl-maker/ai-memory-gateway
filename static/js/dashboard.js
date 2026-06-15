@@ -519,7 +519,7 @@ async function batchChangeDate() {
     
     // 默认今天
     const today = new Date().toISOString().slice(0, 10);
-    const newDate = prompt('设置日期（YYYY-MM-DD 格式）\n选中的 ' + checked.length + ' 条记忆将改为此日期 00:01', today);
+    const newDate = prompt('设置日期（YYYY-MM-DD 格式）\n选中的 ' + checked.length + ' 条记忆将改为此日期', today);
     if (!newDate) return;
     
     // 验证格式
@@ -528,7 +528,15 @@ async function batchChangeDate() {
         return;
     }
     
-    const createdAt = newDate + ' 00:01:00';
+    // 选择时段
+    const period = prompt('选择时段：\n1 = 早 (08:01)\n2 = 中 (14:01)\n3 = 晚 (20:01)\n\n直接回车默认为早', '1');
+    if (period === null) return;
+    
+    const timeMap = {'1': '08:01:00', '2': '14:01:00', '3': '20:01:00'};
+    const timeStr = timeMap[period.trim()] || '08:01:00';
+    const periodName = {'1': '早', '2': '中', '3': '晚'}[period.trim()] || '早';
+    
+    const createdAt = newDate + ' ' + timeStr;
     const updates = checked.map(id => ({
         id: id,
         event_date: newDate,
@@ -545,7 +553,7 @@ async function batchChangeDate() {
         if (data.error) {
             showManageMsg('error', '❌ ' + data.error);
         } else {
-            showManageMsg('success', '✅ 已修改 ' + checked.length + ' 条记忆的日期为 ' + newDate);
+            showManageMsg('success', '✅ 已修改 ' + checked.length + ' 条记忆的日期为 ' + newDate + ' ' + periodName);
             loadMemories();
         }
     } catch (e) {

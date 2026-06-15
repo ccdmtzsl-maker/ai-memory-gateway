@@ -2758,42 +2758,71 @@ async def api_extract_from_chat(request: Request):
     if not chat_text:
         return {"error": "聊天记录为空"}
     
-    # 把纯文本按行解析成 messages 格式
-    # 支持多种格式：
-    # 1. "用户: xxx" / "助手: xxx" 
-    # 2. 无前缀就全当 user 说的
+    # 智能解析聊天记录，支持多种格式：
+    # 1. Operit md 导出: "## N. 用户/Operit · 时间" 标题 + 正文
+    # 2. "用户: xxx" / "助手: xxx" 前缀格式
+    # 3. JSON 数组 [{role, content}, ...]
+    # 4. 无前缀纯文本 → 全当 user
+    
+    import re as _re
     messages = []
-    current_role = "user"
-    current_content = []
     
-    for line in chat_text.split("\n"):
-        stripped = line.strip()
-        if not stripped:
-            continue
-        # 检测角色前缀
-        new_role = None
-        msg_content = stripped
-        for prefix, role in [("用户:", "user"), ("user:", "user"), ("User:", "user"),
-                             ("助手:", "assistant"), ("assistant:", "assistant"), ("Assistant:", "assistant"),
-                             ("AI:", "assistant"), ("澈:", "assistant"), ("bot:", "assistant"), ("Bot:", "assistant")]:
-            if stripped.startswith(prefix):
-                new_role = role
-                msg_content = stripped[len(prefix):].strip()
-                break
-        
-        if new_role and new_role != current_role:
-            # 保存之前的
-            if current_content:
-                messages.append({"role": current_role, "content": "\n".join(current_content)})
-                current_content = []
-            current_role = new_role
-        
-        if msg_content:
-            current_content.append(msg_content)
+    # 尝试 JSON 格式
+    try:
+        parsed = json.loads(chat_text)
+        if isinstance(parsed, list) and len(parsed) > 0 and isinstance(parsed[0], dict) and "content" in parsed[0]:
+            messages = [{"role": m.get("role", "user"), "content": m.get("content", "")} for m in parsed if m.get("content")]
+    except (json.JSONDecodeError, TypeError, KeyError):
+        pass
     
-    # 最后一段
-    if current_content:
-        messages.append({"role": current_role, "content": "\n".join(current_content)})
+    # 尝试 Operit md 格式: "## N. 用户/Operit · 时间"
+    if not messages:
+        md_pattern = _re.compile(r"^#{1,3}\s*\d+\.\s*(用户|Operit|User|Assistant|助手|AI|澈)\s*[·•\-]", _re.MULTILINE)
+        md_matches = list(md_pattern.finditer(chat_text))
+        if md_matches:
+            for idx, match in enumerate(md_matches):
+                role_name = match.group(1).strip()
+                role = "user" if role_name in ("用户", "User") else "assistant"
+                # 内容从标题行结束到下一个标题
+                start = chat_text.index("\n", match.start()) + 1 if "\n" in chat_text[match.start():] else match.end()
+                end = md_matches[idx + 1].start() if idx + 1 < len(md_matches) else len(chat_text)
+                body = chat_text[start:end].strip()
+                # 去掉 markdown 分隔线
+                body = _re.sub(r"^---+\s*$", "", body, flags=_re.MULTILINE).strip()
+                if body:
+                    messages.append({"role": role, "content": body})
+    
+    # 尝试前缀格式
+    if not messages:
+        current_role = "user"
+        current_content = []
+        
+        for line in chat_text.split("\n"):
+            stripped = line.strip()
+            if not stripped:
+                continue
+            new_role = None
+            msg_content = stripped
+            for prefix, role in [("用户:", "user"), ("user:", "user"), ("User:", "user"),
+                                 ("助手:", "assistant"), ("assistant:", "assistant"), ("Assistant:", "assistant"),
+                                 ("AI:", "assistant"), ("澈:", "assistant"), ("Operit:", "assistant"),
+                                 ("bot:", "assistant"), ("Bot:", "assistant")]:
+                if stripped.startswith(prefix):
+                    new_role = role
+                    msg_content = stripped[len(prefix):].strip()
+                    break
+            
+            if new_role and new_role != current_role:
+                if current_content:
+                    messages.append({"role": current_role, "content": "\n".join(current_content)})
+                    current_content = []
+                current_role = new_role
+            
+            if msg_content:
+                current_content.append(msg_content)
+        
+        if current_content:
+            messages.append({"role": current_role, "content": "\n".join(current_content)})
     
     if not messages:
         return {"error": "无法从文本中解析出对话内容"}

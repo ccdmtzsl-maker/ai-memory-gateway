@@ -42,6 +42,43 @@ MEMORY_HW_SEMANTIC = float(os.getenv("MEMORY_HW_SEMANTIC", "0.35"))
 MEMORY_HW_IMPORTANCE = float(os.getenv("MEMORY_HW_IMPORTANCE", "0.15"))
 MEMORY_HW_RECENCY = float(os.getenv("MEMORY_HW_RECENCY", "0.15"))
 MEMORY_SEMANTIC_THRESHOLD = float(os.getenv("MEMORY_SEMANTIC_THRESHOLD", "0.5"))
+MEMORY_HW_PERIOD = float(os.getenv("MEMORY_HW_PERIOD", "0.08"))  # 时段亲和权重
+
+
+# ============================================================
+# 时段亲和辅助（同一时段的历史记忆加分）
+# ============================================================
+
+_LOCAL_UTC_OFFSET_HOURS = int(os.getenv("LOCAL_UTC_OFFSET", "8"))  # 默认 UTC+8
+
+
+def _time_period(hour: int) -> int:
+    """将小时映射到时段：0=早(7-13), 1=午(13-19), 2=晚(19-次日7)"""
+    if 7 <= hour < 13:
+        return 0
+    if 13 <= hour < 19:
+        return 1
+    return 2
+
+
+def _period_bonus(now_utc, mem_created_at) -> float:
+    """
+    同时段且非当天 → 1.0，否则 0.0
+    now_utc: datetime (UTC aware)
+    mem_created_at: datetime (UTC, 可能 aware 或 naive)
+    """
+    from datetime import timedelta
+    offset = timedelta(hours=_LOCAL_UTC_OFFSET_HOURS)
+    # 转本地时间
+    now_local = now_utc + offset
+    # mem 可能是 naive UTC 或 aware UTC
+    mem_utc = mem_created_at.replace(tzinfo=None) if mem_created_at.tzinfo else mem_created_at
+    mem_local = mem_utc + offset
+    # 排除当天
+    if now_local.date() == mem_local.date():
+        return 0.0
+    # 同时段硬切
+    return 1.0 if _time_period(now_local.hour) == _time_period(mem_local.hour) else 0.0
 
 
 # ============================================================
@@ -810,11 +847,13 @@ async def search_memories_hybrid(query: str, limit: int = 10):
             imp = abs(info['importance']) / 10.0
             days = (now - info['created_at']).total_seconds() / 86400.0
             rec = 1.0 / (1.0 + days)
+            period = _period_bonus(now, info['created_at'])
             
             score = (MEMORY_HW_KEYWORD * kw +
                      MEMORY_HW_SEMANTIC * sem +
                      MEMORY_HW_IMPORTANCE * imp +
-                     MEMORY_HW_RECENCY * rec)
+                     MEMORY_HW_RECENCY * rec +
+                     MEMORY_HW_PERIOD * period)
             
             final.append({
                 'id': mid,

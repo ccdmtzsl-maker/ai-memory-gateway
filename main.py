@@ -2700,12 +2700,34 @@ async def api_update_memory(memory_id: int, request: Request):
     if not MEMORY_ENABLED:
         return {"error": "记忆系统未启用"}
     data = await request.json()
+    # 解析 event_date（支持 YYYY-MM-DD 字符串）
+    event_date = None
+    if data.get("event_date"):
+        try:
+            event_date = datetime.strptime(data["event_date"], "%Y-%m-%d").date()
+        except (ValueError, TypeError):
+            event_date = None
+    
+    # 解析 created_at（支持 YYYY-MM-DD 或 YYYY-MM-DD HH:MM:SS）
+    created_at = None
+    if data.get("created_at"):
+        try:
+            raw = data["created_at"]
+            if len(raw) <= 10:
+                created_at = datetime.strptime(raw, "%Y-%m-%d")
+            else:
+                created_at = datetime.strptime(raw[:19], "%Y-%m-%d %H:%M:%S")
+        except (ValueError, TypeError):
+            created_at = None
+    
     await update_memory_with_layer(
         memory_id,
         content=data.get("content"),
         importance=data.get("importance"),
         title=data.get("title"),
         layer=data.get("layer"),
+        event_date=event_date,
+        created_at=created_at,
     )
     return {"status": "ok", "id": memory_id}
 
@@ -2736,12 +2758,27 @@ async def api_batch_update(request: Request):
     if not updates:
         return {"error": "没有要更新的记忆"}
     for item in updates:
+        event_date = None
+        if item.get("event_date"):
+            try:
+                event_date = datetime.strptime(item["event_date"], "%Y-%m-%d").date()
+            except (ValueError, TypeError):
+                pass
+        created_at = None
+        if item.get("created_at"):
+            try:
+                raw = item["created_at"]
+                created_at = datetime.strptime(raw[:19], "%Y-%m-%d %H:%M:%S") if len(raw) > 10 else datetime.strptime(raw, "%Y-%m-%d")
+            except (ValueError, TypeError):
+                pass
         await update_memory_with_layer(
             item["id"],
             content=item.get("content"),
             importance=item.get("importance"),
             title=item.get("title"),
             layer=item.get("layer"),
+            event_date=event_date,
+            created_at=created_at,
         )
     return {"status": "ok", "updated": len(updates)}
 

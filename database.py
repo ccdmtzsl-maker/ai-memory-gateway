@@ -1674,7 +1674,8 @@ async def check_duplicate_memory(new_content: str, threshold: float = 0.7) -> di
 
 async def update_memory_with_layer(memory_id: int, content: str = None, 
                                     importance: int = None, title: str = None,
-                                    layer: int = None, is_active: bool = None):
+                                    layer: int = None, is_active: bool = None,
+                                    event_date = None, created_at = None):
     """更新记忆（支持三层架构新字段）"""
     updates = []
     params = []
@@ -1703,6 +1704,16 @@ async def update_memory_with_layer(memory_id: int, content: str = None,
     if is_active is not None:
         updates.append(f"is_active = ${param_idx}")
         params.append(is_active)
+        param_idx += 1
+    
+    if event_date is not None:
+        updates.append(f"event_date = ${param_idx}")
+        params.append(event_date)
+        param_idx += 1
+    
+    if created_at is not None:
+        updates.append(f"created_at = ${param_idx}")
+        params.append(created_at)
         param_idx += 1
     
     if not updates:

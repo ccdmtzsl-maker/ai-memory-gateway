@@ -2748,6 +2748,72 @@ async def api_delete_memory(memory_id: int, soft: bool = False):
     return {"status": "ok", "id": memory_id}
 
 
+@app.post("/api/memories/extract-from-chat")
+async def api_extract_from_chat(request: Request):
+    """从聊天记录文本中提取记忆（调用记忆提取 API）"""
+    if not MEMORY_ENABLED:
+        return {"error": "记忆系统未启用"}
+    data = await request.json()
+    chat_text = data.get("text", "").strip()
+    if not chat_text:
+        return {"error": "聊天记录为空"}
+    
+    # 把纯文本按行解析成 messages 格式
+    # 支持多种格式：
+    # 1. "用户: xxx" / "助手: xxx" 
+    # 2. 无前缀就全当 user 说的
+    messages = []
+    current_role = "user"
+    current_content = []
+    
+    for line in chat_text.split("\n"):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        # 检测角色前缀
+        new_role = None
+        msg_content = stripped
+        for prefix, role in [("用户:", "user"), ("user:", "user"), ("User:", "user"),
+                             ("助手:", "assistant"), ("assistant:", "assistant"), ("Assistant:", "assistant"),
+                             ("AI:", "assistant"), ("澈:", "assistant"), ("bot:", "assistant"), ("Bot:", "assistant")]:
+            if stripped.startswith(prefix):
+                new_role = role
+                msg_content = stripped[len(prefix):].strip()
+                break
+        
+        if new_role and new_role != current_role:
+            # 保存之前的
+            if current_content:
+                messages.append({"role": current_role, "content": "\n".join(current_content)})
+                current_content = []
+            current_role = new_role
+        
+        if msg_content:
+            current_content.append(msg_content)
+    
+    # 最后一段
+    if current_content:
+        messages.append({"role": current_role, "content": "\n".join(current_content)})
+    
+    if not messages:
+        return {"error": "无法从文本中解析出对话内容"}
+    
+    # 获取已有记忆用于去重
+    existing = await get_all_memories()
+    existing_contents = [m["content"] for m in existing] if existing else []
+    
+    # 调用提取
+    try:
+        extracted = await extract_memories(messages, existing_memories=existing_contents)
+    except Exception as e:
+        return {"error": f"提取失败: {str(e)}"}
+    
+    if not extracted:
+        return {"status": "ok", "memories": [], "message": "未提取到新记忆"}
+    
+    return {"status": "ok", "memories": extracted, "message": f"提取到 {len(extracted)} 条记忆"}
+
+
 @app.post("/api/memories/batch-update")
 async def api_batch_update(request: Request):
     """批量更新记忆"""

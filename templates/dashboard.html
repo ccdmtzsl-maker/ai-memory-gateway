@@ -257,6 +257,7 @@
                 <div class="card">
                     <div class="tabs">
                         <button class="tab active" data-tab="text">纯文本导入</button>
+                        <button class="tab" data-tab="chat">聊天记录提取</button>
                         <button class="tab" data-tab="json">JSON 备份恢复</button>
                     </div>
 
@@ -277,6 +278,24 @@
                             </label>
                         </div>
                         <button class="btn btn-primary btn-lg" onclick="doTextImport()">开始导入</button>
+                    </div>
+
+                    <!-- 聊天记录提取 -->
+                    <div id="tab-chat" class="tab-panel">
+                        <div class="form-group">
+                            <label class="form-label">上传聊天记录文件（.txt）</label>
+                            <input type="file" id="chatFile" accept=".txt" class="file-input">
+                        </div>
+                        <div class="divider"><span>或者直接粘贴</span></div>
+                        <div class="form-group">
+                            <textarea id="chatInput" class="textarea" rows="10" placeholder="粘贴聊天记录，支持格式：&#10;用户: 今天去了公园&#10;助手: 听起来很开心！&#10;用户: 是的，还遇到了一只柯基&#10;&#10;也可以直接粘贴纯文本，会全部当作用户发言"></textarea>
+                        </div>
+                        <button class="btn btn-primary btn-lg" onclick="doExtractFromChat()" id="btn-extract-chat">开始提取</button>
+                        <div id="chat-extract-result" style="margin-top:16px;display:none;">
+                            <h3 style="font-size:15px;margin-bottom:8px;">提取结果（可取消勾选不需要的）</h3>
+                            <div id="chat-extract-list"></div>
+                            <button class="btn btn-primary" onclick="doImportExtracted()" style="margin-top:12px;">确认导入选中的记忆</button>
+                        </div>
                     </div>
 
                     <!-- JSON 导入 -->

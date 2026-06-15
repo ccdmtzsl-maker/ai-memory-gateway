@@ -2394,14 +2394,17 @@ async function doImportExtracted() {
     }
     
     const memories = checked.map(i => _extractedMemories[i]).filter(Boolean);
-    const lines = memories.map(m => m.content);
     
-    // 复用 /import/text 接口，skip_scoring=true 因为已有 importance
+    // 用 /import/memories 接口，保留原始 importance
     try {
-        const resp = await fetch('/import/text', {
+        const resp = await fetch('/import/memories', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({lines: lines, skip_scoring: true})
+            body: JSON.stringify({memories: memories.map(m => ({
+                content: m.content,
+                importance: m.importance || 5,
+                source_session: 'chat-extract'
+            }))})
         });
         const data = await resp.json();
         if (data.error) {

@@ -513,6 +513,46 @@ async function batchSave() {
     }
 }
 
+async function batchChangeDate() {
+    const checked = [...document.querySelectorAll('.mem-check:checked')].map(c => parseInt(c.value));
+    if (checked.length === 0) { showManageMsg('error', '请先勾选要修改日期的记忆'); return; }
+    
+    // 默认今天
+    const today = new Date().toISOString().slice(0, 10);
+    const newDate = prompt('设置日期（YYYY-MM-DD 格式）\n选中的 ' + checked.length + ' 条记忆将改为此日期 00:01', today);
+    if (!newDate) return;
+    
+    // 验证格式
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(newDate)) {
+        showManageMsg('error', '日期格式不正确，请使用 YYYY-MM-DD');
+        return;
+    }
+    
+    const createdAt = newDate + ' 00:01:00';
+    const updates = checked.map(id => ({
+        id: id,
+        event_date: newDate,
+        created_at: createdAt
+    }));
+    
+    try {
+        const resp = await fetch('/api/memories/batch-update', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({updates: updates})
+        });
+        const data = await resp.json();
+        if (data.error) {
+            showManageMsg('error', '❌ ' + data.error);
+        } else {
+            showManageMsg('success', '✅ 已修改 ' + checked.length + ' 条记忆的日期为 ' + newDate);
+            loadMemories();
+        }
+    } catch (e) {
+        showManageMsg('error', '❌ 请求失败: ' + e.message);
+    }
+}
+
 async function batchDelete() {
     const checked = [...document.querySelectorAll('.mem-check:checked')].map(c => parseInt(c.value));
     if (checked.length === 0) { showManageMsg('error', '请先勾选要删除的记忆'); return; }

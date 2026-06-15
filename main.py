@@ -234,6 +234,10 @@ async def lifespan(app: FastAPI):
                     for key, val in db_cfg.items():
                         if not val:
                             continue
+                        # 跳过被误存为打码值的 Key 字段
+                        if key in ("API_KEY", "MEMORY_API_KEY", "EMBEDDING_API_KEY") and _is_masked(str(val)):
+                            print(f"⚠️  跳过恢复 {key}：DB 中存储的是打码值，将使用环境变量")
+                            continue
                         if key in _RESTORE_MAIN:
                             globals()[key] = _RESTORE_MAIN[key](val)
                             restored.append(key)
@@ -246,10 +250,13 @@ async def lifespan(app: FastAPI):
                             _me_mod.MEMORY_MODEL = str(val)
                             restored.append(key)
                         elif key == "MEMORY_API_KEY":
-                            globals()[key] = str(val)
-                            import memory_extractor as _me_mod
-                            _me_mod.MEMORY_API_KEY = str(val)
-                            restored.append(key)
+                            if not _is_masked(str(val)):
+                                globals()[key] = str(val)
+                                import memory_extractor as _me_mod
+                                _me_mod.MEMORY_API_KEY = str(val)
+                                restored.append(key)
+                            else:
+                                print(f"⚠️  跳过恢复 MEMORY_API_KEY：DB 中存储的是打码值")
                         elif key == "MEMORY_API_BASE_URL":
                             globals()[key] = str(val)
                             import memory_extractor as _me_mod

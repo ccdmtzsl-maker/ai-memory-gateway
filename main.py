@@ -4132,7 +4132,7 @@ async def save_settings(request: Request):
                 continue
 
             if key == "activatePresetKey":
-                if value:
+                if value and not _is_masked(str(value)):
                     globals()["API_KEY"] = str(value)
                     await set_gateway_config("API_KEY", str(value))
                     updated.append(f"API_KEY→***")

@@ -2334,7 +2334,7 @@ async function doExtractFromChat() {
     }
     
     if (!text.trim()) {
-        showImportMsg('error', '请输入或上传聊天记录');
+        showImportResult('error', '请输入或上传聊天记录');
         return;
     }
     
@@ -2350,22 +2350,22 @@ async function doExtractFromChat() {
         const data = await resp.json();
         
         if (data.error) {
-            showImportMsg('error', '❌ ' + data.error);
+            showImportResult('error', '❌ ' + data.error);
             return;
         }
         
         if (!data.memories || data.memories.length === 0) {
-            showImportMsg('info', '未从聊天记录中提取到新记忆');
+            showImportResult('info', '未从聊天记录中提取到新记忆');
             return;
         }
         
         _extractedMemories = data.memories;
         renderExtractedMemories();
         document.getElementById('chat-extract-result').style.display = 'block';
-        showImportMsg('success', '✅ ' + data.message);
+        showImportResult('success', '✅ ' + data.message);
         
     } catch (e) {
-        showImportMsg('error', '❌ 请求失败: ' + e.message);
+        showImportResult('error', '❌ 请求失败: ' + e.message);
     } finally {
         if (btn) { btn.disabled = false; btn.textContent = '开始提取'; }
     }
@@ -2389,36 +2389,30 @@ function renderExtractedMemories() {
 async function doImportExtracted() {
     const checked = [...document.querySelectorAll('.extract-check:checked')].map(c => parseInt(c.value));
     if (checked.length === 0) {
-        showImportMsg('error', '请至少选择一条记忆');
+        showImportResult('error', '请至少选择一条记忆');
         return;
     }
     
     const memories = checked.map(i => _extractedMemories[i]).filter(Boolean);
     const lines = memories.map(m => m.content);
     
-    // 复用纯文本导入逻辑
+    // 复用 /import/text 接口，skip_scoring=true 因为已有 importance
     try {
-        const resp = await fetch('/api/memories/import', {
+        const resp = await fetch('/import/text', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({
-                memories: memories.map(m => ({
-                    content: m.content,
-                    importance: m.importance || 0
-                })),
-                skip_score: true  // 已经有 importance 了
-            })
+            body: JSON.stringify({lines: lines, skip_scoring: true})
         });
         const data = await resp.json();
         if (data.error) {
-            showImportMsg('error', '❌ ' + data.error);
+            showImportResult('error', '❌ ' + data.error);
         } else {
-            showImportMsg('success', '✅ 已导入 ' + checked.length + ' 条记忆');
+            showImportResult('success', '✅ 已导入 ' + (data.imported || checked.length) + ' 条记忆' + (data.skipped ? '（跳过 ' + data.skipped + ' 条重复）' : ''));
             document.getElementById('chat-extract-result').style.display = 'none';
             _extractedMemories = [];
         }
     } catch (e) {
-        showImportMsg('error', '❌ 导入失败: ' + e.message);
+        showImportResult('error', '❌ 导入失败: ' + e.message);
     }
 }
 

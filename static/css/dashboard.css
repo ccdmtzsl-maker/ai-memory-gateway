@@ -781,8 +781,108 @@ body {
         flex-wrap: wrap;
     }
     
-    .col-source,
-    .col-time {
+    .layer-tabs {
+        gap: 6px;
+    }
+    
+    .layer-tab {
+        padding: 6px 12px;
+        font-size: 12px;
+    }
+    
+    /* 表格卡片化 - 竖屏友好 */
+    .table-card {
+        overflow-x: visible;
+    }
+    
+    .data-table {
+        display: block;
+    }
+    
+    .data-table thead {
+        display: none;
+    }
+    
+    .data-table tbody {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+    }
+    
+    .data-table tbody tr {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 8px;
+        padding: 12px;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        background: var(--card);
+    }
+    
+    .data-table tbody tr:hover {
+        background: #fafafa;
+    }
+    
+    .data-table td {
+        border: none;
+        padding: 0;
+    }
+    
+    .data-table td.col-check {
+        order: 0;
+        width: auto;
+    }
+    
+    .data-table td.col-id {
+        order: 1;
+        width: auto;
+        font-size: 12px;
+    }
+    
+    .data-table td.col-layer {
+        order: 2;
+        width: auto;
+    }
+    
+    .data-table td.col-importance {
+        order: 3;
+        width: auto;
+    }
+    
+    .data-table td.col-time {
+        order: 4;
+        width: auto;
+        display: inline;
+        font-size: 11px;
+        color: var(--text-muted);
+    }
+    
+    .data-table td.col-title {
+        order: 5;
+        width: 100%;
+        font-size: 12px;
+        color: var(--text-muted);
+    }
+    
+    .data-table td.col-content {
+        order: 6;
+        width: 100%;
+        min-width: 0;
+        font-size: 13px;
+        line-height: 1.5;
+    }
+    
+    .data-table td.col-actions {
+        order: 7;
+        width: 100%;
+        display: flex;
+        gap: 8px;
+        justify-content: flex-end;
+        margin-top: 4px;
+    }
+    
+    .data-table td.col-source {
         display: none;
     }
     

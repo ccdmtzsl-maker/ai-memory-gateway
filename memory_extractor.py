@@ -101,17 +101,40 @@ def _parse_json_array_from_text(text: str):
             except json.JSONDecodeError:
                 continue
 
+    # 方式A：匹配 "content": "...", "temperature"/"importance": N 整块（处理未转义引号）
+    try:
+        pattern_a = re.compile(
+            r'"content"\s*:\s*"(.*?)"\s*,\s*"(?:temperature|importance)"\s*:\s*(-?\d+)',
+            re.S
+        )
+        fallback_a = []
+        for match in pattern_a.finditer(cleaned):
+            raw_content = match.group(1)
+            importance = int(match.group(2))
+            try:
+                decoded = json.loads(f'"{raw_content}"')
+            except json.JSONDecodeError:
+                decoded = raw_content.replace('\\"', '"').replace('\\n', '\n')
+            if str(decoded).strip():
+                fallback_a.append({"content": str(decoded).strip(), "importance": importance})
+        if fallback_a:
+            print(f"\U0001f4dd JSON\u5bbd\u677e\u5156\u5e95\u63d0\u53d6\u6210\u529f\uff08\u65b9\u5f0fA\uff09: {len(fallback_a)} \u6761\uff0c\u542b importance")
+            return fallback_a
+    except Exception:
+        pass
+
+    # 方式B：只匹配 content（最终兜底）
     fallback = []
-    for match in re.finditer(r'"content"\s*:\s*"((?:\\.|[^"\\])*)("?)', cleaned, flags=re.S):
+    for match in re.finditer(r'"content"\s*:\s*"((?:\\\\.|[^"\\\\])*)("?)', cleaned, flags=re.S):
         raw_content = match.group(1)
         try:
-            content = json.loads(f'"{raw_content}"')
+            content_val = json.loads(f'"{raw_content}"')
         except json.JSONDecodeError:
-            content = raw_content.replace('\\"', '"').replace('\\n', '\n')
-        if str(content).strip():
-            fallback.append({"content": str(content).strip(), "importance": 0})
+            content_val = raw_content.replace('\\"', '"').replace('\\n', '\n')
+        if str(content_val).strip():
+            fallback.append({"content": str(content_val).strip(), "importance": 0})
     if fallback:
-        print(f"📝 JSON宽松兜底提取成功: {len(fallback)} 条content")
+        print(f"\U0001f4dd JSON\u5bbd\u677e\u5156\u5e95\u63d0\u53d6\u6210\u529f\uff08\u65b9\u5f0fB\uff09: {len(fallback)} \u6761content")
         return fallback
 
     raise json.JSONDecodeError("No valid memory JSON found in model output", cleaned, 0)

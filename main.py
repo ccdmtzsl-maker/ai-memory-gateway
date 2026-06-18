@@ -2381,12 +2381,14 @@ async def chat_completions(request: Request):
                 assistant_reasoning = None
                 try:
                     msg_obj = resp_data["choices"][0]["message"]
-                    assistant_msg = msg_obj.get("content") or ""
-                    if assistant_msg:
-                        transformed_msg = apply_response_transform_rules(assistant_msg)
-                        if transformed_msg != assistant_msg:
-                            assistant_msg = transformed_msg
+                    # raw_assistant_msg 用于 DB 历史/记忆提取；assistant_msg_for_client 仅用于返回客户端
+                    raw_assistant_msg = msg_obj.get("content") or ""
+                    assistant_msg = raw_assistant_msg
+                    if raw_assistant_msg:
+                        transformed_msg = apply_response_transform_rules(raw_assistant_msg)
+                        if transformed_msg != raw_assistant_msg:
                             msg_obj["content"] = transformed_msg
+                            print("🔁 Response transform 已应用：客户端返回转换后，DB保存转换前")
                     if msg_obj.get("tool_calls"):
                         assistant_tool_calls = msg_obj["tool_calls"]
                         print(f"🔧 Response 包含 {len(assistant_tool_calls)} 个工具调用")

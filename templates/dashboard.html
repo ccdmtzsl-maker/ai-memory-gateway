@@ -243,6 +243,13 @@
                         <button class="btn btn-primary" onclick="doGenerateDailyImpression()">生成/更新</button>
                     </div>
                     <div id="dailyImpressionResult" class="preview-box" style="margin-top:12px;display:none;"></div>
+                    <div style="margin-top:16px;">
+                        <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:8px;">
+                            <h4 style="margin:0;">最近日印象</h4>
+                            <button class="btn btn-sm btn-secondary" onclick="loadDailyImpressions()">刷新</button>
+                        </div>
+                        <div id="dailyImpressionList" class="preview-box" style="max-height:320px;overflow:auto;">加载中...</div>
+                    </div>
                 </div>
             </div>
 
@@ -748,7 +755,7 @@
         </main>
     </div>
 
-    <script src="/static/js/dashboard.js?v=4.4"></script>
+    <script src="/static/js/dashboard.js?v=4.5"></script>
 <script>
     // --- 模型预设管理（右上角切换面板） ---
     let _modelPresets = [];

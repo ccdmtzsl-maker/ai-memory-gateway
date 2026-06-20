@@ -28,7 +28,7 @@ from fastapi.responses import StreamingResponse, JSONResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from database import init_tables, close_pool, save_message, search_memories, save_memory, get_all_memories_count, get_recent_memories, get_all_memories, get_pool, get_all_memories_detail, update_memory, delete_memory, delete_memories_batch, get_gateway_config, set_gateway_config, get_all_gateway_config, get_conversation_messages, get_session_cache_state, save_session_cache_state, delete_session_cache_state, save_token_usage, ensure_token_usage_table, get_conversations_paginated, delete_conversation, batch_delete_conversations, merge_sessions_to_target, list_all_session_cache_states, export_all_conversations, import_conversations, get_last_user_content, update_last_assistant_message, db_row_to_message, backfill_memory_embeddings, get_pending_memory_embedding_count, search_conversations, update_message_content, rename_session_id, get_fragments_by_date, get_fragments_by_date_range, create_event_memory, deactivate_memories, promote_to_core, merge_memories, check_duplicate_memory, update_memory_with_layer, get_layer_statistics, cleanup_old_fragments, revert_merge
+from database import init_tables, close_pool, save_message, search_memories, save_memory, get_all_memories_count, get_recent_memories, get_all_memories, get_pool, get_all_memories_detail, update_memory, delete_memory, delete_memories_batch, get_gateway_config, set_gateway_config, get_all_gateway_config, get_conversation_messages, get_session_cache_state, save_session_cache_state, delete_session_cache_state, save_token_usage, ensure_token_usage_table, get_conversations_paginated, delete_conversation, batch_delete_conversations, merge_sessions_to_target, list_all_session_cache_states, export_all_conversations, import_conversations, get_last_user_content, update_last_assistant_message, db_row_to_message, backfill_memory_embeddings, get_pending_memory_embedding_count, search_conversations, update_message_content, rename_session_id, get_fragments_by_date, get_fragments_by_date_range, create_event_memory, deactivate_memories, promote_to_core, merge_memories, check_duplicate_memory, update_memory_with_layer, get_layer_statistics, cleanup_old_fragments, revert_merge, upsert_daily_impression, get_daily_impression, list_daily_impressions
 import database as _db_module  # 用于 /api/settings 热更新 database.py 全局变量
 from memory_extractor import extract_memories, score_memories, get_extraction_prompt, set_extraction_prompt, _DEFAULT_EXTRACTION_PROMPT
 
@@ -2972,6 +2972,110 @@ _consolidate_status = {
 }
 
 
+
+DAILY_IMPRESSION_PROMPT = """你是长期陪伴型AI的记忆整理员。请根据某一天的原始记忆碎片，生成一条“日印象”。
+
+要求：
+- 使用第三人称、客观但有温度的语气。
+- 不要逐条复述碎片，要总结这一天的主题、状态、重要进展和关系氛围。
+- 如果有承诺、待办、偏好变化、情绪波动，可以自然写入。
+- 不要编造碎片中没有的信息。
+- 输出 JSON 对象，不要代码块，不要额外文字。
+
+输出格式：
+{
+  "summary": "200-600字的日印象正文",
+  "topics": ["主题1", "主题2"],
+  "mood": "当天整体氛围/情绪，简短描述"
+}
+
+原始碎片：
+{fragments}
+"""
+
+
+async def generate_daily_impression_for_date(impression_date):
+    """从指定日期的原始碎片生成/更新日印象，不改动碎片状态。"""
+    fragments = await get_fragments_by_date(impression_date)
+    if not fragments:
+        return {"status": "no_fragments", "date": str(impression_date)}
+
+    fragments_text = "\n".join([
+        f"[ID={f['id']}] {f['content']}"
+        for f in fragments
+    ])
+    prompt = DAILY_IMPRESSION_PROMPT.replace("{fragments}", fragments_text)
+
+    memory_api_base_url = get_memory_api_base_url()
+    if not memory_api_base_url:
+        return {"status": "error", "error": "MEMORY_API_BASE_URL 未设置，无法生成日印象"}
+
+    impression_model = os.getenv("MEMORY_MODEL", "anthropic/claude-haiku-4")
+    try:
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            response = await client.post(
+                memory_api_base_url,
+                headers={
+                    "Authorization": f"Bearer {get_memory_api_key()}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": impression_model,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "max_tokens": 2500,
+                    "temperature": 0,
+                },
+            )
+        if response.status_code != 200:
+            return {"status": "error", "error": f"HTTP {response.status_code}: {response.text[:300]}"}
+
+        raw = response.json().get("choices", [{}])[0].get("message", {}).get("content", "")
+        import re as _re
+        match = _re.search(r"\{[\s\S]*\}", raw)
+        if not match:
+            return {"status": "error", "error": "AI 未返回 JSON 对象", "raw": raw[:500]}
+        try:
+            obj = json.loads(match.group(), strict=False)
+        except json.JSONDecodeError as e:
+            return {"status": "error", "error": f"JSON 解析失败: {e}", "raw": raw[:500]}
+
+        topics = obj.get("topics", [])
+        if isinstance(topics, list):
+            topics_text = "、".join(str(t).strip() for t in topics if str(t).strip())
+        else:
+            topics_text = str(topics or "")
+
+        saved = await upsert_daily_impression(
+            impression_date,
+            str(obj.get("summary", "")).strip(),
+            topics=topics_text,
+            mood=str(obj.get("mood", "")).strip(),
+            source_fragment_ids=[f["id"] for f in fragments],
+        )
+        return {
+            "status": "ok",
+            "date": str(impression_date),
+            "fragments_used": len(fragments),
+            "impression": _serialize_daily_impression(saved),
+        }
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
+
+def _serialize_daily_impression(row):
+    if not row:
+        return None
+    return {
+        "date": row["impression_date"].isoformat() if hasattr(row.get("impression_date"), "isoformat") else str(row.get("impression_date")),
+        "summary": row.get("summary") or "",
+        "topics": row.get("topics") or "",
+        "mood": row.get("mood") or "",
+        "source_fragment_ids": row.get("source_fragment_ids") or [],
+        "created_at": row["created_at"].isoformat() if row.get("created_at") else None,
+        "updated_at": row["updated_at"].isoformat() if row.get("updated_at") else None,
+    }
+
+
 async def consolidate_memories_for_date(event_date):
     """整理指定日期的碎片记忆"""
     return await consolidate_memories_for_date_range(event_date, event_date)
@@ -3116,6 +3220,38 @@ async def consolidate_memories_for_date_range(start_date, end_date):
             
     except Exception as e:
         return {"status": "error", "error": str(e)}
+
+
+
+@app.get("/api/daily-impressions")
+async def api_list_daily_impressions(limit: int = 30):
+    if not MEMORY_ENABLED:
+        return {"error": "记忆系统未启用"}
+    rows = await list_daily_impressions(limit)
+    return {"status": "ok", "impressions": [_serialize_daily_impression(r) for r in rows]}
+
+
+@app.get("/api/daily-impressions/{date_str}")
+async def api_get_daily_impression(date_str: str):
+    if not MEMORY_ENABLED:
+        return {"error": "记忆系统未启用"}
+    impression_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+    row = await get_daily_impression(impression_date)
+    if not row:
+        return {"status": "not_found", "date": date_str}
+    return {"status": "ok", "impression": _serialize_daily_impression(row)}
+
+
+@app.post("/api/daily-impressions/generate")
+async def api_generate_daily_impression(request: Request):
+    if not MEMORY_ENABLED:
+        return {"error": "记忆系统未启用"}
+    data = await request.json()
+    date_str = data.get("date")
+    if not date_str:
+        return {"error": "请提供日期"}
+    impression_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+    return await generate_daily_impression_for_date(impression_date)
 
 
 @app.post("/api/memories/consolidate")

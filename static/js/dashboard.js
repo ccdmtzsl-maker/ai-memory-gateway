@@ -822,6 +822,63 @@ async function doConsolidate() {
 }
 
 // ============================================
+// 日印象
+// ============================================
+function openDailyImpressionModal() {
+    const modal = document.getElementById('dailyImpressionModal');
+    const dateInput = document.getElementById('dailyImpressionDate');
+    const result = document.getElementById('dailyImpressionResult');
+    if (dateInput && !dateInput.value) dateInput.value = new Date().toISOString().slice(0, 10);
+    if (result) { result.style.display = 'none'; result.innerHTML = ''; }
+    if (modal) modal.style.display = 'flex';
+}
+
+function closeDailyImpressionModal() {
+    const modal = document.getElementById('dailyImpressionModal');
+    if (modal) modal.style.display = 'none';
+}
+
+async function doGenerateDailyImpression() {
+    const date = document.getElementById('dailyImpressionDate').value;
+    const result = document.getElementById('dailyImpressionResult');
+    if (!date) { showManageMsg('error', '请选择日期'); return; }
+    if (result) { result.style.display = 'block'; result.innerHTML = '生成中...'; }
+    showManageMsg('info', '正在生成日印象...');
+    try {
+        const resp = await fetch('/api/daily-impressions/generate', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({date})
+        });
+        const data = await resp.json();
+        if (data.error || data.status === 'error') {
+            const msg = data.error || '生成失败';
+            if (result) result.innerHTML = '<b>生成失败：</b>' + escHtml(msg);
+            showManageMsg('error', '❌ ' + msg);
+            return;
+        }
+        if (data.status === 'no_fragments') {
+            if (result) result.innerHTML = '这一天没有原始碎片。';
+            showManageMsg('info', '这一天没有原始碎片');
+            return;
+        }
+        const imp = data.impression || {};
+        if (result) {
+            result.innerHTML =
+                '<div style="font-size:13px;color:var(--text-muted);margin-bottom:6px;">' +
+                escHtml(imp.date || date) + ' · ' + escHtml(imp.mood || '') + '</div>' +
+                '<div style="white-space:pre-wrap;line-height:1.6;">' + escHtml(imp.summary || '') + '</div>' +
+                (imp.topics ? '<div style="margin-top:8px;color:var(--text-muted);font-size:12px;">主题：' + escHtml(imp.topics) + '</div>' : '');
+        }
+        showManageMsg('success', '✅ 日印象已生成（使用 ' + (data.fragments_used || 0) + ' 条碎片）');
+    } catch (e) {
+        if (result) result.innerHTML = '<b>请求失败：</b>' + escHtml(e.message);
+        showManageMsg('error', '❌ ' + e.message);
+    }
+}
+
+
+// ============================================
 // 清理归档碎片
 // ============================================
 async function cleanupOldFragments() {

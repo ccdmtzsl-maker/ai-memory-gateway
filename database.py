@@ -1130,6 +1130,24 @@ async def get_conversation_messages(session_id: str, limit: int = 100):
         return [dict(r) for r in rows]
 
 
+async def get_conversation_messages_by_date(event_date):
+    """按本地日期读取当天全部对话消息（用于日印象）。"""
+    local_tz = dt_timezone(timedelta(hours=TIMEZONE_HOURS))
+    start_utc = datetime(event_date.year, event_date.month, event_date.day, tzinfo=local_tz).astimezone(dt_timezone.utc)
+    end_utc = start_utc + timedelta(days=1)
+
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("""
+            SELECT session_id, role, content, created_at
+            FROM conversations
+            WHERE content IS NOT NULL AND content <> ''
+            AND created_at >= $1 AND created_at < $2
+            ORDER BY created_at ASC
+        """, start_utc, end_utc)
+        return [dict(r) for r in rows]
+
+
 # ============================================================
 # 分区缓存状态管理
 # ============================================================

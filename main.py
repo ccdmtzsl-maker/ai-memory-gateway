@@ -28,7 +28,7 @@ from fastapi.responses import StreamingResponse, JSONResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from database import init_tables, close_pool, save_message, search_memories, save_memory, get_all_memories_count, get_recent_memories, get_all_memories, get_pool, get_all_memories_detail, update_memory, delete_memory, delete_memories_batch, get_gateway_config, set_gateway_config, get_all_gateway_config, get_conversation_messages, get_session_cache_state, save_session_cache_state, delete_session_cache_state, save_token_usage, ensure_token_usage_table, get_conversations_paginated, delete_conversation, batch_delete_conversations, merge_sessions_to_target, list_all_session_cache_states, export_all_conversations, import_conversations, get_last_user_content, update_last_assistant_message, db_row_to_message, backfill_memory_embeddings, get_pending_memory_embedding_count, search_conversations, update_message_content, rename_session_id, get_fragments_by_date, get_fragments_by_date_range, create_event_memory, deactivate_memories, promote_to_core, merge_memories, check_duplicate_memory, update_memory_with_layer, get_layer_statistics, cleanup_old_fragments, revert_merge, upsert_daily_impression, get_daily_impression, list_daily_impressions
+from database import init_tables, close_pool, save_message, search_memories, save_memory, get_all_memories_count, get_recent_memories, get_all_memories, get_pool, get_all_memories_detail, update_memory, delete_memory, delete_memories_batch, get_gateway_config, set_gateway_config, get_all_gateway_config, get_conversation_messages, get_session_cache_state, save_session_cache_state, delete_session_cache_state, save_token_usage, ensure_token_usage_table, get_conversations_paginated, delete_conversation, batch_delete_conversations, merge_sessions_to_target, list_all_session_cache_states, export_all_conversations, import_conversations, get_last_user_content, update_last_assistant_message, db_row_to_message, backfill_memory_embeddings, get_pending_memory_embedding_count, search_conversations, update_message_content, rename_session_id, get_fragments_by_date, get_conversation_messages_by_date, get_fragments_by_date_range, create_event_memory, deactivate_memories, promote_to_core, merge_memories, check_duplicate_memory, update_memory_with_layer, get_layer_statistics, cleanup_old_fragments, revert_merge, upsert_daily_impression, get_daily_impression, list_daily_impressions
 import database as _db_module  # 用于 /api/settings 热更新 database.py 全局变量
 from memory_extractor import extract_memories, score_memories, get_extraction_prompt, set_extraction_prompt, _DEFAULT_EXTRACTION_PROMPT
 
@@ -3050,12 +3050,12 @@ async def generate_daily_impression_for_date(impression_date):
             str(obj.get("summary", "")).strip(),
             topics=topics_text,
             mood=str(obj.get("mood", "")).strip(),
-            source_fragment_ids=[f["id"] for f in fragments],
+            source_fragment_ids=None,
         )
         return {
             "status": "ok",
             "date": str(impression_date),
-            "fragments_used": len(fragments),
+            "messages_used": len(messages),
             "impression": _serialize_daily_impression(saved),
         }
     except Exception as e:
@@ -4091,6 +4091,7 @@ async def get_settings():
             # 记忆提取提示词
             "extractionPrompt": db.get("extractionPrompt") or _DEFAULT_EXTRACTION_PROMPT or "",
             "consolidationPrompt": db.get("consolidationPrompt") or _DEFAULT_CONSOLIDATION_PROMPT or "",
+            "dailyImpressionPrompt": db.get("dailyImpressionPrompt") or _DEFAULT_DAILY_IMPRESSION_PROMPT or "",
             "modelPresets": json.loads(db.get("modelPresets") or "[]"),
         }
 
@@ -4252,6 +4253,13 @@ async def save_settings(request: Request):
                 await set_gateway_config("consolidationPrompt", str(value))
                 set_consolidation_prompt(str(value))
                 updated.append("consolidationPrompt")
+                continue
+
+            # --- dailyImpressionPrompt 特殊处理 ---
+            if key == "dailyImpressionPrompt":
+                await set_gateway_config("dailyImpressionPrompt", str(value))
+                set_daily_impression_prompt(str(value))
+                updated.append("dailyImpressionPrompt")
                 continue
 
             # --- modelPresets 特殊处理 ---

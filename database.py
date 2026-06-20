@@ -183,6 +183,23 @@ async def init_tables():
             );
         """)
         
+        # 日印象表（每天一条叙事摘要，不影响碎片/事件/核心三层结构）
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS daily_impressions (
+                impression_date     DATE PRIMARY KEY,
+                summary             TEXT NOT NULL,
+                topics              TEXT DEFAULT '',
+                mood                TEXT DEFAULT '',
+                source_fragment_ids INTEGER[] DEFAULT NULL,
+                created_at          TIMESTAMPTZ DEFAULT NOW(),
+                updated_at          TIMESTAMPTZ DEFAULT NOW()
+            );
+        """)
+        await conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_daily_impressions_updated
+            ON daily_impressions (updated_at DESC);
+        """)
+        
         # ---- 三层记忆架构字段（layer / title / is_active / merged_from / event_date）----
         # layer: 1=原始碎片, 2=事件记忆, 3=核心记忆
         await conn.execute("""
@@ -1494,6 +1511,53 @@ async def import_conversations(records: list):
             print(f"📥 导入对话: {imported} 条新增")
         
         return imported, skipped
+
+
+# ============================================================
+# 日印象（Daily Impression）
+# ============================================================
+
+async def upsert_daily_impression(impression_date, summary: str, topics: str = "", mood: str = "", source_fragment_ids: list = None):
+    """创建或更新指定日期的日印象。"""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow("""
+            INSERT INTO daily_impressions (impression_date, summary, topics, mood, source_fragment_ids, updated_at)
+            VALUES ($1, $2, $3, $4, $5, NOW())
+            ON CONFLICT (impression_date) DO UPDATE SET
+                summary = EXCLUDED.summary,
+                topics = EXCLUDED.topics,
+                mood = EXCLUDED.mood,
+                source_fragment_ids = EXCLUDED.source_fragment_ids,
+                updated_at = NOW()
+            RETURNING impression_date, summary, topics, mood, source_fragment_ids, created_at, updated_at
+        """, impression_date, summary, topics or "", mood or "", source_fragment_ids)
+        return dict(row) if row else None
+
+
+async def get_daily_impression(impression_date):
+    """读取指定日期的日印象。"""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow("""
+            SELECT impression_date, summary, topics, mood, source_fragment_ids, created_at, updated_at
+            FROM daily_impressions
+            WHERE impression_date = $1
+        """, impression_date)
+        return dict(row) if row else None
+
+
+async def list_daily_impressions(limit: int = 30):
+    """按日期倒序列出日印象。"""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("""
+            SELECT impression_date, summary, topics, mood, source_fragment_ids, created_at, updated_at
+            FROM daily_impressions
+            ORDER BY impression_date DESC
+            LIMIT $1
+        """, max(1, min(int(limit or 30), 100)))
+        return [dict(r) for r in rows]
 
 
 # ============================================================

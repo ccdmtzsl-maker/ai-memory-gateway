@@ -857,9 +857,9 @@ async function doGenerateDailyImpression() {
             showManageMsg('error', '❌ ' + msg);
             return;
         }
-        if (data.status === 'no_fragments') {
-            if (result) result.innerHTML = '这一天没有原始碎片。';
-            showManageMsg('info', '这一天没有原始碎片');
+        if (data.status === 'no_conversations') {
+            if (result) result.innerHTML = '这一天没有对话历史。';
+            showManageMsg('info', '这一天没有对话历史');
             return;
         }
         const imp = data.impression || {};
@@ -870,7 +870,7 @@ async function doGenerateDailyImpression() {
                 '<div style="white-space:pre-wrap;line-height:1.6;">' + escHtml(imp.summary || '') + '</div>' +
                 (imp.topics ? '<div style="margin-top:8px;color:var(--text-muted);font-size:12px;">主题：' + escHtml(imp.topics) + '</div>' : '');
         }
-        showManageMsg('success', '✅ 日印象已生成（使用 ' + (data.fragments_used || 0) + ' 条碎片）');
+        showManageMsg('success', '✅ 日印象已生成（使用 ' + (data.messages_used || 0) + ' 条对话）');
     } catch (e) {
         if (result) result.innerHTML = '<b>请求失败：</b>' + escHtml(e.message);
         showManageMsg('error', '❌ ' + e.message);
@@ -2091,7 +2091,7 @@ const _SETTINGS_FIELDS = {
     bool: ['MEMORY_ENABLED', 'CACHE_PARTITION_ENABLED', 'MEMORY_VECTOR_ENABLED', 'FORCE_STREAM', 'RESPONSE_TRANSFORM_ENABLED'],
     range: ['MEMORY_HW_KEYWORD', 'MEMORY_HW_SEMANTIC', 'MEMORY_HW_IMPORTANCE',
             'MEMORY_HW_RECENCY', 'MEMORY_SEMANTIC_THRESHOLD'],
-    text: ['systemPrompt', 'extractionPrompt', 'consolidationPrompt', 'RESPONSE_TRANSFORM_RULES'],
+    text: ['systemPrompt', 'extractionPrompt', 'consolidationPrompt', 'dailyImpressionPrompt', 'RESPONSE_TRANSFORM_RULES'],
 };
 
 const _MODEL_COMBOS = ['DEFAULT_MODEL', 'MEMORY_MODEL', 'CACHE_SUMMARY_MODEL'];

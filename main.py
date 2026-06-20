@@ -3072,7 +3072,7 @@ async def generate_daily_impression_for_date(impression_date):
         saved = await upsert_daily_impression(
             impression_date,
             str(obj.get("summary", "")).strip(),
-            topics=topics_text,
+            tags=topics_text,
             mood=str(obj.get("mood", "")).strip(),
             source_fragment_ids=None,
         )
@@ -3091,8 +3091,7 @@ def _serialize_daily_impression(row):
     return {
         "date": row["impression_date"].isoformat() if hasattr(row.get("impression_date"), "isoformat") else str(row.get("impression_date")),
         "summary": row.get("summary") or "",
-        "topics": row.get("topics") or "",
-        "tags": row.get("topics") or "",
+        "tags": row.get("tags") or "",
         "mood": row.get("mood") or "",
         "source_fragment_ids": row.get("source_fragment_ids") or [],
         "created_at": row["created_at"].isoformat() if row.get("created_at") else None,

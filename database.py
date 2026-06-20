@@ -200,6 +200,40 @@ async def init_tables():
             ON daily_impressions (updated_at DESC);
         """)
         
+        # 兼容早期/实验版 daily_impressions 表结构
+        await conn.execute("""
+            DO $$ BEGIN
+                IF EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_name = 'daily_impressions' AND column_name = 'date'
+                ) AND NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_name = 'daily_impressions' AND column_name = 'impression_date'
+                ) THEN
+                    ALTER TABLE daily_impressions RENAME COLUMN date TO impression_date;
+                END IF;
+            END $$;
+        """)
+        await conn.execute("""
+            ALTER TABLE daily_impressions
+            ADD COLUMN IF NOT EXISTS impression_date DATE,
+            ADD COLUMN IF NOT EXISTS summary TEXT DEFAULT '',
+            ADD COLUMN IF NOT EXISTS topics TEXT DEFAULT '',
+            ADD COLUMN IF NOT EXISTS mood TEXT DEFAULT '',
+            ADD COLUMN IF NOT EXISTS source_fragment_ids INTEGER[] DEFAULT NULL,
+            ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW(),
+            ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW();
+        """)
+        await conn.execute("""
+            UPDATE daily_impressions
+            SET impression_date = COALESCE(impression_date, created_at::date)
+            WHERE impression_date IS NULL;
+        """)
+        await conn.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_daily_impressions_date_unique
+            ON daily_impressions (impression_date);
+        """)
+        
         # ---- 三层记忆架构字段（layer / title / is_active / merged_from / event_date）----
         # layer: 1=原始碎片, 2=事件记忆, 3=核心记忆
         await conn.execute("""

@@ -1,5 +1,6 @@
 let _dailyImpressions = [];
 let _lastDailyRaw = '';
+let _editingDailyIndex = -1;
 
 function _dailyTags(item) {
     return item.tags || item.topics || '';
@@ -107,8 +108,87 @@ async function loadDailyImpressionsPage() {
 
 function showDailyPageDetail(index) {
     const detail = document.getElementById('dailyPageDetail');
-    if (detail) detail.style.display = 'block';
-    _renderDailyDetail(_dailyImpressions[index], 'dailyPageDetail');
+    if (!detail) return;
+    _editingDailyIndex = -1;
+    detail.style.display = 'block';
+    const item = _dailyImpressions[index];
+    const tags = _dailyTags(item);
+    detail.innerHTML =
+        '<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:10px;">' +
+            '<div style="font-size:13px;color:var(--text-muted);">' + escHtml(item.date || '') + (item.mood ? ' · ' + escHtml(item.mood) : '') + '</div>' +
+            '<div style="display:flex;gap:8px;">' +
+                '<button onclick="editDailyPageDetail(' + index + ')" style="padding:4px 10px;border:1px solid var(--border-color);border-radius:6px;background:#fff;cursor:pointer;font-size:12px;">编辑</button>' +
+                '<button onclick="deleteDailyPageDetail(' + index + ')" style="padding:4px 10px;border:1px solid #dc2626;color:#dc2626;border-radius:6px;background:#fff;cursor:pointer;font-size:12px;">删除</button>' +
+            '</div>' +
+        '</div>' +
+        '<div style="white-space:pre-wrap;line-height:1.7;font-size:15px;">' + escHtml(item.summary || '') + '</div>' +
+        (tags ? '<div style="margin-top:12px;color:var(--text-muted);font-size:13px;">标签：' + escHtml(tags) + '</div>' : '');
+}
+
+function editDailyPageDetail(index) {
+    _editingDailyIndex = index;
+    const detail = document.getElementById('dailyPageDetail');
+    if (!detail) return;
+    const item = _dailyImpressions[index];
+    const tags = _dailyTags(item);
+    detail.innerHTML =
+        '<div style="font-size:13px;color:var(--text-muted);margin-bottom:10px;">编辑日印象：' + escHtml(item.date || '') + '</div>' +
+        '<div style="margin-bottom:10px;">' +
+            '<label style="display:block;font-size:13px;margin-bottom:4px;">标签：</label>' +
+            '<input id="editDailyTags" value="' + escHtml(tags) + '" style="width:100%;padding:8px;border:1px solid var(--border-color);border-radius:6px;" />' +
+        '</div>' +
+        '<div style="margin-bottom:10px;">' +
+            '<label style="display:block;font-size:13px;margin-bottom:4px;">氛围：</label>' +
+            '<input id="editDailyMood" value="' + escHtml(item.mood || '') + '" style="width:100%;padding:8px;border:1px solid var(--border-color);border-radius:6px;" />' +
+        '</div>' +
+        '<div style="margin-bottom:10px;">' +
+            '<label style="display:block;font-size:13px;margin-bottom:4px;">正文：</label>' +
+            '<textarea id="editDailySummary" rows="12" style="width:100%;padding:8px;border:1px solid var(--border-color);border-radius:6px;resize:vertical;">' + escHtml(item.summary || '') + '</textarea>' +
+        '</div>' +
+        '<div style="display:flex;gap:8px;">' +
+            '<button onclick="saveDailyPageDetail()" style="padding:8px 16px;border:none;border-radius:6px;background:#4f46e5;color:#fff;cursor:pointer;">保存</button>' +
+            '<button onclick="cancelDailyEdit()" style="padding:8px 16px;border:1px solid var(--border-color);border-radius:6px;background:#fff;cursor:pointer;">取消</button>' +
+        '</div>';
+}
+
+async function saveDailyPageDetail() {
+    if (_editingDailyIndex < 0) return;
+    const item = _dailyImpressions[_editingDailyIndex];
+    const summary = document.getElementById('editDailySummary')?.value?.trim() || '';
+    const tags = document.getElementById('editDailyTags')?.value?.trim() || '';
+    const mood = document.getElementById('editDailyMood')?.value?.trim() || '';
+    if (!summary) { alert('正文不能为空'); return; }
+    try {
+        const resp = await fetch('/api/daily-impressions/' + (item.date || ''), {
+            method: 'PUT',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({summary, tags, mood})
+        });
+        const data = await resp.json();
+        if (data.error) throw new Error(data.error);
+        await loadDailyImpressionsPage();
+    } catch (e) {
+        alert('保存失败：' + e.message);
+    }
+}
+
+function cancelDailyEdit() {
+    if (_editingDailyIndex >= 0) showDailyPageDetail(_editingDailyIndex);
+}
+
+async function deleteDailyPageDetail(index) {
+    const item = _dailyImpressions[index];
+    if (!confirm('确定删除 ' + (item.date || '') + ' 的日印象？')) return;
+    try {
+        const resp = await fetch('/api/daily-impressions/' + (item.date || ''), {method: 'DELETE'});
+        const data = await resp.json();
+        if (data.error) throw new Error(data.error);
+        const detail = document.getElementById('dailyPageDetail');
+        if (detail) detail.style.display = 'none';
+        await loadDailyImpressionsPage();
+    } catch (e) {
+        alert('删除失败：' + e.message);
+    }
 }
 
 function renderDailyRawBlock(raw) {

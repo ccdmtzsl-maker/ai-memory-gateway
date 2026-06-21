@@ -3361,6 +3361,47 @@ async def api_generate_daily_impression(request: Request):
     return await generate_daily_impression_for_date(impression_date)
 
 
+@app.put("/api/daily-impressions/{date_str}")
+async def api_update_daily_impression(date_str: str, request: Request):
+    if not MEMORY_ENABLED:
+        return {"error": "记忆系统未启用"}
+    try:
+        impression_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+        data = await request.json()
+        summary = data.get("summary", "").strip()
+        tags = data.get("tags", "").strip()
+        mood = data.get("mood", "").strip()
+        if not summary:
+            return {"error": "正文不能为空"}
+        saved = await upsert_daily_impression(
+            impression_date,
+            summary,
+            tags=tags,
+            mood=mood,
+            source_fragment_ids=None,
+        )
+        return {"status": "ok", "impression": _serialize_daily_impression(saved)}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.delete("/api/daily-impressions/{date_str}")
+async def api_delete_daily_impression(date_str: str):
+    if not MEMORY_ENABLED:
+        return {"error": "记忆系统未启用"}
+    try:
+        impression_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            deleted = await conn.execute(
+                "DELETE FROM daily_impressions WHERE impression_date = $1",
+                impression_date
+            )
+        return {"status": "ok", "deleted": deleted}
+    except Exception as e:
+        return {"error": str(e)}
+
+
 @app.post("/api/memories/consolidate")
 async def api_manual_consolidate(request: Request):
     """手动触发整理（异步，立即返回）

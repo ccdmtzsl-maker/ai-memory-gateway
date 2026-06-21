@@ -1,5 +1,5 @@
 let _dailyImpressions = [];
-let _lastDailyRaw = ;
+let _lastDailyRaw = '';
 
 function _dailyTags(item) {
     return item.tags || item.topics || '';

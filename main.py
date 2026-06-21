@@ -3117,6 +3117,7 @@ async def generate_daily_impression_for_date(impression_date):
             "date": str(impression_date),
             "messages_used": len(messages),
             "impression": _serialize_daily_impression(saved),
+            "raw": raw,
         }
     except Exception as e:
         return {"status": "error", "error": str(e)}

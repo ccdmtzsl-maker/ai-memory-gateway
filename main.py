@@ -355,6 +355,7 @@ async def auth_middleware(request: Request, call_next):
 async def format_daily_impressions_for_prompt(limit: int = 3) -> str:
     limit = max(1, min(int(limit or 3), 10))
     rows = await list_daily_impressions(limit=limit)
+    rows = list(reversed(rows))
     if not rows:
         return "【近日印象】\n暂无。"
 

@@ -17,7 +17,14 @@ function _renderDailyDetail(item, containerId) {
 
 async function _fetchDailyImpressions() {
     const resp = await fetch('/api/daily-impressions?limit=60');
-    const data = await resp.json();
+    const text = await resp.text();
+    let data = null;
+    try {
+        data = text ? JSON.parse(text) : {};
+    } catch (e) {
+        throw new Error('HTTP ' + resp.status + ': ' + text.slice(0, 160));
+    }
+    if (!resp.ok) throw new Error(data.error || data.message || ('HTTP ' + resp.status));
     if (data.error) throw new Error(data.error);
     _dailyImpressions = data.impressions || [];
     return _dailyImpressions;

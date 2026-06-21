@@ -1,4 +1,5 @@
 let _dailyImpressions = [];
+let _lastDailyRaw = ;
 
 function _dailyTags(item) {
     return item.tags || item.topics || '';
@@ -88,6 +89,13 @@ function showDailyPageDetail(index) {
     _renderDailyDetail(_dailyImpressions[index], 'dailyPageDetail');
 }
 
+function renderDailyRawBlock(raw) {
+    if (!raw) return '';
+    return '<details style="margin-top:10px;"><summary style="cursor:pointer;">查看模型返回原文</summary>' +
+        '<pre style="white-space:pre-wrap;word-break:break-word;max-height:360px;overflow:auto;background:rgba(15,23,42,.05);border:1px solid var(--border-color);border-radius:8px;padding:10px;margin-top:8px;">' +
+        escHtml(raw) + '</pre></details>';
+}
+
 async function generateDailyImpressionFromPage() {
     const dateInput = document.getElementById('dailyPageDate');
     const msg = document.getElementById('daily-page-msg');
@@ -106,7 +114,8 @@ async function generateDailyImpressionFromPage() {
             if (msg) msg.innerHTML = '<div class="msg msg-info">这一天没有对话历史</div>';
             return;
         }
-        if (msg) msg.innerHTML = '<div class="msg msg-success">✅ 已生成日印象（使用 ' + (data.messages_used || 0) + ' 条对话）</div>';
+        _lastDailyRaw = data.raw || '';
+        if (msg) msg.innerHTML = '<div class="msg msg-success">✅ 已生成日印象（使用 ' + (data.messages_used || 0) + ' 条对话）</div>' + renderDailyRawBlock(_lastDailyRaw);
         await loadDailyImpressionsPage();
     } catch (e) {
         if (msg) msg.innerHTML = '<div class="msg msg-error">❌ ' + escHtml(e.message) + '</div>';

@@ -98,6 +98,811 @@
                         <button class="layer-tab" data-layer="2" onclick="switchLayer(2)">事件记忆 <span id="count-layer-2">0</span></button>
                         <button class="layer-tab" data-layer="1" onclick="switchLayer(1)">原始碎片 <span id="count-layer-1">0</span></button>
                         <label class="checkbox-label" style="margin-left:auto;">
-                            <input type="check
+                            <input type="checkbox" id="showInactive" onchange="memCurrentPage=1;filterAndSort()">
+                            <span>显示已归档</span>
+                        </label>
+                    </div>
+                </div>
 
----END---
+                <div class="card toolbar-card">
+                    <div class="toolbar">
+                        <input type="text" id="searchBox" class="search-input" placeholder="搜索记忆..." oninput="memCurrentPage=1;filterAndSort()">
+                        <button class="btn btn-sm" onclick="semanticSearch()" title="使用后端混合搜索（关键词+向量）" style="white-space: nowrap;">语义搜索</button>
+                        <div class="toolbar-group">
+                            <input type="date" id="dateFilter" class="date-input" onchange="memCurrentPage=1;filterAndSort()" title="按日期筛选">
+                            <button class="btn btn-icon" onclick="clearDateFilter()" title="清除日期">✕</button>
+                        </div>
+                        <select id="sortSelect" class="select-input" onchange="memCurrentPage=1;filterAndSort()">
+                            <option value="id-desc">时间从新到旧</option>
+                            <option value="id-asc">时间从旧到新</option>
+                            <option value="imp-desc">强度 高到低</option>
+                            <option value="imp-asc">强度 低到高</option>
+                        </select>
+                        <div class="toolbar-actions">
+                            <button class="btn btn-warning" onclick="openConsolidateModal()">整理记忆</button>
+                            <label class="checkbox-label">
+                                <input type="checkbox" id="selectAll" onchange="toggleAll()">
+                                <span>全选</span>
+                            </label>
+                        </div>
+                    </div>
+                </div>
+
+                <div id="manage-msg" class="msg-container"></div>
+                
+                <div class="stats-bar">
+                    <span id="stats">加载中...</span>
+                </div>
+
+                <div class="card table-card">
+                    <table class="data-table">
+                        <thead>
+                            <tr>
+                                <th class="col-check"><input type="checkbox" id="selectAllHead" onchange="toggleAll()"></th>
+                                <th class="col-id">ID</th>
+                                <th class="col-layer">层级</th>
+                                <th class="col-title">标题</th>
+                                <th class="col-content">内容</th>
+                                <th class="col-importance">权重</th>
+                                <th class="col-time">时间</th>
+                                <th class="col-actions">操作</th>
+                            </tr>
+                        </thead>
+                        <tbody id="tbody"></tbody>
+                    </table>
+                </div>
+
+                <!-- 清理归档碎片 -->
+                <div class="card" style="margin-top: 16px; padding: 16px;">
+                    <div style="display: flex; align-items: center; gap: 16px;">
+                        <span style="color: var(--text-light); font-size: 14px;">清理30天前的归档碎片：</span>
+                        <button class="btn btn-danger" onclick="cleanupOldFragments()">清理</button>
+                    </div>
+                </div>
+
+                <!-- 记忆向量补算 -->
+                <div class="card" style="margin-top: 16px; padding: 16px;">
+                    <div style="display: flex; align-items: center; gap: 16px; flex-wrap: wrap;">
+                        <span style="color: var(--text-light); font-size: 14px;">记忆向量补算（给已有记忆计算 embedding）：</span>
+                        <button class="btn btn-primary" id="backfillMemBtn" onclick="startBackfillMemoryEmbeddings()">开始补算</button>
+                    </div>
+                    <div id="backfill-mem-progress" style="display: none; margin-top: 12px;">
+                        <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 8px;">
+                            <div style="flex: 1; height: 8px; background: var(--border); border-radius: 4px; overflow: hidden;">
+                                <div id="backfill-mem-bar" style="width: 0%; height: 100%; background: var(--primary); border-radius: 4px; transition: width 0.3s ease;"></div>
+                            </div>
+                            <span id="backfill-mem-text" style="font-size: 13px; color: var(--text-muted); white-space: nowrap;">0/0</span>
+                        </div>
+                    </div>
+                    <div id="backfill-mem-msg" style="margin-top: 8px;"></div>
+                </div>
+            </section>
+
+            <!-- 合并弹窗 -->
+            <div id="mergeModal" class="modal" style="display:none;">
+                <div class="modal-content">
+                    <h3>合并记忆</h3>
+                    <p>已选择 <span id="mergeCount">0</span> 条记忆</p>
+                    <div class="form-group">
+                        <label class="form-label">标题（可选）：</label>
+                        <input type="text" id="mergeTitle" class="form-input" placeholder="10字以内的标题" maxlength="20">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">合并后内容：</label>
+                        <textarea id="mergeContent" class="textarea" rows="6" placeholder="请输入合并后的完整描述..."></textarea>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">重要度：</label>
+                        <input type="number" id="mergeImportance" class="form-input" value="0" min="-10" max="10" style="width:80px;">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">层级：</label>
+                        <select id="mergeLayer" class="select-input">
+                            <option value="2">事件记忆</option>
+                            <option value="3">核心记忆</option>
+                        </select>
+                    </div>
+                    <div class="modal-actions">
+                        <button class="btn btn-secondary" onclick="closeMergeModal()">取消</button>
+                        <button class="btn btn-primary" onclick="doMerge()">确认合并</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 整理弹窗 -->
+            <div id="consolidateModal" class="modal" style="display:none;">
+                <div class="modal-content">
+                    <h3>整理记忆</h3>
+                    <p>将指定时间段的碎片记忆整理合并为事件记忆</p>
+                    <div class="form-group">
+                        <label class="form-label">开始日期：</label>
+                        <input type="date" id="consolidateDateStart" class="form-input">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">结束日期：</label>
+                        <input type="date" id="consolidateDateEnd" class="form-input">
+                    </div>
+                    <div class="form-group">
+                        <p class="hint">整理过程会调用 AI 将这段时间内的碎片合并成完整事件，合并后的碎片将被标记为"已归档"。跨天的相关碎片也会被合并到一起。</p>
+                    </div>
+                    <div class="modal-actions">
+                        <button class="btn btn-secondary" onclick="closeConsolidateModal()">取消</button>
+                        <button class="btn btn-primary" onclick="doConsolidate()">开始整理</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 日印象弹窗 -->
+            <div id="dailyImpressionModal" class="modal" style="display:none;">
+                <div class="modal-content modal-wide">
+                    <h3>生成日印象</h3>
+                    <p>根据指定日期的原始碎片生成一条日记式印象，不会归档或修改碎片。</p>
+                    <div class="form-group">
+                        <label class="form-label">日期：</label>
+                        <input type="date" id="dailyImpressionDate" class="form-input">
+                    </div>
+                    <div class="modal-actions">
+                        <button class="btn btn-secondary" onclick="closeDailyImpressionModal()">取消</button>
+                        <button class="btn btn-primary" onclick="doGenerateDailyImpression()">生成/更新</button>
+                    </div>
+                    <div id="dailyImpressionResult" class="preview-box" style="margin-top:12px;display:none;"></div>
+                    <div style="margin-top:16px;">
+                        <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:8px;">
+                            <h4 style="margin:0;">最近日印象</h4>
+                            <button class="btn btn-sm btn-secondary" onclick="loadDailyImpressions()">刷新</button>
+                        </div>
+                        <div id="dailyImpressionList" class="preview-box" style="max-height:320px;overflow:auto;">加载中...</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 查看合并来源弹窗 -->
+            <div id="mergeSourceModal" class="modal" style="display:none;">
+                <div class="modal-content modal-wide">
+                    <div id="mergeSourceContent"></div>
+                </div>
+            </div>
+
+            <!-- 底部浮动操作栏 -->
+            <div id="floatingBar" class="floating-bar" style="display:none;">
+                <span class="floating-count">已选 <b id="selectedCount">0</b> 条</span>
+                <div class="floating-actions">
+                    <button class="btn btn-primary" onclick="batchSave()">保存选中</button>
+                    <button class="btn btn-secondary" onclick="openMergeModal()">合并选中</button>
+                    <button class="btn btn-secondary" onclick="batchChangeDate()">修改日期</button>
+                    <button class="btn btn-danger" onclick="batchDelete()">删除选中</button>
+                    <button class="btn btn-icon" onclick="clearSelection()" title="取消选择">✕</button>
+                </div>
+            </div>
+
+            <!-- 导入记忆 Section -->
+            <section id="section-import" class="section">
+                <div class="section-header">
+                    <h1>导入记忆</h1>
+                    <p class="section-desc">从文件或文本导入新的记忆</p>
+                </div>
+
+                <div class="card">
+                    <div class="tabs">
+                        <button class="tab active" data-tab="text">纯文本导入</button>
+                        <button class="tab" data-tab="chat">聊天记录提取</button>
+                        <button class="tab" data-tab="json">JSON 备份恢复</button>
+                    </div>
+
+                    <!-- 纯文本导入 -->
+                    <div id="tab-text" class="tab-panel active">
+                        <div class="form-group">
+                            <label class="form-label">上传 .txt 文件（每行一条记忆）</label>
+                            <input type="file" id="txtFile" accept=".txt" class="file-input">
+                        </div>
+                        <div class="divider"><span>或者直接输入</span></div>
+                        <div class="form-group">
+                            <textarea id="txtInput" class="textarea" rows="8" placeholder="每行一条记忆，例如：&#10;用户的名字叫小花&#10;用户喜欢吃火锅&#10;用户养了一只狗叫豆豆"></textarea>
+                        </div>
+                        <div class="form-group">
+                            <label class="checkbox-label">
+                                <input type="checkbox" id="skipScore">
+                                <span>跳过自动评分（所有记忆默认权重 0，不消耗 API 额度）</span>
+                            </label>
+                        </div>
+                        <button class="btn btn-primary btn-lg" onclick="doTextImport()">开始导入</button>
+                    </div>
+
+                    <!-- 聊天记录提取 -->
+                    <div id="tab-chat" class="tab-panel">
+                        <div class="form-group">
+                            <label class="form-label">上传聊天记录文件（.txt / .md / .json）</label>
+                            <input type="file" id="chatFile" accept=".txt,.md,.json" class="file-input">
+                        </div>
+                        <div class="divider"><span>或者直接粘贴</span></div>
+                        <div class="form-group">
+                            <textarea id="chatInput" class="textarea" rows="10" placeholder="粘贴聊天记录，支持格式：&#10;用户: 今天去了公园&#10;助手: 听起来很开心！&#10;用户: 是的，还遇到了一只柯基&#10;&#10;也可以直接粘贴纯文本，会全部当作用户发言"></textarea>
+                        </div>
+                        <button class="btn btn-primary btn-lg" onclick="doExtractFromChat()" id="btn-extract-chat">开始提取</button>
+                        <div id="chat-extract-result" style="margin-top:16px;display:none;">
+                            <h3 style="font-size:15px;margin-bottom:8px;">提取结果（可取消勾选不需要的）</h3>
+                            <div id="chat-extract-list"></div>
+                            <button class="btn btn-primary" onclick="doImportExtracted()" style="margin-top:12px;">确认导入选中的记忆</button>
+                        </div>
+                    </div>
+
+                    <!-- JSON 导入 -->
+                    <div id="tab-json" class="tab-panel">
+                        <div class="form-group">
+                            <label class="form-label">上传从导出功能保存的 .json 文件</label>
+                            <input type="file" id="jsonFile" accept=".json" class="file-input">
+                        </div>
+                        <div class="divider"><span>或者直接粘贴</span></div>
+                        <div class="form-group">
+                            <textarea id="jsonInput" class="textarea" rows="8" placeholder="粘贴导出的 JSON"></textarea>
+                        </div>
+                        <button class="btn btn-secondary" onclick="previewJson()">预览内容</button>
+                        <div id="jsonPreview" class="preview-box"></div>
+                    </div>
+                </div>
+
+                <div id="import-result" class="msg-container"></div>
+            </section>
+
+            <!-- 导出备份 Section -->
+            <section id="section-export" class="section">
+                <div class="section-header">
+                    <h1>导出备份</h1>
+                    <p class="section-desc">将记忆导出为 JSON 文件，用于备份或迁移</p>
+                </div>
+
+                <div class="card export-card">
+                    <div class="export-info">
+                        <div class="export-icon" style="font-size: 36px; color: var(--primary); display: flex; align-items: center;"><svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg></div>
+                        <div class="export-text">
+                            <h3>导出全部记忆</h3>
+                            <p>将所有记忆导出为 JSON 格式，包含完整的元数据（权重、来源、时间等）</p>
+                        </div>
+                    </div>
+                    <div class="export-stats" id="export-stats">
+                        正在统计...
+                    </div>
+                    <button class="btn btn-primary btn-lg" onclick="doExport()">下载 JSON 备份</button>
+                </div>
+
+                <div class="card tips-card">
+                    <h4>小贴士</h4>
+                    <ul>
+                        <li>导出的 JSON 可以通过「导入记忆 → JSON 备份恢复」功能导入</li>
+                        <li>建议定期备份，以防数据丢失</li>
+                        <li>导出文件可用于迁移到其他部署实例</li>
+                    </ul>
+                </div>
+            </section>
+
+            <!-- 对话记录 Section -->
+            <section id="section-conversations" class="section">
+                <div class="section-header">
+                    <h1>对话记录</h1>
+                    <p class="section-desc">浏览、搜索和管理历史对话</p>
+                </div>
+
+                <!-- 搜索栏 -->
+                <div class="card" style="margin-bottom: 16px;">
+                    <div style="display: flex; gap: 8px;">
+                        <input type="text" id="conv-search-input" class="input" 
+                            placeholder="搜索对话内容..." 
+                            style="flex: 1;" 
+                            onkeydown="if(event.key==='Enter') searchConversations()">
+                        <button class="btn btn-primary" onclick="searchConversations()">搜索</button>
+                        <button class="btn" onclick="clearConvSearch()">清除</button>
+                    </div>
+                    <div id="conv-search-status" style="margin-top: 8px; color: var(--text-muted); font-size: 13px;"></div>
+                </div>
+
+                <!-- 对话列表 -->
+                <div class="card">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+                        <h4 id="conv-list-title">对话列表</h4>
+                        <span id="conv-list-count" style="color: var(--text-muted); font-size: 13px;"></span>
+                    </div>
+                    <div id="conv-list-container" style="min-height: 100px;">
+                        <div style="text-align: center; color: var(--text-muted); padding: 40px 0;">加载中...</div>
+                    </div>
+                    <!-- 分页 -->
+                    <div id="conv-pagination" style="display: flex; justify-content: center; align-items: center; gap: 12px; margin-top: 16px;"></div>
+                </div>
+
+                <!-- 对话详情（点击列表项后展开） -->
+                <div id="conv-detail-panel" class="card" style="display: none;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+                        <h4 id="conv-detail-title">对话详情</h4>
+                        <button class="btn btn-sm" onclick="closeConvDetail()">关闭</button>
+                    </div>
+                    <div id="conv-detail-messages" style="max-height: 600px; overflow-y: auto;"></div>
+                </div>
+
+                <!-- 导入导出折叠区 -->
+                <details style="margin-top: 16px;">
+                    <summary style="cursor: pointer; padding: 12px; background: var(--bg-card); border-radius: 8px; font-weight: 500;">导入 / 导出</summary>
+                    <div style="margin-top: 8px;">
+                        <div class="card export-card">
+                            <div class="export-info">
+                                <div class="export-icon" style="font-size: 36px; color: var(--primary); display: flex; align-items: center;"><svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></div>
+                                <div class="export-text">
+                                    <h3>导出对话记录</h3>
+                                    <p>将所有对话历史导出为 JSON 格式</p>
+                                </div>
+                            </div>
+                            <div class="export-stats" id="conv-export-stats">正在统计...</div>
+                            <button class="btn btn-primary btn-lg" onclick="exportConversations()">下载对话记录</button>
+                        </div>
+
+                        <div class="card">
+                            <h4 style="margin-bottom: 16px;">导入对话记录</h4>
+                            <div class="form-group">
+                                <label class="form-label">上传导出的 .json 文件</label>
+                                <input type="file" id="convJsonFile" accept=".json" class="file-input">
+                            </div>
+                            <div class="divider"><span>或者直接粘贴</span></div>
+                            <div class="form-group">
+                                <textarea id="convJsonInput" class="textarea" rows="6" placeholder="粘贴导出的对话记录 JSON"></textarea>
+                            </div>
+                            <button class="btn btn-primary" onclick="doConvImport()">导入对话记录</button>
+                            <div id="conv-import-result" class="msg-container" style="margin-top: 16px;"></div>
+                        </div>
+                    </div>
+                </details>
+            </section>
+
+            <!-- 对话线管理 Section -->
+
+            <!-- 日印象 Section -->
+            <section id="section-daily-impressions" class="section">
+                <div class="section-header">
+                    <h1>日印象</h1>
+                    <p class="section-desc">按天查看由对话历史生成的日记式印象</p>
+                </div>
+
+                <div class="card toolbar-card">
+                    <div class="toolbar">
+                        <input type="date" id="dailyPageDate" class="date-input">
+                        <button class="btn btn-primary" onclick="generateDailyImpressionFromPage()">生成/更新当天</button>
+                        <button class="btn btn-secondary" onclick="loadDailyImpressionsPage()">刷新列表</button>
+                    </div>
+                </div>
+
+                <div id="daily-page-msg" class="msg-container"></div>
+
+                <div id="dailyPageList" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:14px;align-items:stretch;">加载中...</div>
+
+                <div id="dailyPageDetail" class="card" style="display:none;margin-top:16px;padding:18px;"></div>
+            </section>
+
+            <section id="section-threads" class="section">
+                <div class="section-header">
+                    <h1>对话线管理</h1>
+                    <p class="section-desc">管理分区缓存的对话线、查看编辑摘要</p>
+                </div>
+                <div class="card" id="thread-status-card">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+                        <h4>当前活跃对话线</h4>
+                        <button class="btn btn-sm" onclick="loadThreads()">刷新</button>
+                    </div>
+                    <div id="thread-status" style="color: var(--text-muted);">加载中...</div>
+                </div>
+                <div class="card">
+                    <h4 style="margin-bottom: 12px;">新建对话线</h4>
+                    <div style="display: flex; gap: 8px; align-items: flex-end; flex-wrap: wrap;">
+                        <div style="flex: 1; min-width: 200px;">
+                            <label class="form-label" style="font-size: 13px;">对话线ID</label>
+                            <input type="text" id="new-thread-id" class="search-input" placeholder="例如: my-thread">
+                        </div>
+                        <div style="flex: 1; min-width: 200px;">
+                            <label class="form-label" style="font-size: 13px;">继承摘要自（可选）</label>
+                            <select id="new-thread-copy-from" class="select-input">
+                                <option value="">不继承，从零开始</option>
+                            </select>
+                        </div>
+                        <button class="btn btn-primary" onclick="createThread()">创建</button>
+                    </div>
+                    <div id="thread-create-msg" class="msg-container" style="margin-top: 8px;"></div>
+                </div>
+                <div class="card">
+                    <h4 style="margin-bottom: 12px;">所有对话线</h4>
+                    <div id="thread-list" style="min-height: 60px;">
+                        <div style="text-align: center; color: var(--text-muted); padding: 20px 0;">加载中...</div>
+                    </div>
+                </div>
+                <div id="summaryModal" class="modal" style="display:none;">
+                    <div class="modal-content" style="max-width: 700px;">
+                        <h3>编辑摘要 — <span id="summary-modal-sid"></span></h3>
+                        <div class="form-group">
+                            <textarea id="summary-editor" class="textarea" rows="16" style="font-size: 14px; line-height: 1.6;"></textarea>
+                        </div>
+                        <div style="display: flex; justify-content: space-between; align-items: center;">
+                            <span id="summary-char-count" style="color: var(--text-muted); font-size: 13px;"></span>
+                            <div style="display: flex; gap: 8px;">
+                                <button class="btn btn-danger" onclick="clearSummary()">清空摘要</button>
+                                <button class="btn btn-secondary" onclick="closeSummaryModal()">取消</button>
+                                <button class="btn btn-primary" onclick="saveSummary()">保存</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- 设置 Section -->
+            <section id="section-logs" class="section">
+    <div class="section-header">
+        <h1>后台日志</h1>
+        <p class="section-desc">查看记忆提取、跳过原因和后台任务状态</p>
+    </div>
+    <div class="card" style="padding:18px; margin-bottom:16px; background:linear-gradient(135deg, rgba(231,90,124,.10), rgba(116,91,255,.08)); border:1px solid rgba(231,90,124,.18);">
+        <div style="display:flex; justify-content:space-between; gap:12px; align-items:center; flex-wrap:wrap;">
+            <div>
+                <div style="font-weight:700; font-size:16px; margin-bottom:4px;">记忆提取监控</div>
+                <div style="color:var(--text-muted); font-size:13px;">会显示最近 200 条后台日志；服务重启后会清空。</div>
+            </div>
+            <div style="display:flex; gap:8px; flex-wrap:wrap;">
+                <button class="btn btn-secondary" onclick="loadDashboardLogs()">刷新</button>
+                <button class="btn btn-secondary" onclick="toggleLastRequestBody()">查看上次请求体</button>
+                <button class="btn btn-danger" onclick="clearDashboardLogs()">清空</button>
+            </div>
+        </div>
+    </div>
+    <div id="last-request-body-panel" class="card" style="display:none; padding:14px 16px; margin-bottom:16px; border-left:4px solid var(--primary);">
+        <div style="display:flex; justify-content:space-between; gap:12px; align-items:center; margin-bottom:8px;">
+            <div>
+                <div style="font-weight:700; font-size:14px;">上次发送给上游模型的请求体</div>
+                <div id="last-request-body-meta" style="color:var(--text-muted); font-size:12px; margin-top:2px;"></div>
+            </div>
+            <button class="btn btn-sm" onclick="toggleLastRequestBody(false)">收起</button>
+        </div>
+        <pre id="last-request-body-content" style="max-height:520px; overflow:auto; white-space:pre-wrap; word-break:break-word; font-size:12px; line-height:1.55; background:rgba(15,23,42,.05); border:1px solid var(--border); border-radius:8px; padding:12px; margin:0;"></pre>
+    </div>
+    <div id="dashboard-log-list" style="display:flex; flex-direction:column; gap:10px;"></div>
+</section>
+
+<section id="section-settings" class="section">
+                <div class="section-header">
+                    <h2>设置</h2>
+                    <div id="settings-msg" class="msg-box" style="display:none;"></div>
+                </div>
+
+                <!-- 基础连接 -->
+                <div class="card settings-card">
+                    <h3 class="settings-group-title">基础连接</h3>
+                    <div class="settings-field">
+                        <label>API Base URL</label>
+                        <input type="text" id="set-API_BASE_URL" class="input" placeholder="https://openrouter.ai/api/v1/chat/completions">
+                    </div>
+                    <div class="settings-field">
+                        <label>API Key</label>
+                        <input type="text" id="set-API_KEY" class="input" placeholder="sk-or-...">
+                        <small class="form-hint" id="set-API_KEY-hint">打码显示，留空不改</small>
+                    </div>
+                    <div class="settings-field">
+                        <label>默认模型</label>
+                        <div class="combo-box" id="combo-DEFAULT_MODEL">
+                            <input type="text" id="set-DEFAULT_MODEL" class="combo-input" placeholder="搜索或输入模型名..." autocomplete="off">
+                            <div class="combo-dropdown" id="dropdown-DEFAULT_MODEL"></div>
+                        </div>
+                        <small class="form-hint"><span id="model-count-hint"></span> <a href="#" onclick="loadModelList();return false;" style="color:var(--primary);">刷新列表</a></small>
+                    </div>
+                    
+                    <div class="settings-field">
+                        <label>温度参数 (CHAT_TEMPERATURE)</label>
+                        <input type="number" id="set-CHAT_TEMPERATURE" class="input" min="0" max="2" step="0.01" placeholder="留空则不覆盖客户端">
+                        <small class="form-hint">主聊天请求的 temperature；留空时沿用客户端原请求，填写后会覆盖发送给上游的温度。</small>
+                    </div>
+                </div>
+
+                <!-- 记忆系统 -->
+                <div class="card settings-card">
+                    <h3 class="settings-group-title">记忆系统</h3>
+                    <div class="settings-field settings-toggle-row">
+                        <label>启用记忆</label>
+                        <label class="toggle"><input type="checkbox" id="set-MEMORY_ENABLED"><span class="toggle-slider"></span></label>
+                    </div>
+                    <div class="settings-field">
+                        <label>记忆提取 / 整理模型</label>
+                        <div class="combo-box" id="combo-MEMORY_MODEL">
+                            <input type="text" id="set-MEMORY_MODEL" class="combo-input" placeholder="搜索或输入模型名（留空用默认）" autocomplete="off">
+                            <div class="combo-dropdown" id="dropdown-MEMORY_MODEL"></div>
+                        </div>
+                    </div>
+                    <div class="settings-field">
+                        <label>记忆模型 API Key (MEMORY_API_KEY)</label>
+                        <input type="text" id="set-MEMORY_API_KEY" class="input" placeholder="sk-...">
+                        <small class="form-hint" id="set-MEMORY_API_KEY-hint">不设则使用主 API Key，适用于中转站不同模型需要不同 Key 的场景</small>
+                    </div>
+                    <div class="settings-field">
+                        <label>记忆模型 API Base URL (MEMORY_API_BASE_URL)</label>
+                        <input type="text" id="set-MEMORY_API_BASE_URL" class="input" placeholder="https://openrouter.ai/api/v1/chat/completions">
+                        <small class="form-hint">记忆提取/评分/摘要/整理专用接口地址；留空则跳过，不会回退到主 API Base URL</small>
+                    </div>
+                    <div class="settings-field">
+                        <button type="button" class="btn btn-secondary" id="test-memory-model-btn" onclick="testMemoryModel()">测试记忆模型</button>
+                        <small class="form-hint" id="test-memory-model-result">会使用上方当前填写的记忆模型 URL / Key / 模型名发送一次测试请求</small>
+                    </div>
+                    <div class="settings-field">
+                        <label>最大注入记忆数 (MAX_MEMORIES_INJECT)</label>
+                        <input type="number" id="set-MAX_MEMORIES_INJECT" class="input" min="1" max="50">
+                    </div>
+                    <div class="settings-field">
+                        <label>最低分数阈值 (MIN_SCORE_THRESHOLD)</label>
+                        <input type="number" id="set-MIN_SCORE_THRESHOLD" class="input" min="0" max="1" step="0.01">
+                    </div>
+                    <div class="settings-field">
+                        <label>提取间隔轮数 (MEMORY_EXTRACT_INTERVAL)</label>
+                        <input type="number" id="set-MEMORY_EXTRACT_INTERVAL" class="input" min="0" max="20">
+                        <small class="form-hint">0=关闭提取，1=每轮，N=每N轮</small>
+                    </div>
+                </div>
+
+                <!-- 缓存分区 -->
+                <div class="card settings-card">
+                    <h3 class="settings-group-title">缓存分区</h3>
+                    <div class="settings-field settings-toggle-row">
+                        <label>启用缓存分区</label>
+                        <label class="toggle"><input type="checkbox" id="set-CACHE_PARTITION_ENABLED"><span class="toggle-slider"></span></label>
+                    </div>
+                    <div class="settings-field">
+                        <label>轮转周期 (CACHE_PARTITION_X)</label>
+                        <input type="number" id="set-CACHE_PARTITION_X" class="input" min="5" max="100">
+                    </div>
+                    <div class="settings-field">
+                        <label>触发模式</label>
+                        <select id="set-CACHE_PARTITION_TRIGGER" class="input">
+                            <option value="rounds">按轮次 (rounds)</option>
+                            <option value="time">按时间窗口 (time)</option>
+                        </select>
+                        <small class="form-hint">rounds = B区满X轮触发；time = A区最早消息超过时间窗口触发</small>
+                    </div>
+                    <div class="settings-field" id="field-CACHE_PARTITION_WINDOW">
+                        <label>时间窗口（分钟）</label>
+                        <input type="number" id="set-CACHE_PARTITION_WINDOW" class="input" min="5" max="1440">
+                        <small class="form-hint">仅 time 模式生效，A区最早消息超过此时间后触发轮转</small>
+                    </div>
+
+                </div>
+
+                <!-- 向量搜索 -->
+                <div class="card settings-card">
+                    <h3 class="settings-group-title">向量搜索</h3>
+                    <div class="settings-field settings-toggle-row">
+                        <label>启用向量搜索</label>
+                        <label class="toggle"><input type="checkbox" id="set-MEMORY_VECTOR_ENABLED"><span class="toggle-slider"></span></label>
+                    </div>
+                    <div class="settings-field">
+                        <label>Embedding API Key</label>
+                        <input type="text" id="set-EMBEDDING_API_KEY" class="input" placeholder="sk-...">
+                        <small class="form-hint" id="set-EMBEDDING_API_KEY-hint">打码显示，留空不改</small>
+                    </div>
+                    <div class="settings-field">
+                        <label>Embedding Base URL</label>
+                        <input type="text" id="set-EMBEDDING_BASE_URL" class="input" placeholder="https://api.openai.com/v1">
+                    </div>
+                    <div class="settings-field">
+                        <label>Embedding 模型</label>
+                        <input type="text" id="set-EMBEDDING_MODEL" class="input" placeholder="text-embedding-3-small">
+                    </div>
+                    <div class="settings-field">
+                        <label>Embedding 维度</label>
+                        <input type="number" id="set-EMBEDDING_DIM" class="input" min="64" max="4096">
+                    </div>
+                </div>
+
+                <!-- 搜索权重 -->
+                <div class="card settings-card">
+                    <h3 class="settings-group-title">搜索权重</h3>
+                    <small class="form-hint" style="display:block;margin-bottom:12px;">四项权重之和建议为 1.0</small>
+                    <div class="settings-field">
+                        <label>关键词权重 <span class="slider-val" id="val-MEMORY_HW_KEYWORD"></span></label>
+                        <input type="range" id="set-MEMORY_HW_KEYWORD" min="0" max="1" step="0.05" oninput="updateSliderVal('MEMORY_HW_KEYWORD')">
+                    </div>
+                    <div class="settings-field">
+                        <label>语义权重 <span class="slider-val" id="val-MEMORY_HW_SEMANTIC"></span></label>
+                        <input type="range" id="set-MEMORY_HW_SEMANTIC" min="0" max="1" step="0.05" oninput="updateSliderVal('MEMORY_HW_SEMANTIC')">
+                    </div>
+                    <div class="settings-field">
+                        <label>重要度权重 <span class="slider-val" id="val-MEMORY_HW_IMPORTANCE"></span></label>
+                        <input type="range" id="set-MEMORY_HW_IMPORTANCE" min="0" max="1" step="0.05" oninput="updateSliderVal('MEMORY_HW_IMPORTANCE')">
+                    </div>
+                    <div class="settings-field">
+                        <label>时效性权重 <span class="slider-val" id="val-MEMORY_HW_RECENCY"></span></label>
+                        <input type="range" id="set-MEMORY_HW_RECENCY" min="0" max="1" step="0.05" oninput="updateSliderVal('MEMORY_HW_RECENCY')">
+                    </div>
+                    <div class="settings-field">
+                        <label>语义阈值 <span class="slider-val" id="val-MEMORY_SEMANTIC_THRESHOLD"></span></label>
+                        <input type="range" id="set-MEMORY_SEMANTIC_THRESHOLD" min="0" max="1" step="0.05" oninput="updateSliderVal('MEMORY_SEMANTIC_THRESHOLD')">
+                    </div>
+                </div>
+
+                <!-- 其他 -->
+                <div class="card settings-card">
+                    <h3 class="settings-group-title">其他</h3>
+                    <div class="settings-field settings-toggle-row">
+                        <label>强制流式传输 (FORCE_STREAM)</label>
+                        <label class="toggle"><input type="checkbox" id="set-FORCE_STREAM"><span class="toggle-slider"></span></label>
+                    </div>
+                    <div class="settings-field">
+                        <label>推理强度 (REASONING_EFFORT)</label>
+                        <select id="set-REASONING_EFFORT" class="input">
+                            <option value="">不设置</option>
+                            <option value="low">low</option>
+                            <option value="medium">medium</option>
+                            <option value="high">high</option>
+                        </select>
+                    </div>
+                    <div class="settings-field settings-toggle-row">
+                        <label>启用非流式响应转换</label>
+                        <label class="toggle"><input type="checkbox" id="set-RESPONSE_TRANSFORM_ENABLED"><span class="toggle-slider"></span></label>
+                    </div>
+                    <div class="settings-field">
+                        <label>响应转换规则 (RESPONSE_TRANSFORM_RULES)</label>
+                        <textarea id="set-RESPONSE_TRANSFORM_RULES" class="textarea" rows="6" placeholder="\\[语音::(.+?)\\] => &lt;hcard type='voice'&gt;$1&lt;/hcard&gt;"></textarea>
+                        <small class="form-hint">仅非流式响应生效；一行一条，格式：正则 =&gt; 替换。替换里可用 $1、$2 等捕获组。</small>
+                    </div>
+                </div>
+
+                <!-- System Prompt -->
+                <div class="card settings-card">
+                    <h3 class="settings-group-title">System Prompt</h3>
+                    <div class="settings-field">
+                        <textarea id="set-systemPrompt" class="textarea" rows="12" placeholder="留空则使用 system_prompt.txt 的默认内容"></textarea>
+                        <small class="form-hint" id="prompt-char-count"></small>
+                    </div>
+                </div>
+
+                <!-- 记忆提取提示词 -->
+                <div class="card settings-card">
+                    <h3 class="settings-group-title">记忆提取提示词</h3>
+                    <div class="settings-field">
+                        <textarea id="set-extractionPrompt" class="textarea" rows="14" placeholder="留空则使用默认提取提示词"></textarea>
+                        <small class="form-hint" id="extraction-prompt-char-count"></small>
+                        <small class="form-hint">提示词中必须保留 {existing_memories} 占位符。留空恢复默认。</small>
+                    </div>
+
+        <div class="settings-group">
+          <h3 class="settings-group-title">碎片整理提示词</h3>
+          <p style="font-size:12px;color:#888;margin:4px 0 8px;">碎片记忆整理成事件时使用的提示词。需包含 {fragments} 占位符。留空使用默认。</p>
+          <textarea id="set-consolidationPrompt" class="textarea" rows="14" placeholder="留空则使用默认提示词"></textarea>
+        </div>
+
+        <div class="settings-group">
+          <h3 class="settings-group-title">日印象提示词</h3>
+          <p style="font-size:12px;color:#888;margin:4px 0 8px;">根据当天对话历史生成日印象时使用。需包含 {conversation} 占位符；兼容旧 {fragments} 占位符。留空使用默认。</p>
+          <textarea id="set-dailyImpressionPrompt" class="textarea" rows="14" placeholder="留空则使用默认日印象提示词"></textarea>
+        </div>
+                </div>
+
+                <!-- 保存按钮 -->
+                <div style="text-align:center; padding:24px 0 40px;">
+                    <button class="btn btn-primary btn-lg" onclick="saveSettings()" id="save-settings-btn" style="min-width:200px;">保存设置</button>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <script src="/static/js/dashboard.js?v=4.5"></script>
+<script src="/static/js/daily_impressions.js?v=1.3"></script>
+<script>
+    // --- 模型预设管理（右上角切换面板） ---
+    let _modelPresets = [];
+    let _presetPanelOpen = false;
+
+    function togglePresetPanel() {
+      _presetPanelOpen = !_presetPanelOpen;
+      document.getElementById('preset-panel').style.display = _presetPanelOpen ? 'block' : 'none';
+      if (_presetPanelOpen) renderPresetPanel();
+    }
+
+    // 点击面板外关闭
+    document.addEventListener('click', (e) => {
+      const switcher = document.getElementById('preset-switcher');
+      if (switcher && !switcher.contains(e.target) && _presetPanelOpen) {
+        _presetPanelOpen = false;
+        document.getElementById('preset-panel').style.display = 'none';
+      }
+    });
+
+    function renderPresetPanel() {
+      const list = document.getElementById('preset-panel-list');
+      if (!list) return;
+      if (_modelPresets.length === 0) {
+        list.innerHTML = '<div style="padding:12px;text-align:center;color:#9ca3af;font-size:13px;">还没有预设，在下方输入名称点 + 新建</div>';
+        return;
+      }
+      const currentModel = (document.getElementById('set-DEFAULT_MODEL') || {}).value || '';
+      list.innerHTML = _modelPresets.map((p, i) => {
+        const isActive = p.model === currentModel;
+        const sub = p.apiBaseUrl ? '<div style="font-size:11px;opacity:0.6;margin-top:2px;">' + p.apiBaseUrl + '</div>' : '';
+        return '<div onclick="activatePreset(' + i + ')" style="'
+          + 'padding:10px 12px;cursor:pointer;border-radius:8px;margin-bottom:4px;'
+          + (isActive ? 'background:#eef2ff;border:1px solid #4f46e5;' : 'background:#fafafa;border:1px solid transparent;')
+          + 'display:flex;justify-content:space-between;align-items:center;'
+          + '">'
+          + '<div><div style="font-size:13px;font-weight:500;' + (isActive ? 'color:#4f46e5;' : 'color:#374151;') + '">'
+          + p.name + '</div>'
+          + '<div style="font-size:11px;color:#6b7280;margin-top:2px;">' + p.model + '</div>'
+          + sub + '</div>'
+          + '<span onclick="event.stopPropagation();removePreset(' + i + ')" style="'
+          + 'padding:4px 8px;border-radius:4px;font-size:11px;color:#ef4444;cursor:pointer;'
+          + 'opacity:0.6;hover:opacity:1;">删除</span>'
+          + '</div>';
+      }).join('');
+    }
+
+    function activatePreset(idx) {
+      const preset = _modelPresets[idx];
+      if (!preset) return;
+      // 填充设置页字段
+      const modelEl = document.getElementById('set-DEFAULT_MODEL');
+      if (modelEl) modelEl.value = preset.model;
+      const urlEl = document.getElementById('set-API_BASE_URL');
+      if (urlEl && preset.apiBaseUrl) urlEl.value = preset.apiBaseUrl;
+      const keyEl = document.getElementById('set-API_KEY');
+      if (keyEl && preset.apiKey) keyEl.value = preset.apiKey;
+
+      // 立即激活
+      fetch('/api/settings', {
+        method: 'PUT',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({activatePreset: preset.model, activatePresetUrl: preset.apiBaseUrl || '', activatePresetKey: preset.apiKey || ''})
+      }).then(r => r.json()).then(d => {
+        if (typeof showToast === 'function') showToast('已切换: ' + preset.name);
+        document.getElementById('preset-current-name').textContent = preset.name;
+        renderPresetPanel();
+      });
+      // 关闭面板
+      _presetPanelOpen = false;
+      document.getElementById('preset-panel').style.display = 'none';
+    }
+
+    function addPresetFromCurrent() {
+      const nameInput = document.getElementById('preset-new-name');
+      const name = (nameInput || {}).value ? nameInput.value.trim() : '';
+      if (!name) { if (typeof showToast === 'function') showToast('请输入预设名称'); return; }
+      const model = (document.getElementById('set-DEFAULT_MODEL') || {}).value || '';
+      const apiBaseUrl = (document.getElementById('set-API_BASE_URL') || {}).value || '';
+      const apiKey = (document.getElementById('set-API_KEY') || {}).value || '';
+      const preset = {name, model};
+      if (apiBaseUrl) preset.apiBaseUrl = apiBaseUrl;
+      if (apiKey) preset.apiKey = apiKey;
+      _modelPresets.push(preset);
+      nameInput.value = '';
+      savePresetsToServer();
+      renderPresetPanel();
+      if (typeof showToast === 'function') showToast('已添加预设: ' + name);
+    }
+
+    function removePreset(idx) {
+      _modelPresets.splice(idx, 1);
+      savePresetsToServer();
+      renderPresetPanel();
+    }
+
+    function savePresetsToServer() {
+      fetch('/api/settings', {
+        method: 'PUT',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({modelPresets: _modelPresets})
+      });
+    }
+
+    // 加载预设
+    document.addEventListener('DOMContentLoaded', () => {
+      setTimeout(() => {
+        fetch('/api/settings').then(r=>r.json()).then(data => {
+          const presets = (data.settings || data).modelPresets;
+          if (presets && presets.length) {
+            _modelPresets = presets;
+            // 显示当前激活的预设名
+            const currentModel = (document.getElementById('set-DEFAULT_MODEL') || {}).value || '';
+            const active = _modelPresets.find(p => p.model === currentModel);
+            if (active) document.getElementById('preset-current-name').textContent = active.name;
+          }
+        });
+      }, 600);
+    });
+
+    </script>
+</body>
+</html>

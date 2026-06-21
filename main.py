@@ -3361,6 +3361,37 @@ async def api_generate_daily_impression(request: Request):
     return await generate_daily_impression_for_date(impression_date)
 
 
+@app.put("/api/daily-impressions/{date_str}")
+async def api_update_daily_impression(date_str: str, request: Request):
+    if not MEMORY_ENABLED:
+        return {"error": "记忆系统未启用"}
+    try:
+        impression_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+    except Exception:
+        return {"status": "error", "error": "date 格式应为 YYYY-MM-DD"}
+    data = await request.json()
+    saved = await upsert_daily_impression(
+        impression_date,
+        str(data.get("summary") or "").strip(),
+        tags=str(data.get("tags") or "").strip(),
+        mood=str(data.get("mood") or "").strip(),
+        source_fragment_ids=None,
+    )
+    return {"status": "ok", "impression": _serialize_daily_impression(saved)}
+
+
+@app.delete("/api/daily-impressions/{date_str}")
+async def api_delete_daily_impression(date_str: str):
+    if not MEMORY_ENABLED:
+        return {"error": "记忆系统未启用"}
+    try:
+        impression_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+    except Exception:
+        return {"status": "error", "error": "date 格式应为 YYYY-MM-DD"}
+    deleted = await delete_daily_impression(impression_date)
+    return {"status": "ok", "deleted": deleted}
+
+
 @app.post("/api/memories/consolidate")
 async def api_manual_consolidate(request: Request):
     """手动触发整理（异步，立即返回）

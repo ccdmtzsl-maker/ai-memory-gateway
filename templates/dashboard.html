@@ -120,7 +120,6 @@
                         </select>
                         <div class="toolbar-actions">
                             <button class="btn btn-warning" onclick="openConsolidateModal()">整理记忆</button>
-                            <button class="btn btn-secondary" onclick="openDailyImpressionModal()">日印象</button>
                             <label class="checkbox-label">
                                 <input type="checkbox" id="selectAll" onchange="toggleAll()">
                                 <span>全选</span>
@@ -470,17 +469,9 @@
 
                 <div id="daily-page-msg" class="msg-container"></div>
 
-                <div style="display:grid;grid-template-columns:minmax(220px,320px) 1fr;gap:16px;align-items:start;">
-                    <div class="card" style="padding:16px;">
-                        <h3 style="margin-top:0;">日期列表</h3>
-                        <div id="dailyPageList" style="max-height:640px;overflow:auto;">加载中...</div>
-                    </div>
-                    <div class="card" style="padding:18px;">
-                        <div id="dailyPageDetail">
-                            <div style="color:var(--text-muted);text-align:center;padding:48px 0;">选择左侧日期查看日印象</div>
-                        </div>
-                    </div>
-                </div>
+                <div id="dailyPageList" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:14px;align-items:stretch;">加载中...</div>
+
+                <div id="dailyPageDetail" class="card" style="display:none;margin-top:16px;padding:18px;"></div>
             </section>
 
             <section id="section-threads" class="section">
@@ -791,7 +782,7 @@
     </div>
 
     <script src="/static/js/dashboard.js?v=4.5"></script>
-<script src="/static/js/daily_impressions.js?v=1.2"></script>
+<script src="/static/js/daily_impressions.js?v=1.3"></script>
 <script>
     // --- 模型预设管理（右上角切换面板） ---
     let _modelPresets = [];

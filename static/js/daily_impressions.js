@@ -64,28 +64,50 @@ async function loadDailyImpressionsPage() {
     const detail = document.getElementById('dailyPageDetail');
     if (!list) return;
     list.innerHTML = '加载中...';
+    if (detail) detail.style.display = 'none';
     try {
         const items = await _fetchDailyImpressions();
         if (!items.length) {
-            list.innerHTML = '还没有生成过日印象。';
-            if (detail) detail.innerHTML = '<div style="color:var(--text-muted);text-align:center;padding:48px 0;">先选择日期生成一条日印象</div>';
+            list.innerHTML = '<div class="card" style="grid-column:1/-1;padding:28px;text-align:center;color:var(--text-muted);">还没有生成过日印象。</div>';
             return;
         }
+        const palettes = [
+            ['#fff1f2', '#e11d48'],
+            ['#eef2ff', '#4f46e5'],
+            ['#ecfeff', '#0891b2'],
+            ['#f0fdf4', '#16a34a'],
+            ['#fffbeb', '#d97706'],
+            ['#fdf2f8', '#db2777'],
+            ['#f5f3ff', '#7c3aed'],
+            ['#f8fafc', '#475569']
+        ];
         list.innerHTML = items.map((item, index) => {
             const tags = _dailyTags(item);
-            return '<div style="padding:12px;border-radius:8px;cursor:pointer;border:1px solid var(--border-color);margin-bottom:8px;" onclick="showDailyPageDetail(' + index + ')">' +
-                '<div style="font-weight:700;">' + escHtml(item.date || '') + '</div>' +
-                (item.mood ? '<div style="font-size:12px;color:var(--text-muted);margin-top:3px;">' + escHtml(item.mood) + '</div>' : '') +
-                (tags ? '<div style="font-size:12px;color:var(--text-muted);margin-top:3px;">' + escHtml(tags) + '</div>' : '') +
+            const summary = item.summary || '';
+            const shortSummary = summary.length > 72 ? summary.slice(0, 72) + '...' : summary;
+            const p = palettes[index % palettes.length];
+            return '<div onclick="showDailyPageDetail(' + index + ')" style="' +
+                'min-height:170px;padding:16px;border-radius:18px;cursor:pointer;' +
+                'background:' + p[0] + ';border:1px solid rgba(15,23,42,.06);' +
+                'box-shadow:0 8px 24px rgba(15,23,42,.06);display:flex;flex-direction:column;gap:10px;' +
+                '">' +
+                '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">' +
+                    '<div style="font-weight:800;font-size:17px;color:' + p[1] + ';">' + escHtml(item.date || '') + '</div>' +
+                    '<div style="font-size:18px;">📔</div>' +
+                '</div>' +
+                (item.mood ? '<div style="font-size:12px;color:rgba(15,23,42,.58);">' + escHtml(item.mood) + '</div>' : '') +
+                '<div style="font-size:13px;line-height:1.55;color:rgba(15,23,42,.72);white-space:pre-wrap;flex:1;">' + escHtml(shortSummary) + '</div>' +
+                (tags ? '<div style="font-size:12px;color:' + p[1] + ';font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;"># ' + escHtml(tags.replace(/、/g, ' # ')) + '</div>' : '') +
             '</div>';
         }).join('');
-        showDailyPageDetail(0);
     } catch (e) {
-        list.innerHTML = '<b>加载失败：</b>' + escHtml(e.message);
+        list.innerHTML = '<div class="card" style="grid-column:1/-1;padding:18px;color:#b91c1c;"><b>加载失败：</b>' + escHtml(e.message) + '</div>';
     }
 }
 
 function showDailyPageDetail(index) {
+    const detail = document.getElementById('dailyPageDetail');
+    if (detail) detail.style.display = 'block';
     _renderDailyDetail(_dailyImpressions[index], 'dailyPageDetail');
 }
 

@@ -3034,11 +3034,35 @@ async def generate_daily_impression_for_date(impression_date):
     if not messages:
         return {"status": "no_conversations", "date": str(impression_date)}
 
-    role_map = {"user": "用户", "assistant": "助手", "system": "系统", "tool": "工具"}
-    conversation_text = "\n".join([
-        f"[{m['created_at'].strftime('%H:%M') if hasattr(m['created_at'], 'strftime') else ''}] {role_map.get(m['role'], m['role'])}: {m['content']}"
-        for m in messages
-    ])
+    role_map = {"user": "用户", "assistant": "澈", "system": "系统", "tool": "工具"}
+    session_blocks = []
+    current_session_id = None
+    current_lines = []
+
+    def flush_session_block():
+        if current_session_id is None and not current_lines:
+            return
+        session_label = current_session_id or "unknown"
+        session_blocks.append(
+            f"【对话线：{session_label}】\n" + "\n".join(current_lines)
+        )
+
+    for m in messages:
+        session_id = m.get("session_id") or "unknown"
+        if current_session_id is None:
+            current_session_id = session_id
+        elif session_id != current_session_id:
+            flush_session_block()
+            current_session_id = session_id
+            current_lines = []
+
+        time_text = m["created_at"].strftime("%H:%M") if hasattr(m.get("created_at"), "strftime") else ""
+        current_lines.append(
+            f"[{time_text}] {role_map.get(m.get("role"), m.get("role"))}: {m.get("content") or ""}"
+        )
+
+    flush_session_block()
+    conversation_text = "\n\n".join(session_blocks)
     prompt = (await get_daily_impression_prompt()).replace("{conversation}", conversation_text).replace("{fragments}", conversation_text)
 
     memory_api_base_url = await get_runtime_memory_api_base_url()

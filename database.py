@@ -1700,7 +1700,7 @@ async def list_daily_impressions(limit: int = 30):
         rows = await conn.fetch("""
             SELECT impression_date, summary, tags, mood, source_fragment_ids, created_at, updated_at
             FROM daily_impressions
-            ORDER BY impression_date DESC
+            ORDER BY impression_date ASC
             LIMIT $1
         """, max(1, min(int(limit or 30), 100)))
         return [dict(r) for r in rows]

@@ -129,6 +129,17 @@ def get_memory_api_key() -> str:
 def get_memory_api_base_url() -> str:
     return MEMORY_API_BASE_URL
 
+
+async def get_runtime_memory_api_base_url() -> str:
+    """获取记忆模型 API 地址：优先读设置页写入的数据库配置，再回退到运行时全局值。"""
+    try:
+        db_value = await get_gateway_config("MEMORY_API_BASE_URL", "")
+        if db_value and str(db_value).strip():
+            return str(db_value).strip()
+    except Exception as e:
+        print(f"[memory_config] 读取 MEMORY_API_BASE_URL 配置失败，回退到运行时变量: {e}")
+    return str(MEMORY_API_BASE_URL or "").strip()
+
 # 额外的请求头（有些 API 需要，比如 OpenRouter 需要 Referer）
 EXTRA_REFERER = os.getenv("EXTRA_REFERER", "https://ai-memory-gateway.local")
 EXTRA_TITLE = os.getenv("EXTRA_TITLE", "AI Memory Gateway")
@@ -3030,7 +3041,7 @@ async def generate_daily_impression_for_date(impression_date):
     ])
     prompt = (await get_daily_impression_prompt()).replace("{conversation}", conversation_text).replace("{fragments}", conversation_text)
 
-    memory_api_base_url = get_memory_api_base_url()
+    memory_api_base_url = await get_runtime_memory_api_base_url()
     if not memory_api_base_url:
         return {"status": "error", "error": "MEMORY_API_BASE_URL 未设置，无法生成日印象"}
 

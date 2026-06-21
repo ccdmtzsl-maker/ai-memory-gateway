@@ -352,6 +352,43 @@ async def auth_middleware(request: Request, call_next):
 # 记忆注入
 # ============================================================
 
+async def format_daily_impressions_for_prompt(limit: int = 3) -> str:
+    limit = max(1, min(int(limit or 3), 10))
+    rows = await list_daily_impressions(limit=limit)
+    if not rows:
+        return "【近日印象】\n暂无。"
+
+    lines = ["【近日印象】"]
+    for row in rows:
+        date_text = str(row.get("impression_date") or row.get("date") or "")[:10]
+        tags = (row.get("tags") or "").strip()
+        mood = (row.get("mood") or "").strip()
+        summary = (row.get("summary") or "").strip()
+        meta = date_text
+        if tags:
+            meta += f"｜标签：{tags}"
+        if mood:
+            meta += f"｜氛围：{mood}"
+        lines.append(f"- {meta}\n  {summary}")
+    return "\n".join(lines)
+
+
+async def replace_daily_impression_variables(prompt: str) -> str:
+    if not isinstance(prompt, str) or "{{daily_impressions" not in prompt:
+        return prompt
+
+    pattern = re.compile(r"\{\{daily_impressions(?::(\d+))?\}\}")
+    result = []
+    last = 0
+    for match in pattern.finditer(prompt):
+        raw_limit = match.group(1)
+        limit = int(raw_limit) if raw_limit and raw_limit.isdigit() else 3
+        result.append(prompt[last:match.start()])
+        result.append(await format_daily_impressions_for_prompt(limit))
+        last = match.end()
+    result.append(prompt[last:])
+    return "".join(result)
+
 async def build_system_prompt_with_memories(user_message: str) -> str:
     """
     构建带记忆的 system prompt
@@ -1948,6 +1985,7 @@ async def chat_completions(request: Request):
                     client_system_parts.append(str(c))
         client_system_prompt = "\n\n".join(p for p in client_system_parts if p).strip()
         partition_base_prompt = client_system_prompt or SYSTEM_PROMPT
+        partition_base_prompt = await replace_daily_impression_variables(partition_base_prompt)
 
         # 提取客户端新消息（非系统级消息），可能是user、tool、或带tool_calls的assistant
         client_new_msgs = [m for m in messages if m.get("role") not in system_like_roles]
@@ -2289,6 +2327,15 @@ async def chat_completions(request: Request):
                 else:
                     messages.insert(0, {"role": "system", "content": enhanced_prompt})
 
+        for msg in messages:
+            if msg.get("role") in ("system", "developer"):
+                c = msg.get("content", "")
+                if isinstance(c, str):
+                    msg["content"] = await replace_daily_impression_variables(c)
+                elif isinstance(c, list):
+                    for item in c:
+                        if isinstance(item, dict) and item.get("type") == "text" and isinstance(item.get("text"), str):
+                            item["text"] = await replace_daily_impression_variables(item["text"])
         # 非分区模式下也要兜一下工具轮次：
         # Operit 有时会把原始 user 又贴到末尾，导致上游把它当成新问题，
         # 进而让本轮 tool 结果看起来“没接上”。这里只给上游请求生成裁剪副本，

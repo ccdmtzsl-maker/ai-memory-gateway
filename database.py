@@ -1706,18 +1706,6 @@ async def list_daily_impressions(limit: int = 30):
         return [dict(r) for r in rows]
 
 
-async def delete_daily_impression(impression_date) -> bool:
-    """删除指定日期的日印象。"""
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        await _ensure_daily_impressions_schema(conn)
-        result = await conn.execute(
-            "DELETE FROM daily_impressions WHERE impression_date = $1",
-            impression_date,
-        )
-        return result.endswith("1")
-
-
 # ============================================================
 # 三层记忆架构（碎片/事件/核心）
 # ============================================================

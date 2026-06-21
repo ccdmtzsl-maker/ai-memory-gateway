@@ -1632,6 +1632,20 @@ async def _ensure_daily_impressions_schema(conn):
         ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW();
     """)
     await conn.execute("""
+        DO $$ BEGIN
+            IF EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name = 'daily_impressions'
+                  AND column_name = 'tags'
+                  AND data_type = 'ARRAY'
+            ) THEN
+                ALTER TABLE daily_impressions
+                ALTER COLUMN tags TYPE TEXT
+                USING array_to_string(tags, '、');
+            END IF;
+        END $$;
+    """)
+    await conn.execute("""
         UPDATE daily_impressions
         SET impression_date = COALESCE(impression_date, created_at::date)
         WHERE impression_date IS NULL;

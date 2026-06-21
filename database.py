@@ -1582,10 +1582,75 @@ async def import_conversations(records: list):
 # 日印象（Daily Impression）
 # ============================================================
 
+async def _ensure_daily_impressions_schema(conn):
+    """按需确保日印象表结构为新版 tags 字段，避免旧表查询 500。"""
+    await conn.execute("""
+        CREATE TABLE IF NOT EXISTS daily_impressions (
+            impression_date     DATE PRIMARY KEY,
+            summary             TEXT NOT NULL DEFAULT '',
+            tags                TEXT DEFAULT '',
+            mood                TEXT DEFAULT '',
+            source_fragment_ids INTEGER[] DEFAULT NULL,
+            created_at          TIMESTAMPTZ DEFAULT NOW(),
+            updated_at          TIMESTAMPTZ DEFAULT NOW()
+        );
+    """)
+    await conn.execute("""
+        DO $$ BEGIN
+            IF EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name = 'daily_impressions' AND column_name = 'date'
+            ) AND NOT EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name = 'daily_impressions' AND column_name = 'impression_date'
+            ) THEN
+                ALTER TABLE daily_impressions RENAME COLUMN date TO impression_date;
+            END IF;
+        END $$;
+    """)
+    await conn.execute("""
+        DO $$ BEGIN
+            IF EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name = 'daily_impressions' AND column_name = 'topics'
+            ) AND NOT EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name = 'daily_impressions' AND column_name = 'tags'
+            ) THEN
+                ALTER TABLE daily_impressions RENAME COLUMN topics TO tags;
+            END IF;
+        END $$;
+    """)
+    await conn.execute("""
+        ALTER TABLE daily_impressions
+        ADD COLUMN IF NOT EXISTS impression_date DATE,
+        ADD COLUMN IF NOT EXISTS summary TEXT DEFAULT '',
+        ADD COLUMN IF NOT EXISTS tags TEXT DEFAULT '',
+        ADD COLUMN IF NOT EXISTS mood TEXT DEFAULT '',
+        ADD COLUMN IF NOT EXISTS source_fragment_ids INTEGER[] DEFAULT NULL,
+        ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW(),
+        ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW();
+    """)
+    await conn.execute("""
+        UPDATE daily_impressions
+        SET impression_date = COALESCE(impression_date, created_at::date)
+        WHERE impression_date IS NULL;
+    """)
+    await conn.execute("""
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_daily_impressions_date_unique
+        ON daily_impressions (impression_date);
+    """)
+    await conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_daily_impressions_updated
+        ON daily_impressions (updated_at DESC);
+    """)
+
+
 async def upsert_daily_impression(impression_date, summary: str, tags: str = "", mood: str = "", source_fragment_ids: list = None):
     """创建或更新指定日期的日印象。"""
     pool = await get_pool()
     async with pool.acquire() as conn:
+        await _ensure_daily_impressions_schema(conn)
         row = await conn.fetchrow("""
             INSERT INTO daily_impressions (impression_date, summary, tags, mood, source_fragment_ids, updated_at)
             VALUES ($1, $2, $3, $4, $5, NOW())
@@ -1596,7 +1661,7 @@ async def upsert_daily_impression(impression_date, summary: str, tags: str = "",
                 source_fragment_ids = EXCLUDED.source_fragment_ids,
                 updated_at = NOW()
             RETURNING impression_date, summary, tags, mood, source_fragment_ids, created_at, updated_at
-        """, impression_date, summary, topics or "", mood or "", source_fragment_ids)
+        """, impression_date, summary, tags or "", mood or "", source_fragment_ids)
         return dict(row) if row else None
 
 
@@ -1604,6 +1669,7 @@ async def get_daily_impression(impression_date):
     """读取指定日期的日印象。"""
     pool = await get_pool()
     async with pool.acquire() as conn:
+        await _ensure_daily_impressions_schema(conn)
         row = await conn.fetchrow("""
             SELECT impression_date, summary, tags, mood, source_fragment_ids, created_at, updated_at
             FROM daily_impressions
@@ -1616,6 +1682,7 @@ async def list_daily_impressions(limit: int = 30):
     """按日期倒序列出日印象。"""
     pool = await get_pool()
     async with pool.acquire() as conn:
+        await _ensure_daily_impressions_schema(conn)
         rows = await conn.fetch("""
             SELECT impression_date, summary, tags, mood, source_fragment_ids, created_at, updated_at
             FROM daily_impressions

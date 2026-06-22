@@ -3779,6 +3779,64 @@ async def api_memory_palace_extract_recent(request: Request):
         return {"status": "error", "error": str(e)}
 
 
+async def extract_memories_from_text_for_palace(text: str, character_id: str = "default"):
+    text = str(text or "").strip()
+    if not text:
+        return {"status": "error", "error": "文本为空"}
+    if len(text) > 20000:
+        text = text[:20000] + "\n…（已截断）"
+    raw_items = await call_memory_palace_extractor(text)
+    normalized = [_normalize_memory_palace_item(x) for x in raw_items]
+    normalized = [x for x in normalized if x]
+    created = []
+    embedded_count = 0
+    for item in normalized:
+        node_id = f"mn_{int(datetime.now(timezone.utc).timestamp() * 1000)}_{uuid.uuid4().hex[:6]}"
+        metadata = json.dumps({
+            "extract_source": "manual_text",
+            "source_date": item.get("source_date", ""),
+        }, ensure_ascii=False)
+        node = await create_memory_palace_node(
+            node_id=node_id,
+            content=item["content"],
+            room=item["room"],
+            tags=item["tags"],
+            importance=item["importance"],
+            mood=item["mood"],
+            valence=item["valence"],
+            arousal=item["arousal"],
+            character_id=character_id,
+            session_id="manual-text-extract",
+            origin="extraction",
+            pinned_until=item.get("pinned_until"),
+            metadata=metadata,
+        )
+        try:
+            if await save_memory_palace_embedding(node_id, item["content"]):
+                embedded_count += 1
+                node["embedded"] = True
+        except Exception as e:
+            print(f"⚠️ 记忆宫殿文本提取 embedding 入库失败 {node_id}: {e}")
+        created.append(node)
+    return {"status": "ok", "extracted": len(raw_items), "created": len(created), "embedded": embedded_count, "nodes": created}
+
+
+@app.post("/api/memory-palace/extract-text")
+async def api_memory_palace_extract_text(request: Request):
+    if not MEMORY_ENABLED:
+        return {"error": "记忆系统未启用"}
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    try:
+        text = data.get("text") or ""
+        character_id = data.get("character_id") or "default"
+        return await extract_memories_from_text_for_palace(text=text, character_id=character_id)
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
+
 @app.post("/api/memories/consolidate")
 async def api_manual_consolidate(request: Request):
     """手动触发整理（异步，立即返回）

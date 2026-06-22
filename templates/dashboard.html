@@ -768,6 +768,11 @@
                             <option value="high">high</option>
                         </select>
                     </div>
+                    <div class="settings-field">
+                        <label>用户昵称 (USER_NICKNAME)</label>
+                        <input type="text" id="set-USER_NICKNAME" class="input" placeholder="留空则使用：用户">
+                        <small class="form-hint">记忆宫殿自动提取时，会用这个称呼写入记忆。</small>
+                    </div>
                     <div class="settings-field settings-toggle-row">
                         <label>启用非流式响应转换</label>
                         <label class="toggle"><input type="checkbox" id="set-RESPONSE_TRANSFORM_ENABLED"><span class="toggle-slider"></span></label>
@@ -818,7 +823,7 @@
         </main>
     </div>
 
-    <script src="/static/js/dashboard.js?v=1.5"></script>
+    <script src="/static/js/dashboard.js?v=1.6"></script>
 <script src="/static/js/daily_impressions.js?v=1.4"></script>
 <script>
     // --- 模型预设管理（右上角切换面板） ---

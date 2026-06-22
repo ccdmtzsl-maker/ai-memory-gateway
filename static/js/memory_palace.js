@@ -139,7 +139,7 @@ function renderMemoryPalaceNodes() {
             '</div>' +
             '<div style=\"white-space:pre-wrap;line-height:1.65;font-size:14px;\">' + mpEsc(node.content || '') + '</div>' +
             (tags.length ? '<div style=\"margin-top:12px;display:flex;gap:6px;flex-wrap:wrap;\">' + tags.map(t => '<span style=\"font-size:12px;padding:3px 8px;border-radius:999px;background:' + color + '18;color:' + color + ';\">#' + mpEsc(t) + '</span>').join('') + '</div>' : '') +
-            '<div style=\"margin-top:10px;font-size:12px;color:var(--text-muted);\">' + mpEsc((node.created_at || '').slice(0, 19).replace('T', ' ')) + (node.access_count ? ' · 访问 ' + node.access_count : '') + '</div>' +
+            '<div style=\"margin-top:10px;font-size:12px;color:var(--text-muted);\">记忆日期：' + mpEsc(node.date || (node.created_at || '').slice(0, 10)) + ' · 入库：' + mpEsc((node.created_at || '').slice(0, 19).replace('T', ' ')) + (node.access_count ? ' · 访问 ' + node.access_count : '') + '</div>' +
         '</div>';
     }).join('');
 }
@@ -198,6 +198,7 @@ function renderMemoryPalaceEditor(node) {
         '<h3 style=\"margin-bottom:14px;\">' + (isEdit ? '编辑记忆节点' : '新增记忆节点') + '</h3>' +
         '<div style=\"display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px;margin-bottom:14px;align-items:end;\">' +
             '<div><label class=\"form-label\">房间</label><select id=\"mpEditRoom\" class=\"select-input\" style=\"width:100%;box-sizing:border-box;\">' + roomOptions + '</select></div>' +
+            '<div><label class=\"form-label\">记忆日期</label><input id=\"mpEditDate\" class=\"search-input\" style=\"width:100%;box-sizing:border-box;\" type=\"date\" value=\"' + mpEsc(node ? (node.date || '') : new Date().toISOString().slice(0, 10)) + '\"></div>' +
             '<div><label class=\"form-label\">重要性 1-10</label><input id=\"mpEditImportance\" class=\"search-input\" style=\"width:100%;box-sizing:border-box;\" type=\"number\" min=\"1\" max=\"10\" value=\"' + mpEsc(node ? node.importance : 5) + '\"></div>' +
             '<div><label class=\"form-label\">情绪 mood</label><input id=\"mpEditMood\" class=\"search-input\" style=\"width:100%;box-sizing:border-box;\" value=\"' + mpEsc(node ? (node.mood || 'neutral') : 'neutral') + '\"></div>' +
             '<div><label class=\"form-label\">标签</label><input id=\"mpEditTags\" class=\"search-input\" style=\"width:100%;box-sizing:border-box;\" placeholder=\"用顿号/逗号分隔\" value=\"' + mpEsc(node ? (node.tags || '') : '') + '\"></div>' +
@@ -229,6 +230,7 @@ async function saveMemoryPalaceNode() {
     const payload = {
         content,
         room: document.getElementById('mpEditRoom')?.value || 'living_room',
+        date: document.getElementById('mpEditDate')?.value || null,
         tags: document.getElementById('mpEditTags')?.value?.trim() || '',
         importance: Number(document.getElementById('mpEditImportance')?.value || 5),
         mood: document.getElementById('mpEditMood')?.value?.trim() || 'neutral',

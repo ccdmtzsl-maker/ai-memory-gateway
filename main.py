@@ -483,6 +483,30 @@ _MEMORY_PALACE_RECENCY_DECAY = 0.999
 _MEMORY_PALACE_FAMILIARITY_WEIGHT = 0.05
 _MEMORY_PALACE_VECTOR_WEIGHT = 0.85
 _MEMORY_PALACE_BM25_WEIGHT = 0.15
+_MEMORY_PALACE_ACTIVATION_DECAY = 0.3
+_MEMORY_PALACE_EMOTIONAL_LINK_DIST = 0.35
+_MEMORY_PALACE_EMOTIONAL_MIN_MAGNITUDE = 0.2
+_MEMORY_PALACE_CO_ACTIVATION_INCREMENT = 0.05
+
+_MEMORY_PALACE_MOOD_TO_VA = {
+    "happy": (0.7, 0.5), "sad": (-0.7, -0.5), "angry": (-0.7, 0.8),
+    "anxious": (-0.6, 0.7), "tender": (0.6, -0.2), "excited": (0.8, 0.8),
+    "peaceful": (0.5, -0.6), "confused": (-0.2, 0.2), "hurt": (-0.7, 0.3),
+    "grateful": (0.6, 0.3), "nostalgic": (0.2, -0.3), "neutral": (0.0, 0.0),
+    "开心": (0.7, 0.5), "难过": (-0.7, -0.5), "悲伤": (-0.7, -0.5),
+    "愤怒": (-0.7, 0.8), "焦虑": (-0.6, 0.7), "温柔": (0.6, -0.2),
+    "兴奋": (0.8, 0.8), "平静": (0.5, -0.6), "困惑": (-0.2, 0.2),
+    "受伤": (-0.7, 0.3), "感激": (0.6, 0.3), "怀念": (0.2, -0.3),
+    "中性": (0.0, 0.0),
+}
+
+_MEMORY_PALACE_PERSONALITY_WEIGHTS = {
+    "temporal": 0.3,
+    "emotional": 1.0,
+    "causal": 0.2,
+    "person": 0.6,
+    "metaphor": 0.5,
+}
 
 
 def _memory_palace_tokenize(text: str):
@@ -561,6 +585,44 @@ def _memory_palace_familiarity_bonus(access_count: int) -> float:
         return _MEMORY_PALACE_FAMILIARITY_WEIGHT * familiarity
     except Exception:
         return 0.0
+
+
+def _memory_palace_get_va(row):
+    try:
+        if row.get("valence") is not None and row.get("arousal") is not None:
+            return float(row.get("valence")), float(row.get("arousal"))
+    except Exception:
+        pass
+    mood = str(row.get("mood") or "neutral").strip()
+    return _MEMORY_PALACE_MOOD_TO_VA.get(mood) or _MEMORY_PALACE_MOOD_TO_VA.get(mood.lower()) or (0.0, 0.0)
+
+
+def _memory_palace_emotional_link_strength(a, b) -> float:
+    av, aa = _memory_palace_get_va(a)
+    bv, ba = _memory_palace_get_va(b)
+    if (av * av + aa * aa) ** 0.5 < _MEMORY_PALACE_EMOTIONAL_MIN_MAGNITUDE:
+        return 0.0
+    if (bv * bv + ba * ba) ** 0.5 < _MEMORY_PALACE_EMOTIONAL_MIN_MAGNITUDE:
+        return 0.0
+    dist = ((av - bv) ** 2 + (aa - ba) ** 2) ** 0.5
+    if dist >= _MEMORY_PALACE_EMOTIONAL_LINK_DIST:
+        return 0.0
+    return 0.25 + (0.55 - 0.25) * (1 - dist / _MEMORY_PALACE_EMOTIONAL_LINK_DIST)
+
+
+def _memory_palace_same_day_or_near(a, b) -> bool:
+    ad = a.get("date")
+    bd = b.get("date")
+    if ad and bd:
+        try:
+            return abs((ad - bd).days) <= 1
+        except Exception:
+            return False
+    at = _memory_palace_aware_dt(a.get("created_at"))
+    bt = _memory_palace_aware_dt(b.get("created_at"))
+    if not at or not bt:
+        return False
+    return abs((at - bt).total_seconds()) <= 24 * 3600
 
 
 def _memory_palace_parse_args(arg: str):
@@ -783,6 +845,97 @@ async def search_memory_palace_for_prompt(query: str = "", limit: int = 5, room:
     return _memory_palace_score_rows(rows, query=query, query_embedding=query_embedding)[:limit]
 
 
+async def build_memory_palace_links_for_node(node: dict):
+    if not node or not node.get("id"):
+        return 0
+    node_id = node["id"]
+    character_id = node.get("character_id") or "default"
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        existing = await conn.fetch("""
+            SELECT id, content, room, tags, importance, mood, valence, arousal, date, created_at
+            FROM memory_palace_nodes
+            WHERE character_id = $1 AND archived = FALSE AND id <> $2
+            ORDER BY date DESC NULLS LAST, created_at DESC
+            LIMIT 200
+        """, character_id, node_id)
+        links = []
+        for row in existing:
+            other = dict(row)
+            if _memory_palace_same_day_or_near(node, other):
+                links.append((f"ml_{int(datetime.now(timezone.utc).timestamp() * 1000)}_{uuid.uuid4().hex[:6]}", character_id, node_id, other["id"], "temporal", 0.3))
+            strength = _memory_palace_emotional_link_strength(node, other)
+            if strength > 0:
+                links.append((f"ml_{int(datetime.now(timezone.utc).timestamp() * 1000)}_{uuid.uuid4().hex[:6]}", character_id, node_id, other["id"], "emotional", strength))
+        if not links:
+            return 0
+        await conn.executemany("""
+            INSERT INTO memory_palace_links (id, character_id, source_id, target_id, link_type, strength, created_at, updated_at)
+            VALUES ($1, $2, $3, $4, $5, $6, NOW(), NOW())
+            ON CONFLICT (source_id, target_id, link_type) DO UPDATE
+            SET strength = GREATEST(memory_palace_links.strength, EXCLUDED.strength), updated_at = NOW()
+        """, links)
+        return len(links)
+
+
+async def _memory_palace_spread_activation(selected, rows, character_id: str = "default", max_expand: int = 3):
+    if not selected:
+        return selected
+    seed_ids = {item["id"] for item in selected}
+    row_map = {row["id"]: dict(row) for row in rows}
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        links = await conn.fetch("""
+            SELECT source_id, target_id, link_type, strength
+            FROM memory_palace_links
+            WHERE character_id = $1 AND (source_id = ANY($2::text[]) OR target_id = ANY($2::text[]))
+        """, character_id, list(seed_ids))
+    seed_score = {item["id"]: float(item.get("score") or 0.0) for item in selected}
+    activated = {}
+    for link in links:
+        source_id = link["source_id"]
+        target_id = link["target_id"]
+        if source_id in seed_ids:
+            neighbor_id = target_id
+            base_id = source_id
+        elif target_id in seed_ids:
+            neighbor_id = source_id
+            base_id = target_id
+        else:
+            continue
+        if neighbor_id in seed_ids or neighbor_id not in row_map:
+            continue
+        type_weight = _MEMORY_PALACE_PERSONALITY_WEIGHTS.get(link["link_type"], 0.2)
+        score = seed_score.get(base_id, 0.0) * float(link["strength"] or 0.0) * type_weight * _MEMORY_PALACE_ACTIVATION_DECAY
+        if score > activated.get(neighbor_id, 0.0):
+            activated[neighbor_id] = score
+    expanded = []
+    for node_id, score in sorted(activated.items(), key=lambda x: x[1], reverse=True)[:max_expand]:
+        item = dict(row_map[node_id])
+        item["score"] = score
+        item["similarity_score"] = 0.0
+        item["activation"] = True
+        expanded.append(item)
+    return selected + expanded
+
+
+async def _memory_palace_strengthen_coactivated(node_ids, character_id: str = "default"):
+    node_ids = list(dict.fromkeys(node_ids))[:5]
+    if len(node_ids) < 2:
+        return
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        for i in range(len(node_ids)):
+            for j in range(i + 1, len(node_ids)):
+                source_id, target_id = node_ids[i], node_ids[j]
+                await conn.execute("""
+                    INSERT INTO memory_palace_links (id, character_id, source_id, target_id, link_type, strength, created_at, updated_at)
+                    VALUES ($1, $2, $3, $4, 'temporal', $5, NOW(), NOW())
+                    ON CONFLICT (source_id, target_id, link_type) DO UPDATE
+                    SET strength = LEAST(1.0, memory_palace_links.strength + $5), updated_at = NOW()
+                """, f"ml_{int(datetime.now(timezone.utc).timestamp() * 1000)}_{uuid.uuid4().hex[:6]}", character_id, source_id, target_id, _MEMORY_PALACE_CO_ACTIVATION_INCREMENT)
+
+
 async def retrieve_memory_palace_rows_for_prompt(query: str = "", limit: int = 5, room: str = None, character_id: str = "default", recent_messages=None):
     limit = max(1, min(int(limit or 5), 30))
     rows = await _memory_palace_fetch_rows(room=room, character_id=character_id)
@@ -847,6 +1000,7 @@ async def retrieve_memory_palace_rows_for_prompt(query: str = "", limit: int = 5
                     "UPDATE memory_palace_nodes SET access_count = access_count + 1, last_accessed_at = NOW(), updated_at = NOW() WHERE id = $1",
                     [(item["id"],) for item in final_rows]
                 )
+            await _memory_palace_strengthen_coactivated([item["id"] for item in final_rows], character_id=character_id)
         except Exception as e:
             print(f"⚠️ Memory Palace access stats update failed: {e}")
     return final_rows, len(pinned)
@@ -3988,6 +4142,10 @@ async def api_memory_palace_create_node(request: Request):
         pinned_until=data.get("pinned_until"),
         metadata=json.dumps(data.get("metadata") or {}, ensure_ascii=False),
     )
+    try:
+        await build_memory_palace_links_for_node(node)
+    except Exception as e:
+        print(f"⚠️ 记忆宫殿自动关联失败 {node_id}: {e}")
     return {"status": "ok", "node": node}
 
 
@@ -4266,6 +4424,10 @@ async def extract_memories_from_recent_conversations(limit: int = 50, session_id
             metadata=metadata,
         )
         try:
+            await build_memory_palace_links_for_node(node)
+        except Exception as e:
+            print(f"⚠️ 记忆宫殿自动关联失败 {node_id}: {e}")
+        try:
             if await save_memory_palace_embedding(node_id, item["content"]):
                 embedded_count += 1
                 node["embedded"] = True
@@ -4338,6 +4500,10 @@ async def extract_memories_from_text_for_palace(text: str, character_id: str = "
             pinned_until=item.get("pinned_until"),
             metadata=metadata,
         )
+        try:
+            await build_memory_palace_links_for_node(node)
+        except Exception as e:
+            print(f"⚠️ 记忆宫殿自动关联失败 {node_id}: {e}")
         try:
             if await save_memory_palace_embedding(node_id, item["content"]):
                 embedded_count += 1

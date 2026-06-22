@@ -141,6 +141,28 @@ async def get_runtime_memory_api_base_url() -> str:
         print(f"[memory_config] 读取 MEMORY_API_BASE_URL 配置失败，回退到运行时变量: {e}")
     return str(MEMORY_API_BASE_URL or "").strip()
 
+
+async def get_runtime_memory_api_key() -> str:
+    """获取记忆模型 API Key：优先读设置页配置，再回退 MEMORY_API_KEY / API_KEY。"""
+    try:
+        db_value = await get_gateway_config("MEMORY_API_KEY", "")
+        if db_value and str(db_value).strip():
+            return str(db_value).strip()
+    except Exception as e:
+        print(f"[memory_config] 读取 MEMORY_API_KEY 配置失败，回退到运行时变量: {e}")
+    return str(get_memory_api_key() or "").strip()
+
+
+async def get_runtime_memory_model() -> str:
+    """获取记忆模型名：优先读设置页配置，再回退环境变量，最后用默认轻量模型。"""
+    try:
+        db_value = await get_gateway_config("MEMORY_MODEL", "")
+        if db_value and str(db_value).strip():
+            return str(db_value).strip()
+    except Exception as e:
+        print(f"[memory_config] 读取 MEMORY_MODEL 配置失败，回退到环境变量: {e}")
+    return str(os.getenv("MEMORY_MODEL", "anthropic/claude-haiku-4") or "").strip()
+
 # 额外的请求头（有些 API 需要，比如 OpenRouter 需要 Referer）
 EXTRA_REFERER = os.getenv("EXTRA_REFERER", "https://ai-memory-gateway.local")
 EXTRA_TITLE = os.getenv("EXTRA_TITLE", "AI Memory Gateway")
@@ -3665,15 +3687,19 @@ async def call_memory_palace_extractor(messages_text: str) -> list:
     base_url = await get_runtime_memory_api_base_url()
     if not base_url:
         raise RuntimeError("MEMORY_API_BASE_URL 未设置")
+    memory_model = await get_runtime_memory_model()
+    if not memory_model:
+        raise RuntimeError("MEMORY_MODEL 未设置")
+    memory_api_key = await get_runtime_memory_api_key()
     prompt = build_memory_palace_extraction_prompt(messages_text)
     headers = {"Content-Type": "application/json"}
-    if MEMORY_API_KEY:
-        headers["Authorization"] = f"Bearer {MEMORY_API_KEY}"
+    if memory_api_key:
+        headers["Authorization"] = f"Bearer {memory_api_key}"
     if "openrouter" in base_url:
-        headers["HTTP-Referer"] = "https://ai-memory-gateway.local"
-        headers["X-Title"] = "AI Memory Gateway"
+        headers["HTTP-Referer"] = EXTRA_REFERER
+        headers["X-Title"] = EXTRA_TITLE
     body = {
-        "model": MEMORY_MODEL,
+        "model": memory_model,
         "messages": [
             {"role": "system", "content": "你只输出 JSON 数组。"},
             {"role": "user", "content": prompt},

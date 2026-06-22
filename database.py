@@ -407,6 +407,7 @@ async def init_tables():
                 mood TEXT DEFAULT 'neutral',
                 valence DOUBLE PRECISION,
                 arousal DOUBLE PRECISION,
+                date DATE DEFAULT CURRENT_DATE,
                 embedded BOOLEAN DEFAULT FALSE,
                 created_at TIMESTAMPTZ DEFAULT NOW(),
                 last_accessed_at TIMESTAMPTZ DEFAULT NOW(),
@@ -425,6 +426,15 @@ async def init_tables():
             );
         """)
         await conn.execute("""
+            ALTER TABLE memory_palace_nodes
+            ADD COLUMN IF NOT EXISTS date DATE DEFAULT CURRENT_DATE;
+        """)
+        await conn.execute("""
+            UPDATE memory_palace_nodes
+            SET date = COALESCE(date, created_at::date, CURRENT_DATE)
+            WHERE date IS NULL;
+        """)
+        await conn.execute("""
             CREATE INDEX IF NOT EXISTS idx_mp_nodes_room
             ON memory_palace_nodes (room);
         """)
@@ -435,6 +445,10 @@ async def init_tables():
         await conn.execute("""
             CREATE INDEX IF NOT EXISTS idx_mp_nodes_created
             ON memory_palace_nodes (created_at DESC);
+        """)
+        await conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_mp_nodes_date
+            ON memory_palace_nodes (date DESC);
         """)
         await conn.execute("""
             CREATE INDEX IF NOT EXISTS idx_mp_nodes_event_box
@@ -2290,6 +2304,8 @@ def _serialize_memory_palace_node(row):
     for key in ("created_at", "updated_at", "last_accessed_at", "pinned_until"):
         if data.get(key):
             data[key] = data[key].isoformat()
+    if data.get("date"):
+        data["date"] = data["date"].isoformat()
     return data
 
 
@@ -2332,7 +2348,7 @@ async def list_memory_palace_nodes(
             SELECT *
             FROM memory_palace_nodes
             WHERE {' AND '.join(conditions)}
-            ORDER BY created_at DESC, updated_at DESC
+            ORDER BY date DESC NULLS LAST, created_at DESC, updated_at DESC
             LIMIT ${len(params) - 1} OFFSET ${len(params)}
         """
         rows = await conn.fetch(sql, *params)
@@ -2355,6 +2371,7 @@ async def create_memory_palace_node(
     mood: str = "neutral",
     valence=None,
     arousal=None,
+    date=None,
     character_id: str = "default",
     session_id: str = None,
     origin: str = "manual",
@@ -2369,19 +2386,19 @@ async def create_memory_palace_node(
         row = await conn.fetchrow("""
             INSERT INTO memory_palace_nodes (
                 id, session_id, character_id, content, room, tags, importance, mood,
-                valence, arousal, pinned_until, origin, metadata, updated_at
+                valence, arousal, date, pinned_until, origin, metadata, updated_at
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, COALESCE($13::jsonb, '{}'::jsonb), NOW())
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, COALESCE($11::date, CURRENT_DATE), $12, $13, COALESCE($14::jsonb, '{}'::jsonb), NOW())
             RETURNING *
         """, node_id, session_id, character_id, content, room, tags or "", importance, mood or "neutral",
-             valence, arousal, pinned_until, origin or "manual", metadata)
+             valence, arousal, date, pinned_until, origin or "manual", metadata)
     return _serialize_memory_palace_node(row)
 
 
 async def update_memory_palace_node(node_id: str, data: dict):
     allowed = {
         "content", "room", "tags", "importance", "mood", "valence", "arousal",
-        "pinned_until", "archived", "metadata"
+        "pinned_until", "archived", "metadata", "date"
     }
     updates = []
     params = []

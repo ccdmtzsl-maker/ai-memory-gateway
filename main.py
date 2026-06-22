@@ -117,6 +117,9 @@ RESPONSE_TRANSFORM_RULES = os.getenv("RESPONSE_TRANSFORM_RULES", "")
 # 设为 low/medium/high 会在转发请求时注入 reasoning_effort 参数
 REASONING_EFFORT = os.getenv("REASONING_EFFORT", "")
 
+# 记忆宫殿提取中称呼用户用的昵称；留空则使用“用户”
+USER_NICKNAME = os.getenv("USER_NICKNAME", "用户")
+
 # 记忆模型专用 API 地址。留空时不会自动回退到主 API_BASE_URL，由调用方决定是否跳过。
 MEMORY_API_BASE_URL = os.getenv("MEMORY_API_BASE_URL", "")
 
@@ -162,6 +165,17 @@ async def get_runtime_memory_model() -> str:
     except Exception as e:
         print(f"[memory_config] 读取 MEMORY_MODEL 配置失败，回退到环境变量: {e}")
     return str(os.getenv("MEMORY_MODEL", "anthropic/claude-haiku-4") or "").strip()
+
+
+async def get_runtime_user_nickname() -> str:
+    """获取用户昵称：优先读设置页配置，留空时使用“用户”。"""
+    try:
+        db_value = await get_gateway_config("USER_NICKNAME", "")
+        if db_value and str(db_value).strip():
+            return str(db_value).strip()
+    except Exception as e:
+        print(f"[memory_config] 读取 USER_NICKNAME 配置失败，回退到运行时变量: {e}")
+    return str(USER_NICKNAME or "用户").strip() or "用户"
 
 # 额外的请求头（有些 API 需要，比如 OpenRouter 需要 Referer）
 EXTRA_REFERER = os.getenv("EXTRA_REFERER", "https://ai-memory-gateway.local")
@@ -3597,12 +3611,13 @@ def _normalize_memory_palace_item(item: dict) -> dict:
     }
 
 
-def build_memory_palace_extraction_prompt(messages_text: str) -> str:
+async def build_memory_palace_extraction_prompt(messages_text: str) -> str:
+    user_nickname = await get_runtime_user_nickname()
     return f"""你是澈的长期记忆整理器。请从下面的对话中提取值得长期保存的记忆宫殿 MemoryNode。
 
 规则：
 1. 用“我”的第一人称记录澈的记忆，而不是旁观者摘要。
-2. 用户用“用户”称呼，不要写成“他说/她说”。
+2. 用户用“{user_nickname}”称呼，不要写成“用户/他说/她说”。
 3. 不要每句话都提取；一个话题通常提取 1-5 条。没有值得保存的信息就返回 []。
 4. 重要性决定长度：1-5 写 15-50 字事实；6-7 写 60-120 字并包含我的感受；8-10 写 100-200 字完整叙事。
 5. tags 必须是 2-5 个短标签。
@@ -3621,7 +3636,7 @@ def build_memory_palace_extraction_prompt(messages_text: str) -> str:
 只输出 JSON 数组，不要解释，不要 Markdown。格式：
 [
   {{
-    "content": "我……",
+    "content": "……",
     "room": "user_room",
     "tags": ["标签1", "标签2"],
     "importance": 7,
@@ -3691,7 +3706,7 @@ async def call_memory_palace_extractor(messages_text: str) -> list:
     if not memory_model:
         raise RuntimeError("MEMORY_MODEL 未设置")
     memory_api_key = await get_runtime_memory_api_key()
-    prompt = build_memory_palace_extraction_prompt(messages_text)
+    prompt = await build_memory_palace_extraction_prompt(messages_text)
     headers = {"Content-Type": "application/json"}
     if memory_api_key:
         headers["Authorization"] = f"Bearer {memory_api_key}"
@@ -4693,6 +4708,7 @@ async def get_settings():
             "RESPONSE_TRANSFORM_ENABLED": _parse_bool(db.get("RESPONSE_TRANSFORM_ENABLED"), RESPONSE_TRANSFORM_ENABLED),
             "RESPONSE_TRANSFORM_RULES": db.get("RESPONSE_TRANSFORM_RULES") or str(RESPONSE_TRANSFORM_RULES),
             "REASONING_EFFORT":   db.get("REASONING_EFFORT") or str(REASONING_EFFORT),
+            "USER_NICKNAME":      db.get("USER_NICKNAME") or str(USER_NICKNAME),
 
             # System Prompt
             "systemPrompt": db.get("systemPrompt") or _DEFAULT_SYSTEM_PROMPT or "",
@@ -4799,6 +4815,7 @@ async def save_settings(request: Request):
             "RESPONSE_TRANSFORM_ENABLED": lambda v: _parse_bool(v),
             "RESPONSE_TRANSFORM_RULES": str,
             "REASONING_EFFORT":      str,
+            "USER_NICKNAME":         str,
         }
 
         # database.py 全局变量映射（开源版用 EMBEDDING_API_KEY + EMBEDDING_BASE_URL）

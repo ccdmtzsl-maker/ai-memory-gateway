@@ -2428,6 +2428,41 @@ async function doExtractFromChat() {
     }
 }
 
+
+async function doExtractToMemoryPalaceFromChat() {
+    const fileInput = document.getElementById('chatFile');
+    const textInput = document.getElementById('chatInput');
+    let text = '';
+    if (fileInput && fileInput.files.length > 0) {
+        text = await fileInput.files[0].text();
+    } else if (textInput) {
+        text = textInput.value;
+    }
+    if (!text.trim()) {
+        showImportResult('error', '请输入或上传聊天记录');
+        return;
+    }
+    const btn = document.getElementById('btn-extract-chat-palace');
+    if (btn) { btn.disabled = true; btn.textContent = '提取中...'; }
+    try {
+        const resp = await fetch('/api/memory-palace/extract-text', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({text: text})
+        });
+        const data = await resp.json();
+        if (data.error || data.status === 'error') {
+            showImportResult('error', '❌ ' + (data.error || '记忆宫殿提取失败'));
+            return;
+        }
+        showImportResult('success', '✅ 已提取到记忆宫殿：模型输出 ' + (data.extracted || 0) + ' 条，入库 ' + (data.created || 0) + ' 条，向量化 ' + (data.embedded || 0) + ' 条');
+    } catch (e) {
+        showImportResult('error', '❌ 记忆宫殿提取请求失败: ' + e.message);
+    } finally {
+        if (btn) { btn.disabled = false; btn.textContent = '提取到记忆宫殿'; }
+    }
+}
+
 function renderExtractedMemories() {
     const list = document.getElementById('chat-extract-list');
     if (!list) return;

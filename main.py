@@ -4321,15 +4321,21 @@ def _normalize_memory_palace_item(item: dict) -> dict:
 
     # 便利贴只认 pinDays。
     # pinDays=0/空/缺失 时必须清空 pinned_until；不能把 date 或模型误输出的 pinned_until 当成便利贴。
+    # 到期时间按该条记忆的 date 计算：pinned_until = date + pinDays，而不是按入库时间计算。
     raw_pin_days = item.get("pinDays", item.get("pin_days", 0))
     try:
         pin_days = int(float(str(raw_pin_days).strip() or "0"))
     except Exception:
         pin_days = 0
-    pin_days = max(0, min(pin_days, 30))
+    pin_days = max(0, min(pin_days, 365))
+    memory_date_text = str(item.get("date") or "").strip()
     pinned_until = None
     if pin_days > 0:
-        pinned_until = datetime.now(timezone.utc) + timedelta(days=pin_days)
+        try:
+            base_date = datetime.strptime(memory_date_text[:10], "%Y-%m-%d").date() if memory_date_text else datetime.now(timezone.utc).date()
+        except Exception:
+            base_date = datetime.now(timezone.utc).date()
+        pinned_until = datetime.combine(base_date + timedelta(days=pin_days), datetime.min.time(), tzinfo=timezone.utc)
     return {
         "content": content,
         "room": room,
@@ -4355,7 +4361,7 @@ async def build_memory_palace_extraction_prompt(messages_text: str) -> str:
 5. tags 必须是 2-5 个短标签。
 6. valence/arousal 是 -1 到 1 的数字。
 7. 每条必须带 date，格式 YYYY-MM-DD。
-8. pinDays 是便利贴置顶天数，默认 0。只有有时效性、近期需要持续记住的信息才设为 1-30：例如这周出差、后天考试、这几天提醒喝水、感冒状态。长期事实、已过去事件、普通情感记忆不要置顶。
+8. pinDays 是便利贴置顶天数，默认 0。只有有时效性、近期需要持续记住的信息才设为 1-365；0 表示不置顶。pinDays 从该条记忆的 date 当天开始计算，到期后系统会自动摘掉便利贴但保留记忆本体。适用：这周出差、后天考试、这几天提醒喝水、临时身体状态、短期约定。长期事实、已过去事件、普通情感记忆不要置顶。
 
 房间分配：
 - living_room：纯日常琐事；天气、吃什么、随口吐槽。

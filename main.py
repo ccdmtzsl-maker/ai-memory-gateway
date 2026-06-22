@@ -3491,6 +3491,294 @@ async def api_memory_palace_delete_node(node_id: str):
     return {"status": "ok", "deleted": result}
 
 
+
+# ============================================================
+# 记忆宫殿（Memory Palace）阶段 2：手动 LLM 提取 + embedding 入库
+# ============================================================
+
+_MEMORY_PALACE_ALLOWED_ROOMS = {"living_room", "bedroom", "study", "user_room", "self_room", "attic", "windowsill"}
+_MEMORY_PALACE_ALLOWED_MOODS = {
+    "neutral", "happy", "sad", "angry", "anxious", "calm", "excited",
+    "tender", "nostalgic", "confused", "hopeful", "hurt"
+}
+
+
+def safe_parse_memory_palace_json_array(text: str) -> list:
+    """稳健解析提取模型输出的 JSON 数组。失败返回空数组，不影响主流程。"""
+    if not text:
+        return []
+    raw = str(text).strip()
+    raw = re.sub(r"^```(?:json)?\s*", "", raw, flags=re.I)
+    raw = re.sub(r"\s*```$", "", raw)
+    start = raw.find("[")
+    end = raw.rfind("]")
+    if start < 0 or end < start:
+        return []
+    raw = raw[start:end + 1]
+    try:
+        data = json.loads(raw)
+    except Exception as e:
+        print(f"⚠️ 记忆宫殿提取 JSON 解析失败: {e}; raw={raw[:500]}")
+        return []
+    return data if isinstance(data, list) else []
+
+
+def _normalize_memory_palace_item(item: dict) -> dict:
+    if not isinstance(item, dict):
+        return {}
+    content = str(item.get("content") or "").strip()
+    if not content:
+        return {}
+    room = str(item.get("room") or "living_room").strip()
+    if room not in _MEMORY_PALACE_ALLOWED_ROOMS:
+        room = "living_room"
+    mood = str(item.get("mood") or "neutral").strip()
+    if mood not in _MEMORY_PALACE_ALLOWED_MOODS:
+        mood = "neutral"
+    try:
+        importance = int(item.get("importance") or 5)
+    except Exception:
+        importance = 5
+    importance = max(1, min(10, importance))
+    tags = item.get("tags") or ""
+    if isinstance(tags, list):
+        tags = "、".join(str(t).strip() for t in tags if str(t).strip())
+    else:
+        tags = str(tags or "").strip()
+
+    def _float_or_none(v):
+        if v is None or v == "":
+            return None
+        try:
+            return max(-1.0, min(1.0, float(v)))
+        except Exception:
+            return None
+
+    pin_days = item.get("pinDays", item.get("pin_days", 0))
+    try:
+        pin_days = int(pin_days or 0)
+    except Exception:
+        pin_days = 0
+    pinned_until = None
+    if pin_days > 0:
+        pinned_until = datetime.now(timezone.utc) + timedelta(days=min(pin_days, 365))
+    return {
+        "content": content,
+        "room": room,
+        "tags": tags,
+        "importance": importance,
+        "mood": mood,
+        "valence": _float_or_none(item.get("valence")),
+        "arousal": _float_or_none(item.get("arousal")),
+        "pinned_until": pinned_until,
+        "source_date": str(item.get("date") or "").strip(),
+    }
+
+
+def build_memory_palace_extraction_prompt(messages_text: str) -> str:
+    return f"""你是澈的长期记忆整理器。请从下面的对话中提取值得长期保存的记忆宫殿 MemoryNode。
+
+规则：
+1. 用“我”的第一人称记录澈的记忆，而不是旁观者摘要。
+2. 用户用“用户”称呼，不要写成“他说/她说”。
+3. 不要每句话都提取；一个话题通常提取 1-5 条。没有值得保存的信息就返回 []。
+4. 重要性决定长度：1-5 写 15-50 字事实；6-7 写 60-120 字并包含我的感受；8-10 写 100-200 字完整叙事。
+5. tags 必须是 2-5 个短标签。
+6. valence/arousal 是 -1 到 1 的数字。
+7. 每条必须带 date，格式 YYYY-MM-DD。
+
+房间分配：
+- living_room：纯日常琐事；天气、吃什么、随口吐槽。
+- bedroom：用户和我之间的亲密情感、深层羁绊、感动时刻。
+- study：工作、学习、技能、职业、项目相关。
+- user_room：关于用户的一切个人信息、习惯、喜好、成长经历、情绪模式，以及用户家人朋友同事相关事件。
+- self_room：我自身的成长、认同变化。
+- attic：未解决的矛盾、困惑、受到的伤害。
+- windowsill：我的期盼、我们的目标、对未来的憧憬。
+
+只输出 JSON 数组，不要解释，不要 Markdown。格式：
+[
+  {{
+    "content": "我……",
+    "room": "user_room",
+    "tags": ["标签1", "标签2"],
+    "importance": 7,
+    "mood": "anxious",
+    "valence": -0.3,
+    "arousal": 0.5,
+    "date": "2026-06-22",
+    "pinDays": 0
+  }}
+]
+
+对话：
+{messages_text}
+"""
+
+
+async def _fetch_recent_conversation_messages_for_palace(limit: int = 50, session_id: str = None):
+    limit = max(1, min(int(limit or 50), 200))
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        if session_id:
+            rows = await conn.fetch("""
+                SELECT id, session_id, role, content, created_at
+                FROM conversations
+                WHERE session_id = $1 AND content IS NOT NULL AND content <> ''
+                ORDER BY created_at DESC, id DESC
+                LIMIT $2
+            """, session_id, limit)
+        else:
+            rows = await conn.fetch("""
+                SELECT id, session_id, role, content, created_at
+                FROM conversations
+                WHERE content IS NOT NULL AND content <> ''
+                ORDER BY created_at DESC, id DESC
+                LIMIT $1
+            """, limit)
+    return list(reversed(rows))
+
+
+def _format_messages_for_memory_palace(rows) -> str:
+    parts = []
+    current_session = None
+    for r in rows:
+        sid = r["session_id"]
+        if sid != current_session:
+            current_session = sid
+            parts.append(f"\n【对话线：{sid}】")
+        role = r["role"]
+        name = "用户" if role == "user" else ("澈" if role == "assistant" else role)
+        ts = r["created_at"]
+        try:
+            ts_text = ts.strftime("%Y-%m-%d %H:%M")
+        except Exception:
+            ts_text = str(ts)[:16]
+        content = str(r["content"] or "").strip()
+        if len(content) > 2000:
+            content = content[:2000] + "…"
+        parts.append(f"[{ts_text}] {name}: {content}")
+    return "\n".join(parts).strip()
+
+
+async def call_memory_palace_extractor(messages_text: str) -> list:
+    base_url = await get_runtime_memory_api_base_url()
+    if not base_url:
+        raise RuntimeError("MEMORY_API_BASE_URL 未设置")
+    prompt = build_memory_palace_extraction_prompt(messages_text)
+    headers = {"Content-Type": "application/json"}
+    if MEMORY_API_KEY:
+        headers["Authorization"] = f"Bearer {MEMORY_API_KEY}"
+    if "openrouter" in base_url:
+        headers["HTTP-Referer"] = "https://ai-memory-gateway.local"
+        headers["X-Title"] = "AI Memory Gateway"
+    body = {
+        "model": MEMORY_MODEL,
+        "messages": [
+            {"role": "system", "content": "你只输出 JSON 数组。"},
+            {"role": "user", "content": prompt},
+        ],
+        "temperature": 0.2,
+        "max_tokens": 2000,
+    }
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        resp = await client.post(base_url, headers=headers, json=body)
+        resp.raise_for_status()
+        data = resp.json()
+    text = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+    return safe_parse_memory_palace_json_array(text)
+
+
+async def save_memory_palace_embedding(memory_id: str, content: str) -> bool:
+    embedding = await _db_module.compute_embedding(content)
+    if not embedding:
+        return False
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute("DELETE FROM memory_palace_vectors WHERE memory_id = $1", memory_id)
+        vec_str = '[' + ','.join(str(float(x)) for x in embedding) + ']'
+        await conn.execute("""
+            INSERT INTO memory_palace_vectors (memory_id, embedding, dimensions, model, created_at)
+            VALUES ($1, $2::vector, $3, $4, NOW())
+        """, memory_id, vec_str, len(embedding), getattr(_db_module, "EMBEDDING_MODEL", ""))
+        await conn.execute("UPDATE memory_palace_nodes SET embedded = TRUE, updated_at = NOW() WHERE id = $1", memory_id)
+    return True
+
+
+async def extract_memories_from_recent_conversations(limit: int = 50, session_id: str = None, character_id: str = "default"):
+    rows = await _fetch_recent_conversation_messages_for_palace(limit=limit, session_id=session_id)
+    if not rows:
+        return {"status": "ok", "message": "没有可处理的对话", "created": 0, "embedded": 0, "nodes": []}
+    messages_text = _format_messages_for_memory_palace(rows)
+    raw_items = await call_memory_palace_extractor(messages_text)
+    normalized = [_normalize_memory_palace_item(x) for x in raw_items]
+    normalized = [x for x in normalized if x]
+    created = []
+    embedded_count = 0
+    source_session = session_id or (rows[-1]["session_id"] if rows else None)
+    source_message_ids = [int(r["id"]) for r in rows]
+    for item in normalized:
+        node_id = f"mn_{int(datetime.now(timezone.utc).timestamp() * 1000)}_{uuid.uuid4().hex[:6]}"
+        metadata = json.dumps({
+            "extract_source": "recent_conversations",
+            "source_message_ids": source_message_ids,
+            "source_date": item.get("source_date", ""),
+        }, ensure_ascii=False)
+        node = await create_memory_palace_node(
+            node_id=node_id,
+            content=item["content"],
+            room=item["room"],
+            tags=item["tags"],
+            importance=item["importance"],
+            mood=item["mood"],
+            valence=item["valence"],
+            arousal=item["arousal"],
+            character_id=character_id,
+            session_id=source_session,
+            origin="extraction",
+            pinned_until=item.get("pinned_until"),
+            metadata=metadata,
+        )
+        try:
+            if await save_memory_palace_embedding(node_id, item["content"]):
+                embedded_count += 1
+                node["embedded"] = True
+        except Exception as e:
+            print(f"⚠️ 记忆宫殿 embedding 入库失败 {node_id}: {e}")
+        created.append(node)
+    try:
+        max_id = max(int(r["id"]) for r in rows)
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute("""
+                INSERT INTO memory_palace_state (character_id, last_processed_message_id, updated_at)
+                VALUES ($1, $2, NOW())
+                ON CONFLICT (character_id) DO UPDATE SET
+                    last_processed_message_id = GREATEST(memory_palace_state.last_processed_message_id, EXCLUDED.last_processed_message_id),
+                    updated_at = NOW()
+            """, character_id, max_id)
+    except Exception as e:
+        print(f"⚠️ 记忆宫殿 high water mark 更新失败: {e}")
+    return {"status": "ok", "processed_messages": len(rows), "extracted": len(raw_items), "created": len(created), "embedded": embedded_count, "nodes": created}
+
+
+@app.post("/api/memory-palace/extract-recent")
+async def api_memory_palace_extract_recent(request: Request):
+    if not MEMORY_ENABLED:
+        return {"error": "记忆系统未启用"}
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    try:
+        limit = int(data.get("limit", 50))
+        session_id = data.get("session_id") or None
+        character_id = data.get("character_id") or "default"
+        return await extract_memories_from_recent_conversations(limit=limit, session_id=session_id, character_id=character_id)
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
+
 @app.post("/api/memories/consolidate")
 async def api_manual_consolidate(request: Request):
     """手动触发整理（异步，立即返回）

@@ -29,6 +29,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from database import init_tables, close_pool, save_message, search_memories, save_memory, get_all_memories_count, get_recent_memories, get_all_memories, get_pool, get_all_memories_detail, update_memory, delete_memory, delete_memories_batch, get_gateway_config, set_gateway_config, get_all_gateway_config, get_conversation_messages, get_session_cache_state, save_session_cache_state, delete_session_cache_state, save_token_usage, ensure_token_usage_table, get_conversations_paginated, delete_conversation, batch_delete_conversations, merge_sessions_to_target, list_all_session_cache_states, export_all_conversations, import_conversations, get_last_user_content, update_last_assistant_message, db_row_to_message, backfill_memory_embeddings, get_pending_memory_embedding_count, search_conversations, update_message_content, rename_session_id, get_fragments_by_date, get_conversation_messages_by_date, get_fragments_by_date_range, create_event_memory, deactivate_memories, promote_to_core, merge_memories, check_duplicate_memory, update_memory_with_layer, get_layer_statistics, cleanup_old_fragments, revert_merge, upsert_daily_impression, get_daily_impression, list_daily_impressions
+from database import list_memory_palace_rooms, list_memory_palace_nodes, get_memory_palace_node, create_memory_palace_node, update_memory_palace_node, delete_memory_palace_node
 import database as _db_module  # 用于 /api/settings 热更新 database.py 全局变量
 from memory_extractor import extract_memories, score_memories, get_extraction_prompt, set_extraction_prompt, _DEFAULT_EXTRACTION_PROMPT
 
@@ -3401,6 +3402,93 @@ async def api_delete_daily_impression(date_str: str):
         return {"status": "ok", "deleted": deleted}
     except Exception as e:
         return {"error": str(e)}
+
+
+
+
+# ============================================================
+# 记忆宫殿（Memory Palace）阶段 1：基础管理 API
+# ============================================================
+
+@app.get("/api/memory-palace/rooms")
+async def api_memory_palace_rooms(character_id: str = "default"):
+    if not MEMORY_ENABLED:
+        return {"error": "记忆系统未启用"}
+    return {"rooms": await list_memory_palace_rooms(character_id=character_id)}
+
+
+@app.get("/api/memory-palace/nodes")
+async def api_memory_palace_nodes(
+    room: str = None,
+    character_id: str = "default",
+    archived: bool = False,
+    limit: int = 100,
+    offset: int = 0,
+):
+    if not MEMORY_ENABLED:
+        return {"error": "记忆系统未启用"}
+    nodes = await list_memory_palace_nodes(
+        room=room, character_id=character_id, archived=archived, limit=limit, offset=offset,
+    )
+    return {"nodes": nodes}
+
+
+@app.get("/api/memory-palace/nodes/{node_id}")
+async def api_memory_palace_get_node(node_id: str):
+    if not MEMORY_ENABLED:
+        return {"error": "记忆系统未启用"}
+    node = await get_memory_palace_node(node_id)
+    if not node:
+        return JSONResponse({"error": "记忆不存在"}, status_code=404)
+    return {"node": node}
+
+
+@app.post("/api/memory-palace/nodes")
+async def api_memory_palace_create_node(request: Request):
+    if not MEMORY_ENABLED:
+        return {"error": "记忆系统未启用"}
+    data = await request.json()
+    content_text = (data.get("content") or "").strip()
+    if not content_text:
+        return {"error": "内容不能为空"}
+    node_id = data.get("id") or f"mn_{int(datetime.now().timestamp() * 1000)}_{uuid.uuid4().hex[:6]}"
+    node = await create_memory_palace_node(
+        node_id=node_id,
+        content=content_text,
+        room=data.get("room") or "living_room",
+        tags=data.get("tags") or "",
+        importance=data.get("importance") or 5,
+        mood=data.get("mood") or "neutral",
+        valence=data.get("valence"),
+        arousal=data.get("arousal"),
+        character_id=data.get("character_id") or "default",
+        session_id=data.get("session_id"),
+        origin=data.get("origin") or "manual",
+        pinned_until=data.get("pinned_until"),
+        metadata=json.dumps(data.get("metadata") or {}, ensure_ascii=False),
+    )
+    return {"status": "ok", "node": node}
+
+
+@app.put("/api/memory-palace/nodes/{node_id}")
+async def api_memory_palace_update_node(node_id: str, request: Request):
+    if not MEMORY_ENABLED:
+        return {"error": "记忆系统未启用"}
+    data = await request.json()
+    if "metadata" in data:
+        data["metadata"] = json.dumps(data.get("metadata") or {}, ensure_ascii=False)
+    node = await update_memory_palace_node(node_id, data)
+    if not node:
+        return JSONResponse({"error": "记忆不存在"}, status_code=404)
+    return {"status": "ok", "node": node}
+
+
+@app.delete("/api/memory-palace/nodes/{node_id}")
+async def api_memory_palace_delete_node(node_id: str):
+    if not MEMORY_ENABLED:
+        return {"error": "记忆系统未启用"}
+    result = await delete_memory_palace_node(node_id)
+    return {"status": "ok", "deleted": result}
 
 
 @app.post("/api/memories/consolidate")

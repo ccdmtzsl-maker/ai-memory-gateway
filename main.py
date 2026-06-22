@@ -438,75 +438,242 @@ _MEMORY_PALACE_ROOM_LABELS = {
     "windowsill": "窗台",
 }
 
+_MEMORY_PALACE_ROOM_DESCRIPTIONS = {
+    "living_room": "日常琐事、临时状态",
+    "bedroom": "亲密情感、深层羁绊",
+    "study": "工作学习、技能成长",
+    "user_room": "用户个人信息、习惯",
+    "self_room": "自我成长、身份认知",
+    "attic": "未消化的困惑、潜意识",
+    "windowsill": "期盼、目标与未来",
+}
 
-async def format_memory_palace_for_prompt(limit: int = 5, room: str = None) -> str:
+_MEMORY_PALACE_ROOM_WEIGHTS = {
+    "living_room": {"similarity": 0.50, "recency": 0.30, "importance": 0.20},
+    "bedroom": {"similarity": 0.60, "recency": 0.10, "importance": 0.30},
+    "study": {"similarity": 0.55, "recency": 0.15, "importance": 0.30},
+    "user_room": {"similarity": 0.55, "recency": 0.15, "importance": 0.30},
+    "self_room": {"similarity": 0.55, "recency": 0.15, "importance": 0.30},
+    "attic": {"similarity": 0.70, "recency": 0.00, "importance": 0.30},
+    "windowsill": {"similarity": 0.55, "recency": 0.15, "importance": 0.30},
+}
+
+_MEMORY_PALACE_RECENCY_DECAY = 0.999
+_MEMORY_PALACE_FAMILIARITY_WEIGHT = 0.05
+_MEMORY_PALACE_VECTOR_WEIGHT = 0.85
+_MEMORY_PALACE_BM25_WEIGHT = 0.15
+
+
+def _memory_palace_tokenize(text: str):
+    text = (text or "").lower()
+    return re.findall(r"[\w\u4e00-\u9fff]+", text)
+
+
+def _memory_palace_keyword_score(query: str, content: str, tags: str = "") -> float:
+    query_tokens = _memory_palace_tokenize(query)
+    if not query_tokens:
+        return 0.0
+    target = ((content or "") + " " + (tags or "")).lower()
+    hit = 0.0
+    for token in query_tokens:
+        if token and token in target:
+            hit += 1.0
+    return min(1.0, hit / max(1, len(query_tokens)))
+
+
+def _memory_palace_cosine(a, b) -> float:
+    if not a or not b:
+        return 0.0
+    n = min(len(a), len(b))
+    if n <= 0:
+        return 0.0
+    dot = sum(float(a[i]) * float(b[i]) for i in range(n))
+    na = sum(float(a[i]) * float(a[i]) for i in range(n)) ** 0.5
+    nb = sum(float(b[i]) * float(b[i]) for i in range(n)) ** 0.5
+    if na <= 0 or nb <= 0:
+        return 0.0
+    return max(0.0, min(1.0, dot / (na * nb)))
+
+
+def _memory_palace_recency_score(value) -> float:
+    if not value:
+        return 0.5
+    try:
+        if getattr(value, "tzinfo", None) is None:
+            value = value.replace(tzinfo=timezone.utc)
+        hours = max(0.0, (datetime.now(timezone.utc) - value).total_seconds() / 3600)
+        return max(0.0, min(1.0, _MEMORY_PALACE_RECENCY_DECAY ** hours))
+    except Exception:
+        return 0.5
+
+
+def _memory_palace_familiarity_bonus(access_count: int) -> float:
+    try:
+        familiarity = min(1.0, (max(0, int(access_count or 0) - 1) ** 0.3) / 4)
+        return _MEMORY_PALACE_FAMILIARITY_WEIGHT * familiarity
+    except Exception:
+        return 0.0
+
+
+def _memory_palace_parse_args(arg: str):
+    limit = 5
+    room = None
+    arg = (arg or "").strip()
+    if not arg:
+        return limit, room
+    if arg.isdigit():
+        return int(arg), room
+    if arg in _MEMORY_PALACE_ROOM_LABELS:
+        return limit, arg
+    parts = [p.strip() for p in arg.split(",") if p.strip()]
+    for part in parts:
+        if "=" not in part:
+            if part.isdigit():
+                limit = int(part)
+            elif part in _MEMORY_PALACE_ROOM_LABELS:
+                room = part
+            continue
+        key, value = [x.strip() for x in part.split("=", 1)]
+        if key == "limit" and value.isdigit():
+            limit = int(value)
+        elif key == "room" and value in _MEMORY_PALACE_ROOM_LABELS:
+            room = value
+    return limit, room
+
+
+async def search_memory_palace_for_prompt(query: str = "", limit: int = 5, room: str = None, character_id: str = "default"):
     limit = max(1, min(int(limit or 5), 30))
     room = room if room in _MEMORY_PALACE_ROOM_LABELS else None
+    query = (query or "").strip()
+    query_embedding = None
+    if query:
+        try:
+            query_embedding = await _db_module.compute_embedding(query)
+        except Exception as e:
+            print(f"⚠️ Memory Palace query embedding failed: {e}")
+            query_embedding = None
     pool = await get_pool()
     async with pool.acquire() as conn:
         if room:
             rows = await conn.fetch("""
-                SELECT id, content, room, tags, importance, mood, valence, arousal, date, created_at
-                FROM memory_palace_nodes
-                WHERE archived = FALSE AND room = $1
-                ORDER BY date DESC NULLS LAST, importance DESC, created_at DESC
-                LIMIT $2
-            """, room, limit)
+                SELECT n.id, n.content, n.room, n.tags, n.importance, n.mood, n.valence, n.arousal,
+                       n.date, n.created_at, n.last_accessed_at, n.access_count, v.embedding_json
+                FROM memory_palace_nodes n
+                LEFT JOIN memory_palace_vectors v ON v.memory_id = n.id
+                WHERE n.archived = FALSE AND n.character_id = $1 AND n.room = $2
+                ORDER BY n.date DESC NULLS LAST, n.importance DESC, n.created_at DESC
+                LIMIT 200
+            """, character_id, room)
         else:
             rows = await conn.fetch("""
-                SELECT id, content, room, tags, importance, mood, valence, arousal, date, created_at
-                FROM memory_palace_nodes
-                WHERE archived = FALSE
-                ORDER BY date DESC NULLS LAST, importance DESC, created_at DESC
-                LIMIT $1
-            """, limit)
+                SELECT n.id, n.content, n.room, n.tags, n.importance, n.mood, n.valence, n.arousal,
+                       n.date, n.created_at, n.last_accessed_at, n.access_count, v.embedding_json
+                FROM memory_palace_nodes n
+                LEFT JOIN memory_palace_vectors v ON v.memory_id = n.id
+                WHERE n.archived = FALSE AND n.character_id = $1
+                ORDER BY n.date DESC NULLS LAST, n.importance DESC, n.created_at DESC
+                LIMIT 200
+            """, character_id)
+    scored = []
+    for row in rows:
+        content = row["content"] or ""
+        tags = row["tags"] or ""
+        vector_score = 0.0
+        if query_embedding and row["embedding_json"]:
+            try:
+                vector_score = _memory_palace_cosine(query_embedding, json.loads(row["embedding_json"]))
+            except Exception:
+                vector_score = 0.0
+        keyword_score = _memory_palace_keyword_score(query, content, tags) if query else 0.0
+        if query_embedding:
+            similarity = _MEMORY_PALACE_VECTOR_WEIGHT * vector_score + _MEMORY_PALACE_BM25_WEIGHT * keyword_score
+        elif query:
+            similarity = keyword_score
+        else:
+            similarity = 0.5
+        room_id = row["room"] or "living_room"
+        weights = dict(_MEMORY_PALACE_ROOM_WEIGHTS.get(room_id, _MEMORY_PALACE_ROOM_WEIGHTS["living_room"]))
+        recency = _memory_palace_recency_score(row["last_accessed_at"] or row["created_at"])
+        if recency < 0.1 and weights["recency"] > 0:
+            shift = weights["recency"] / 2
+            weights["similarity"] += shift
+            weights["importance"] += shift
+            weights["recency"] = 0.0
+        importance = max(0.0, min(1.0, float(row["importance"] or 5) / 10.0))
+        final_score = (
+            weights["similarity"] * similarity +
+            weights["recency"] * recency +
+            weights["importance"] * importance +
+            _memory_palace_familiarity_bonus(row["access_count"])
+        )
+        item = dict(row)
+        item["score"] = final_score
+        item["similarity_score"] = similarity
+        scored.append(item)
+    scored.sort(key=lambda x: x["score"], reverse=True)
+    selected = scored[:limit]
+    if selected:
+        try:
+            async with pool.acquire() as conn:
+                await conn.executemany(
+                    "UPDATE memory_palace_nodes SET access_count = access_count + 1, last_accessed_at = NOW(), updated_at = NOW() WHERE id = $1",
+                    [(item["id"],) for item in selected]
+                )
+        except Exception as e:
+            print(f"⚠️ Memory Palace access stats update failed: {e}")
+    return selected
+
+
+async def format_memory_palace_for_prompt(limit: int = 5, room: str = None, query: str = "", character_id: str = "default") -> str:
+    rows = await search_memory_palace_for_prompt(query=query, limit=limit, room=room, character_id=character_id)
     if not rows:
-        return "【记忆宫殿】\n暂无可用记忆。"
-    lines = ["【记忆宫殿】"]
-    current_room = None
-    for r in rows:
-        room_id = r["room"] or "living_room"
+        return "### 记忆宫殿\n\n暂无可用记忆。"
+    lines = [
+        "### 记忆宫殿",
+        "",
+        "以下是澈脑海中浮现的相关记忆，它们可能影响澈此刻的感受、判断和回应。",
+    ]
+    grouped = []
+    seen_rooms = set()
+    for row in rows:
+        room_id = row["room"] or "living_room"
+        if room_id not in seen_rooms:
+            seen_rooms.add(room_id)
+            grouped.append((room_id, []))
+        grouped[-1][1].append(row)
+    for room_id, room_rows in grouped:
         label = _MEMORY_PALACE_ROOM_LABELS.get(room_id, room_id)
-        if room_id != current_room:
-            current_room = room_id
-            lines.append(f"\n### {label}")
-        date_text = str(r["date"] or "")[:10] or str(r["created_at"] or "")[:10]
-        tags = (r["tags"] or "").strip()
-        meta = f"{date_text}｜重要性:{r['importance'] or 5}｜情绪:{r['mood'] or 'neutral'}"
-        if tags:
-            meta += f"｜标签:{tags}"
-        lines.append(f"- {meta}\n  {str(r['content'] or '').strip()}")
+        desc = _MEMORY_PALACE_ROOM_DESCRIPTIONS.get(room_id, "")
+        lines.append("")
+        lines.append(f"**[{label} · {desc}]**")
+        for row in room_rows:
+            date_text = str(row["date"] or "")[:10] or str(row["created_at"] or "")[:10]
+            tags = (row["tags"] or "").strip()
+            meta = f"{date_text}｜重要性:{row['importance'] or 5}｜情绪:{row['mood'] or 'neutral'}"
+            if tags:
+                meta += f"｜标签:{tags}"
+            lines.append(f"- {meta}\n  {str(row['content'] or '').strip()}")
     return "\n".join(lines)
 
 
-async def replace_memory_palace_variables(prompt: str) -> str:
+async def replace_memory_palace_variables(prompt: str, query: str = "", character_id: str = "default") -> str:
     if not isinstance(prompt, str) or "{{memory_palace" not in prompt:
         return prompt
     pattern = re.compile(r"\{\{memory_palace(?::([^}]+))?\}\}")
     result = []
     last = 0
     for match in pattern.finditer(prompt):
-        arg = (match.group(1) or "").strip()
-        limit = 5
-        room = None
-        if arg:
-            if arg.isdigit():
-                limit = int(arg)
-            elif arg in _MEMORY_PALACE_ROOM_LABELS:
-                room = arg
-            else:
-                # 第一版只支持数字或房间名；未知参数按默认处理。
-                pass
+        limit, room = _memory_palace_parse_args(match.group(1) or "")
         result.append(prompt[last:match.start()])
-        result.append(await format_memory_palace_for_prompt(limit=limit, room=room))
+        result.append(await format_memory_palace_for_prompt(limit=limit, room=room, query=query, character_id=character_id))
         last = match.end()
     result.append(prompt[last:])
     return "".join(result)
 
 
-async def replace_explicit_memory_variables(prompt: str) -> str:
+async def replace_explicit_memory_variables(prompt: str, query: str = "", character_id: str = "default") -> str:
     prompt = await replace_daily_impression_variables(prompt)
-    prompt = await replace_memory_palace_variables(prompt)
+    prompt = await replace_memory_palace_variables(prompt, query=query, character_id=character_id)
     return prompt
 
 async def build_system_prompt_with_memories(user_message: str) -> str:
@@ -2105,7 +2272,7 @@ async def chat_completions(request: Request):
                     client_system_parts.append(str(c))
         client_system_prompt = "\n\n".join(p for p in client_system_parts if p).strip()
         partition_base_prompt = client_system_prompt or SYSTEM_PROMPT
-        partition_base_prompt = await replace_explicit_memory_variables(partition_base_prompt)
+        partition_base_prompt = await replace_explicit_memory_variables(partition_base_prompt, query=user_message)
 
         # 提取客户端新消息（非系统级消息），可能是user、tool、或带tool_calls的assistant
         client_new_msgs = [m for m in messages if m.get("role") not in system_like_roles]
@@ -2451,11 +2618,11 @@ async def chat_completions(request: Request):
             if msg.get("role") in ("system", "developer"):
                 c = msg.get("content", "")
                 if isinstance(c, str):
-                    msg["content"] = await replace_explicit_memory_variables(c)
+                    msg["content"] = await replace_explicit_memory_variables(c, query=user_message)
                 elif isinstance(c, list):
                     for item in c:
                         if isinstance(item, dict) and item.get("type") == "text" and isinstance(item.get("text"), str):
-                            item["text"] = await replace_explicit_memory_variables(item["text"])
+                            item["text"] = await replace_explicit_memory_variables(item["text"], query=user_message)
         # 非分区模式下也要兜一下工具轮次：
         # Operit 有时会把原始 user 又贴到末尾，导致上游把它当成新问题，
         # 进而让本轮 tool 结果看起来“没接上”。这里只给上游请求生成裁剪副本，

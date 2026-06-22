@@ -144,6 +144,37 @@ function renderMemoryPalaceNodes() {
     }).join('');
 }
 
+
+async function extractRecentMemoryPalace(limit) {
+    limit = limit || 50;
+    if (!confirm('将调用记忆提取模型处理最近 ' + limit + ' 条对话，并写入记忆宫殿。继续吗？')) return;
+    const btn = document.getElementById('mpExtractRecentBtn');
+    const oldText = btn ? btn.textContent : '';
+    if (btn) {
+        btn.disabled = true;
+        btn.textContent = '处理中...';
+    }
+    try {
+        mpMsg('正在处理最近 ' + limit + ' 条对话，请稍候...');
+        const resp = await fetch('/api/memory-palace/extract-recent', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({limit})
+        });
+        const data = await resp.json();
+        if (data.error || data.status === 'error') throw new Error(data.error || '提取失败');
+        mpMsg('处理完成：读取 ' + (data.processed_messages || 0) + ' 条，对模型提取 ' + (data.extracted || 0) + ' 条，入库 ' + (data.created || 0) + ' 条，向量化 ' + (data.embedded || 0) + ' 条。');
+        await loadMemoryPalace();
+    } catch (e) {
+        mpMsg('处理失败：' + e.message, 'error');
+    } finally {
+        if (btn) {
+            btn.disabled = false;
+            btn.textContent = oldText || '处理最近50条';
+        }
+    }
+}
+
 function openMemoryPalaceCreate() {
     _mpEditingId = null;
     renderMemoryPalaceEditor(null);

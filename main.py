@@ -120,6 +120,10 @@ REASONING_EFFORT = os.getenv("REASONING_EFFORT", "")
 # 记忆宫殿提取中称呼用户用的昵称；留空则使用“用户”
 USER_NICKNAME = os.getenv("USER_NICKNAME", "用户")
 
+# 记忆宫殿变量注入开关与默认注入数量
+MEMORY_PALACE_ENABLED = os.getenv("MEMORY_PALACE_ENABLED", "true").lower() == "true"
+MEMORY_PALACE_DEFAULT_LIMIT = int(os.getenv("MEMORY_PALACE_DEFAULT_LIMIT", "5"))
+
 # 记忆模型专用 API 地址。留空时不会自动回退到主 API_BASE_URL，由调用方决定是否跳过。
 MEMORY_API_BASE_URL = os.getenv("MEMORY_API_BASE_URL", "")
 
@@ -176,6 +180,31 @@ async def get_runtime_user_nickname() -> str:
     except Exception as e:
         print(f"[memory_config] 读取 USER_NICKNAME 配置失败，回退到运行时变量: {e}")
     return str(USER_NICKNAME or "用户").strip() or "用户"
+
+
+async def get_runtime_memory_palace_enabled() -> bool:
+    """获取记忆宫殿变量注入开关：优先读设置页配置。"""
+    try:
+        db_value = await get_gateway_config("MEMORY_PALACE_ENABLED", None)
+        if db_value is not None and str(db_value).strip() != "":
+            return _parse_bool(db_value, MEMORY_PALACE_ENABLED)
+    except Exception as e:
+        print(f"[memory_config] 读取 MEMORY_PALACE_ENABLED 配置失败，回退到运行时变量: {e}")
+    return bool(MEMORY_PALACE_ENABLED)
+
+
+async def get_runtime_memory_palace_default_limit() -> int:
+    """获取 {{memory_palace}} 默认注入数量，显式参数如 {{memory_palace:10}} 不受影响。"""
+    try:
+        db_value = await get_gateway_config("MEMORY_PALACE_DEFAULT_LIMIT", "")
+        if db_value is not None and str(db_value).strip() != "":
+            return max(1, min(int(db_value), 30))
+    except Exception as e:
+        print(f"[memory_config] 读取 MEMORY_PALACE_DEFAULT_LIMIT 配置失败，回退到运行时变量: {e}")
+    try:
+        return max(1, min(int(MEMORY_PALACE_DEFAULT_LIMIT or 5), 30))
+    except Exception:
+        return 5
 
 # 额外的请求头（有些 API 需要，比如 OpenRouter 需要 Referer）
 EXTRA_REFERER = os.getenv("EXTRA_REFERER", "https://ai-memory-gateway.local")
@@ -268,6 +297,8 @@ async def lifespan(app: FastAPI):
                         "RESPONSE_TRANSFORM_ENABLED": lambda v: _parse_bool(v),
                         "RESPONSE_TRANSFORM_RULES": str,
                         "REASONING_EFFORT": str,
+                        "MEMORY_PALACE_ENABLED": lambda v: _parse_bool(v),
+                        "MEMORY_PALACE_DEFAULT_LIMIT": int,
                     }
                     _RESTORE_DB = {
                         "EMBEDDING_API_KEY": str, "EMBEDDING_BASE_URL": str,
@@ -626,7 +657,7 @@ def _memory_palace_same_day_or_near(a, b) -> bool:
 
 
 def _memory_palace_parse_args(arg: str):
-    limit = 5
+    limit = None
     room = None
     arg = (arg or "").strip()
     if not arg:
@@ -1049,12 +1080,17 @@ async def replace_memory_palace_variables(prompt: str, query: str = "", characte
     if not isinstance(prompt, str) or "{{memory_palace" not in prompt:
         return prompt
     pattern = re.compile(r"\{\{memory_palace(?::([^}]+))?\}\}")
+    enabled = await get_runtime_memory_palace_enabled()
+    default_limit = await get_runtime_memory_palace_default_limit()
     result = []
     last = 0
     for match in pattern.finditer(prompt):
         limit, room = _memory_palace_parse_args(match.group(1) or "")
         result.append(prompt[last:match.start()])
-        result.append(await format_memory_palace_for_prompt(limit=limit, room=room, query=query, character_id=character_id, recent_messages=recent_messages))
+        if enabled:
+            result.append(await format_memory_palace_for_prompt(limit=limit or default_limit, room=room, query=query, character_id=character_id, recent_messages=recent_messages))
+        else:
+            result.append("")
         last = match.end()
     result.append(prompt[last:])
     return "".join(result)
@@ -5421,6 +5457,8 @@ async def get_settings():
             "RESPONSE_TRANSFORM_RULES": db.get("RESPONSE_TRANSFORM_RULES") or str(RESPONSE_TRANSFORM_RULES),
             "REASONING_EFFORT":   db.get("REASONING_EFFORT") or str(REASONING_EFFORT),
             "USER_NICKNAME":      db.get("USER_NICKNAME") or str(USER_NICKNAME),
+            "MEMORY_PALACE_ENABLED": _parse_bool(db.get("MEMORY_PALACE_ENABLED"), MEMORY_PALACE_ENABLED),
+            "MEMORY_PALACE_DEFAULT_LIMIT": int(db.get("MEMORY_PALACE_DEFAULT_LIMIT") or MEMORY_PALACE_DEFAULT_LIMIT),
 
             # System Prompt
             "systemPrompt": db.get("systemPrompt") or _DEFAULT_SYSTEM_PROMPT or "",
@@ -5528,6 +5566,8 @@ async def save_settings(request: Request):
             "RESPONSE_TRANSFORM_RULES": str,
             "REASONING_EFFORT":      str,
             "USER_NICKNAME":         str,
+            "MEMORY_PALACE_ENABLED": lambda v: _parse_bool(v),
+            "MEMORY_PALACE_DEFAULT_LIMIT": int,
         }
 
         # database.py 全局变量映射（开源版用 EMBEDDING_API_KEY + EMBEDDING_BASE_URL）

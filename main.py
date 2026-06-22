@@ -4117,6 +4117,55 @@ async def api_memory_palace_get_node(node_id: str):
     return {"node": node}
 
 
+@app.post("/api/memory-palace/debug-retrieve")
+async def api_memory_palace_debug_retrieve(request: Request):
+    if not MEMORY_ENABLED:
+        return {"error": "记忆系统未启用"}
+    data = await request.json()
+    query = (data.get("query") or "").strip()
+    limit = max(1, min(int(data.get("limit") or 5), 30))
+    room = data.get("room") or None
+    character_id = data.get("character_id") or "default"
+    recent_messages = data.get("messages")
+    if not isinstance(recent_messages, list):
+        recent_messages = [{"role": "user", "content": query}] if query else []
+    rows, pinned_count = await retrieve_memory_palace_rows_for_prompt(
+        query=query,
+        limit=limit,
+        room=room,
+        character_id=character_id,
+        recent_messages=recent_messages,
+    )
+    markdown = await format_memory_palace_for_prompt(
+        limit=limit,
+        room=room,
+        query=query,
+        character_id=character_id,
+        recent_messages=recent_messages,
+    )
+    nodes = []
+    for row in rows:
+        item = dict(row)
+        for key in ("date", "created_at", "last_accessed_at", "pinned_until"):
+            if item.get(key):
+                try:
+                    item[key] = item[key].isoformat()
+                except Exception:
+                    item[key] = str(item[key])
+        item.pop("embedding_json", None)
+        nodes.append(item)
+    return {
+        "status": "ok",
+        "query": query,
+        "limit": limit,
+        "room": room,
+        "pinned_count": pinned_count,
+        "count": len(nodes),
+        "nodes": nodes,
+        "markdown": markdown,
+    }
+
+
 @app.post("/api/memory-palace/nodes")
 async def api_memory_palace_create_node(request: Request):
     if not MEMORY_ENABLED:

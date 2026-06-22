@@ -24,7 +24,7 @@ function mpMsg(text, type) {
 }
 
 function mpRoomMeta(roomId) {
-    return _mpRooms.find(r => r.room === roomId) || {room: roomId, label: roomId, description: '', color: '#64748b', count: 0};
+    return _mpRooms.find(r => r.room === roomId) || {room: roomId, label: roomId || '全部房间', description: '', color: '#64748b', count: 0};
 }
 
 async function loadMemoryPalace() {
@@ -68,7 +68,8 @@ function renderMemoryPalaceRooms() {
 function mpRoomCardHtml(room) {
     const active = (_mpCurrentRoom || '') === (room.room || '');
     const color = room.color || '#64748b';
-    return '<div onclick="selectMemoryPalaceRoom( + mpEsc(room.room || ) + )" ' +
+    const roomId = room.room || '';
+    return '<div class=\"mp-room-card\" data-room=\"' + mpEsc(roomId) + '\" ' +
         'style=\"cursor:pointer;min-height:112px;border-radius:18px;padding:16px;border:2px solid ' + (active ? color : 'transparent') + ';background:linear-gradient(135deg,' + color + '22,#ffffff);box-shadow:0 4px 14px rgba(15,23,42,0.08);\">' +
         '<div style=\"display:flex;justify-content:space-between;align-items:flex-start;gap:8px;\">' +
             '<div style=\"font-size:18px;font-weight:800;color:' + color + ';\">' + mpEsc(room.label) + '</div>' +
@@ -80,6 +81,7 @@ function mpRoomCardHtml(room) {
 
 async function selectMemoryPalaceRoom(room) {
     _mpCurrentRoom = room || '';
+    closeMemoryPalaceEditor();
     renderMemoryPalaceRooms();
     await loadMemoryPalaceNodes(_mpCurrentRoom);
 }
@@ -131,8 +133,8 @@ function renderMemoryPalaceNodes() {
                     '<div style=\"font-size:12px;color:var(--text-muted);margin-top:2px;\">importance ' + mpEsc(node.importance || 5) + ' · ' + mpEsc(node.mood || 'neutral') + '</div>' +
                 '</div>' +
                 '<div style=\"display:flex;gap:6px;align-items:flex-start;\">' +
-                    '<button onclick="editMemoryPalaceNode( + mpEsc(node.id) + )" style="padding:4px 8px;border:1px solid var(--border-color);border-radius:6px;background:#fff;cursor:pointer;font-size:12px;">编辑</button>' +
-                    '<button onclick="deleteMemoryPalaceNode( + mpEsc(node.id) + )" style="padding:4px 8px;border:1px solid #dc2626;color:#dc2626;border-radius:6px;background:#fff;cursor:pointer;font-size:12px;">删除</button>' +
+                    '<button class=\"mp-edit-node\" data-id=\"' + mpEsc(node.id) + '\" style=\"padding:4px 8px;border:1px solid var(--border-color);border-radius:6px;background:#fff;cursor:pointer;font-size:12px;\">编辑</button>' +
+                    '<button class=\"mp-delete-node\" data-id=\"' + mpEsc(node.id) + '\" style=\"padding:4px 8px;border:1px solid #dc2626;color:#dc2626;border-radius:6px;background:#fff;cursor:pointer;font-size:12px;\">删除</button>' +
                 '</div>' +
             '</div>' +
             '<div style=\"white-space:pre-wrap;line-height:1.65;font-size:14px;\">' + mpEsc(node.content || '') + '</div>' +
@@ -163,15 +165,15 @@ function renderMemoryPalaceEditor(node) {
     el.style.display = 'block';
     el.innerHTML =
         '<h3 style=\"margin-bottom:14px;\">' + (isEdit ? '编辑记忆节点' : '新增记忆节点') + '</h3>' +
-        '<div style=\"display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-bottom:12px;\">' +
-            '<div><label class=\"form-label\">房间</label><select id=\"mpEditRoom\" class=\"select-input\">' + roomOptions + '</select></div>' +
-            '<div><label class=\"form-label\">重要性 1-10</label><input id=\"mpEditImportance\" class=\"search-input\" type=\"number\" min=\"1\" max=\"10\" value=\"' + mpEsc(node ? node.importance : 5) + '\"></div>' +
-            '<div><label class=\"form-label\">情绪 mood</label><input id=\"mpEditMood\" class=\"search-input\" value=\"' + mpEsc(node ? (node.mood || 'neutral') : 'neutral') + '\"></div>' +
-            '<div><label class=\"form-label\">标签</label><input id=\"mpEditTags\" class=\"search-input\" placeholder=\"用顿号/逗号分隔\" value=\"' + mpEsc(node ? (node.tags || '') : '') + '\"></div>' +
-            '<div><label class=\"form-label\">valence</label><input id=\"mpEditValence\" class=\"search-input\" type=\"number\" step=\"0.1\" min=\"-1\" max=\"1\" value=\"' + mpEsc(node && node.valence != null ? node.valence : '') + '\"></div>' +
-            '<div><label class=\"form-label\">arousal</label><input id=\"mpEditArousal\" class=\"search-input\" type=\"number\" step=\"0.1\" min=\"-1\" max=\"1\" value=\"' + mpEsc(node && node.arousal != null ? node.arousal : '') + '\"></div>' +
+        '<div style=\"display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px;margin-bottom:14px;align-items:end;\">' +
+            '<div><label class=\"form-label\">房间</label><select id=\"mpEditRoom\" class=\"select-input\" style=\"width:100%;box-sizing:border-box;\">' + roomOptions + '</select></div>' +
+            '<div><label class=\"form-label\">重要性 1-10</label><input id=\"mpEditImportance\" class=\"search-input\" style=\"width:100%;box-sizing:border-box;\" type=\"number\" min=\"1\" max=\"10\" value=\"' + mpEsc(node ? node.importance : 5) + '\"></div>' +
+            '<div><label class=\"form-label\">情绪 mood</label><input id=\"mpEditMood\" class=\"search-input\" style=\"width:100%;box-sizing:border-box;\" value=\"' + mpEsc(node ? (node.mood || 'neutral') : 'neutral') + '\"></div>' +
+            '<div><label class=\"form-label\">标签</label><input id=\"mpEditTags\" class=\"search-input\" style=\"width:100%;box-sizing:border-box;\" placeholder=\"用顿号/逗号分隔\" value=\"' + mpEsc(node ? (node.tags || '') : '') + '\"></div>' +
+            '<div><label class=\"form-label\">valence</label><input id=\"mpEditValence\" class=\"search-input\" style=\"width:100%;box-sizing:border-box;\" type=\"number\" step=\"0.1\" min=\"-1\" max=\"1\" value=\"' + mpEsc(node && node.valence != null ? node.valence : '') + '\"></div>' +
+            '<div><label class=\"form-label\">arousal</label><input id=\"mpEditArousal\" class=\"search-input\" style=\"width:100%;box-sizing:border-box;\" type=\"number\" step=\"0.1\" min=\"-1\" max=\"1\" value=\"' + mpEsc(node && node.arousal != null ? node.arousal : '') + '\"></div>' +
         '</div>' +
-        '<div style=\"margin-bottom:12px;\"><label class=\"form-label\">内容</label><textarea id=\"mpEditContent\" class=\"textarea\" rows=\"8\" placeholder=\"用澈的第一人称写下这条记忆...\">' + mpEsc(node ? node.content : '') + '</textarea></div>' +
+        '<div style=\"margin-bottom:12px;\"><label class=\"form-label\">内容</label><textarea id=\"mpEditContent\" class=\"textarea\" style=\"width:100%;box-sizing:border-box;\" rows=\"8\" placeholder=\"用澈的第一人称写下这条记忆...\">' + mpEsc(node ? node.content : '') + '</textarea></div>' +
         '<div style=\"display:flex;gap:8px;flex-wrap:wrap;\">' +
             '<button class=\"btn btn-primary\" onclick=\"saveMemoryPalaceNode()\">保存</button>' +
             '<button class=\"btn btn-secondary\" onclick=\"closeMemoryPalaceEditor()\">取消</button>' +
@@ -236,7 +238,31 @@ async function deleteMemoryPalaceNode(id) {
     }
 }
 
+
+function initMemoryPalaceInteractions() {
+    const section = document.getElementById('section-memory-palace');
+    if (!section || section.dataset.mpBound === '1') return;
+    section.dataset.mpBound = '1';
+    section.addEventListener('click', (event) => {
+        const roomCard = event.target.closest('.mp-room-card');
+        if (roomCard) {
+            selectMemoryPalaceRoom(roomCard.dataset.room || '');
+            return;
+        }
+        const editBtn = event.target.closest('.mp-edit-node');
+        if (editBtn) {
+            editMemoryPalaceNode(editBtn.dataset.id || '');
+            return;
+        }
+        const deleteBtn = event.target.closest('.mp-delete-node');
+        if (deleteBtn) {
+            deleteMemoryPalaceNode(deleteBtn.dataset.id || '');
+        }
+    });
+}
+
 function initMemoryPalacePage() {
+    initMemoryPalaceInteractions();
     document.querySelectorAll('.nav-item[data-section=\"memory-palace\"]').forEach(item => {
         item.addEventListener('click', () => setTimeout(loadMemoryPalace, 0));
     });

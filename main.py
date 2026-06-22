@@ -4318,14 +4318,17 @@ def _normalize_memory_palace_item(item: dict) -> dict:
         except Exception:
             return None
 
-    pin_days = item.get("pinDays", item.get("pin_days", 0))
+    # 便利贴只认 pinDays。
+    # pinDays=0/空/缺失 时必须清空 pinned_until；不能把 date 或模型误输出的 pinned_until 当成便利贴。
+    raw_pin_days = item.get("pinDays", item.get("pin_days", 0))
     try:
-        pin_days = int(pin_days or 0)
+        pin_days = int(float(str(raw_pin_days).strip() or "0"))
     except Exception:
         pin_days = 0
+    pin_days = max(0, min(pin_days, 30))
     pinned_until = None
     if pin_days > 0:
-        pinned_until = datetime.now(timezone.utc) + timedelta(days=min(pin_days, 30))
+        pinned_until = datetime.now(timezone.utc) + timedelta(days=pin_days)
     return {
         "content": content,
         "room": room,

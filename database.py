@@ -2297,6 +2297,23 @@ MEMORY_PALACE_ROOMS = [
 _MEMORY_PALACE_ROOM_SET = {r["room"] for r in MEMORY_PALACE_ROOMS}
 
 
+def _parse_memory_palace_date(value):
+    if not value:
+        return None
+    if hasattr(value, "toordinal"):
+        return value
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        try:
+            from datetime import date as date_type
+            return date_type.fromisoformat(text[:10])
+        except Exception:
+            return None
+    return None
+
+
 def _serialize_memory_palace_node(row):
     if not row:
         return None
@@ -2381,6 +2398,7 @@ async def create_memory_palace_node(
     if room not in _MEMORY_PALACE_ROOM_SET:
         room = "living_room"
     importance = max(1, min(10, int(importance or 5)))
+    date = _parse_memory_palace_date(date)
     pool = await get_pool()
     async with pool.acquire() as conn:
         row = await conn.fetchrow("""
@@ -2410,6 +2428,8 @@ async def update_memory_palace_node(node_id: str, data: dict):
             value = "living_room"
         if key == "importance":
             value = max(1, min(10, int(value or 5)))
+        if key == "date":
+            value = _parse_memory_palace_date(value)
         params.append(value)
         if key == "metadata":
             updates.append(f"{key} = ${len(params)}::jsonb")

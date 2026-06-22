@@ -382,6 +382,141 @@ async def init_tables():
                 END $$;
             """)
     
+
+        
+        # 记忆宫殿（Memory Palace）阶段 1：独立新表，不影响旧碎片记忆
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS memory_palace_nodes (
+                id TEXT PRIMARY KEY,
+                session_id TEXT,
+                character_id TEXT DEFAULT 'default',
+                content TEXT NOT NULL,
+                room TEXT NOT NULL CHECK (
+                    room IN (
+                        'living_room',
+                        'bedroom',
+                        'study',
+                        'user_room',
+                        'self_room',
+                        'attic',
+                        'windowsill'
+                    )
+                ),
+                tags TEXT DEFAULT '',
+                importance INTEGER DEFAULT 5 CHECK (importance >= 1 AND importance <= 10),
+                mood TEXT DEFAULT 'neutral',
+                valence DOUBLE PRECISION,
+                arousal DOUBLE PRECISION,
+                embedded BOOLEAN DEFAULT FALSE,
+                created_at TIMESTAMPTZ DEFAULT NOW(),
+                last_accessed_at TIMESTAMPTZ DEFAULT NOW(),
+                access_count INTEGER DEFAULT 0,
+                pinned_until TIMESTAMPTZ,
+                source_id TEXT,
+                origin TEXT DEFAULT 'manual',
+                event_box_id TEXT,
+                archived BOOLEAN DEFAULT FALSE,
+                is_box_summary BOOLEAN DEFAULT FALSE,
+                source_message_start_id BIGINT,
+                source_message_end_id BIGINT,
+                source_session_id TEXT,
+                metadata JSONB DEFAULT '{}'::jsonb,
+                updated_at TIMESTAMPTZ DEFAULT NOW()
+            );
+        """)
+        await conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_mp_nodes_room
+            ON memory_palace_nodes (room);
+        """)
+        await conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_mp_nodes_character_room
+            ON memory_palace_nodes (character_id, room);
+        """)
+        await conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_mp_nodes_created
+            ON memory_palace_nodes (created_at DESC);
+        """)
+        await conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_mp_nodes_event_box
+            ON memory_palace_nodes (event_box_id);
+        """)
+        await conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_mp_nodes_archived
+            ON memory_palace_nodes (archived);
+        """)
+        
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS memory_palace_vectors (
+                memory_id TEXT PRIMARY KEY REFERENCES memory_palace_nodes(id) ON DELETE CASCADE,
+                character_id TEXT DEFAULT 'default',
+                embedding_json TEXT,
+                dimensions INTEGER,
+                model TEXT,
+                created_at TIMESTAMPTZ DEFAULT NOW(),
+                updated_at TIMESTAMPTZ DEFAULT NOW()
+            );
+        """)
+        await conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_mp_vectors_character
+            ON memory_palace_vectors (character_id);
+        """)
+        
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS memory_palace_links (
+                id TEXT PRIMARY KEY,
+                character_id TEXT DEFAULT 'default',
+                source_id TEXT NOT NULL REFERENCES memory_palace_nodes(id) ON DELETE CASCADE,
+                target_id TEXT NOT NULL REFERENCES memory_palace_nodes(id) ON DELETE CASCADE,
+                link_type TEXT NOT NULL CHECK (
+                    link_type IN ('temporal', 'emotional', 'causal', 'person', 'metaphor')
+                ),
+                strength DOUBLE PRECISION DEFAULT 0.5,
+                created_at TIMESTAMPTZ DEFAULT NOW(),
+                updated_at TIMESTAMPTZ DEFAULT NOW(),
+                UNIQUE(source_id, target_id, link_type)
+            );
+        """)
+        await conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_mp_links_source
+            ON memory_palace_links (source_id);
+        """)
+        await conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_mp_links_target
+            ON memory_palace_links (target_id);
+        """)
+        
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS memory_palace_event_boxes (
+                id TEXT PRIMARY KEY,
+                character_id TEXT DEFAULT 'default',
+                name TEXT NOT NULL DEFAULT '未命名事件',
+                tags TEXT DEFAULT '',
+                summary_node_id TEXT REFERENCES memory_palace_nodes(id) ON DELETE SET NULL,
+                live_memory_ids TEXT[] DEFAULT '{}',
+                archived_memory_ids TEXT[] DEFAULT '{}',
+                compression_count INTEGER DEFAULT 0,
+                sealed BOOLEAN DEFAULT FALSE,
+                predecessor_box_id TEXT,
+                created_at TIMESTAMPTZ DEFAULT NOW(),
+                updated_at TIMESTAMPTZ DEFAULT NOW(),
+                last_compressed_at TIMESTAMPTZ
+            );
+        """)
+        await conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_mp_event_boxes_character
+            ON memory_palace_event_boxes (character_id);
+        """)
+        
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS memory_palace_state (
+                character_id TEXT PRIMARY KEY DEFAULT 'default',
+                last_processed_message_id BIGINT DEFAULT 0,
+                digest_round_count INTEGER DEFAULT 0,
+                last_digest_at TIMESTAMPTZ,
+                updated_at TIMESTAMPTZ DEFAULT NOW()
+            );
+        """)
+
     print("✅ 数据库表结构已就绪")
 
 
@@ -2079,3 +2214,208 @@ async def revert_merge(memory_id: int):
         """, memory_id)
         
         return {"status": "ok", "restored": restored}
+
+
+
+# ============================================================
+# 记忆宫殿（Memory Palace）阶段 1：基础 CRUD / 房间统计
+# ============================================================
+
+MEMORY_PALACE_ROOMS = [
+    {
+        "room": "living_room",
+        "label": "客厅",
+        "description": "日常闲聊、近期互动",
+        "capacity": 200,
+        "decay_rate": 0.9972,
+        "color": "#f59e0b",
+    },
+    {
+        "room": "bedroom",
+        "label": "卧室",
+        "description": "亲密情感、深层羁绊",
+        "capacity": None,
+        "decay_rate": 0.9995,
+        "color": "#e11d48",
+    },
+    {
+        "room": "study",
+        "label": "书房",
+        "description": "工作学习、技能成长",
+        "capacity": None,
+        "decay_rate": 0.9995,
+        "color": "#4f46e5",
+    },
+    {
+        "room": "user_room",
+        "label": "用户房间",
+        "description": "用户个人信息、习惯",
+        "capacity": None,
+        "decay_rate": 0.9995,
+        "color": "#059669",
+    },
+    {
+        "room": "self_room",
+        "label": "自我房间",
+        "description": "角色自我认同、演变",
+        "capacity": None,
+        "decay_rate": None,
+        "color": "#7c3aed",
+    },
+    {
+        "room": "attic",
+        "label": "阁楼",
+        "description": "未消化的困惑、潜意识",
+        "capacity": None,
+        "decay_rate": None,
+        "color": "#78716c",
+    },
+    {
+        "room": "windowsill",
+        "label": "窗台",
+        "description": "期盼、目标、憧憬",
+        "capacity": None,
+        "decay_rate": None,
+        "color": "#0ea5e9",
+    },
+]
+
+_MEMORY_PALACE_ROOM_SET = {r["room"] for r in MEMORY_PALACE_ROOMS}
+
+
+def _serialize_memory_palace_node(row):
+    if not row:
+        return None
+    data = dict(row)
+    for key in ("created_at", "updated_at", "last_accessed_at", "pinned_until"):
+        if data.get(key):
+            data[key] = data[key].isoformat()
+    return data
+
+
+async def list_memory_palace_rooms(character_id: str = "default"):
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("""
+            SELECT room, COUNT(*) AS count
+            FROM memory_palace_nodes
+            WHERE character_id = $1 AND archived = FALSE
+            GROUP BY room
+        """, character_id)
+    counts = {r["room"]: r["count"] for r in rows}
+    result = []
+    for room in MEMORY_PALACE_ROOMS:
+        item = dict(room)
+        item["count"] = int(counts.get(room["room"], 0))
+        result.append(item)
+    return result
+
+
+async def list_memory_palace_nodes(
+    room: str = None,
+    character_id: str = "default",
+    archived: bool = False,
+    limit: int = 100,
+    offset: int = 0,
+):
+    limit = max(1, min(int(limit or 100), 500))
+    offset = max(0, int(offset or 0))
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        conditions = ["character_id = $1", "archived = $2"]
+        params = [character_id, archived]
+        if room:
+            conditions.append(f"room = ${len(params) + 1}")
+            params.append(room)
+        params.extend([limit, offset])
+        sql = f"""
+            SELECT *
+            FROM memory_palace_nodes
+            WHERE {' AND '.join(conditions)}
+            ORDER BY created_at DESC, updated_at DESC
+            LIMIT ${len(params) - 1} OFFSET ${len(params)}
+        """
+        rows = await conn.fetch(sql, *params)
+    return [_serialize_memory_palace_node(r) for r in rows]
+
+
+async def get_memory_palace_node(node_id: str):
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT * FROM memory_palace_nodes WHERE id = $1", node_id)
+    return _serialize_memory_palace_node(row)
+
+
+async def create_memory_palace_node(
+    node_id: str,
+    content: str,
+    room: str,
+    tags: str = "",
+    importance: int = 5,
+    mood: str = "neutral",
+    valence=None,
+    arousal=None,
+    character_id: str = "default",
+    session_id: str = None,
+    origin: str = "manual",
+    pinned_until=None,
+    metadata=None,
+):
+    if room not in _MEMORY_PALACE_ROOM_SET:
+        room = "living_room"
+    importance = max(1, min(10, int(importance or 5)))
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow("""
+            INSERT INTO memory_palace_nodes (
+                id, session_id, character_id, content, room, tags, importance, mood,
+                valence, arousal, pinned_until, origin, metadata, updated_at
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, COALESCE($13::jsonb, '{}'::jsonb), NOW())
+            RETURNING *
+        """, node_id, session_id, character_id, content, room, tags or "", importance, mood or "neutral",
+             valence, arousal, pinned_until, origin or "manual", metadata)
+    return _serialize_memory_palace_node(row)
+
+
+async def update_memory_palace_node(node_id: str, data: dict):
+    allowed = {
+        "content", "room", "tags", "importance", "mood", "valence", "arousal",
+        "pinned_until", "archived", "metadata"
+    }
+    updates = []
+    params = []
+    for key in allowed:
+        if key not in data:
+            continue
+        value = data.get(key)
+        if key == "room" and value not in _MEMORY_PALACE_ROOM_SET:
+            value = "living_room"
+        if key == "importance":
+            value = max(1, min(10, int(value or 5)))
+        params.append(value)
+        if key == "metadata":
+            updates.append(f"{key} = ${len(params)}::jsonb")
+        else:
+            updates.append(f"{key} = ${len(params)}")
+    if not updates:
+        return await get_memory_palace_node(node_id)
+    params.append(node_id)
+    sql = f"""
+        UPDATE memory_palace_nodes
+        SET {', '.join(updates)}, embedded = FALSE, updated_at = NOW()
+        WHERE id = ${len(params)}
+        RETURNING *
+    """
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(sql, *params)
+    return _serialize_memory_palace_node(row)
+
+
+async def delete_memory_palace_node(node_id: str):
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        result = await conn.execute("DELETE FROM memory_palace_nodes WHERE id = $1", node_id)
+    return result
+

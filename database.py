@@ -2326,6 +2326,26 @@ def _serialize_memory_palace_node(row):
     return data
 
 
+
+
+def _parse_memory_palace_pinned_until(value):
+    if not value:
+        return None
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        try:
+            return datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except Exception:
+            try:
+                return datetime.strptime(text[:10], "%Y-%m-%d")
+            except Exception:
+                return None
+    return value
+
 async def list_memory_palace_rooms(character_id: str = "default"):
     pool = await get_pool()
     async with pool.acquire() as conn:
@@ -2399,6 +2419,7 @@ async def create_memory_palace_node(
         room = "living_room"
     importance = max(1, min(10, int(importance or 5)))
     date = _parse_memory_palace_date(date)
+    pinned_until = _parse_memory_palace_pinned_until(pinned_until)
     pool = await get_pool()
     async with pool.acquire() as conn:
         row = await conn.fetchrow("""
@@ -2430,6 +2451,8 @@ async def update_memory_palace_node(node_id: str, data: dict):
             value = max(1, min(10, int(value or 5)))
         if key == "date":
             value = _parse_memory_palace_date(value)
+        if key == "pinned_until":
+            value = _parse_memory_palace_pinned_until(value)
         params.append(value)
         if key == "metadata":
             updates.append(f"{key} = ${len(params)}::jsonb")

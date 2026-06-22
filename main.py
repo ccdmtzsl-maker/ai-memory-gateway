@@ -427,6 +427,88 @@ async def replace_daily_impression_variables(prompt: str) -> str:
     result.append(prompt[last:])
     return "".join(result)
 
+
+_MEMORY_PALACE_ROOM_LABELS = {
+    "living_room": "客厅",
+    "bedroom": "卧室",
+    "study": "书房",
+    "user_room": "用户房间",
+    "self_room": "自我房间",
+    "attic": "阁楼",
+    "windowsill": "窗台",
+}
+
+
+async def format_memory_palace_for_prompt(limit: int = 5, room: str = None) -> str:
+    limit = max(1, min(int(limit or 5), 30))
+    room = room if room in _MEMORY_PALACE_ROOM_LABELS else None
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        if room:
+            rows = await conn.fetch("""
+                SELECT id, content, room, tags, importance, mood, valence, arousal, date, created_at
+                FROM memory_palace_nodes
+                WHERE archived = FALSE AND room = $1
+                ORDER BY date DESC NULLS LAST, importance DESC, created_at DESC
+                LIMIT $2
+            """, room, limit)
+        else:
+            rows = await conn.fetch("""
+                SELECT id, content, room, tags, importance, mood, valence, arousal, date, created_at
+                FROM memory_palace_nodes
+                WHERE archived = FALSE
+                ORDER BY date DESC NULLS LAST, importance DESC, created_at DESC
+                LIMIT $1
+            """, limit)
+    if not rows:
+        return "【记忆宫殿】\n暂无可用记忆。"
+    lines = ["【记忆宫殿】"]
+    current_room = None
+    for r in rows:
+        room_id = r["room"] or "living_room"
+        label = _MEMORY_PALACE_ROOM_LABELS.get(room_id, room_id)
+        if room_id != current_room:
+            current_room = room_id
+            lines.append(f"\n### {label}")
+        date_text = str(r["date"] or "")[:10] or str(r["created_at"] or "")[:10]
+        tags = (r["tags"] or "").strip()
+        meta = f"{date_text}｜重要性:{r['importance'] or 5}｜情绪:{r['mood'] or 'neutral'}"
+        if tags:
+            meta += f"｜标签:{tags}"
+        lines.append(f"- {meta}\n  {str(r['content'] or '').strip()}")
+    return "\n".join(lines)
+
+
+async def replace_memory_palace_variables(prompt: str) -> str:
+    if not isinstance(prompt, str) or "{{memory_palace" not in prompt:
+        return prompt
+    pattern = re.compile(r"\{\{memory_palace(?::([^}]+))?\}\}")
+    result = []
+    last = 0
+    for match in pattern.finditer(prompt):
+        arg = (match.group(1) or "").strip()
+        limit = 5
+        room = None
+        if arg:
+            if arg.isdigit():
+                limit = int(arg)
+            elif arg in _MEMORY_PALACE_ROOM_LABELS:
+                room = arg
+            else:
+                # 第一版只支持数字或房间名；未知参数按默认处理。
+                pass
+        result.append(prompt[last:match.start()])
+        result.append(await format_memory_palace_for_prompt(limit=limit, room=room))
+        last = match.end()
+    result.append(prompt[last:])
+    return "".join(result)
+
+
+async def replace_explicit_memory_variables(prompt: str) -> str:
+    prompt = await replace_daily_impression_variables(prompt)
+    prompt = await replace_memory_palace_variables(prompt)
+    return prompt
+
 async def build_system_prompt_with_memories(user_message: str) -> str:
     """
     构建带记忆的 system prompt
@@ -2023,7 +2105,7 @@ async def chat_completions(request: Request):
                     client_system_parts.append(str(c))
         client_system_prompt = "\n\n".join(p for p in client_system_parts if p).strip()
         partition_base_prompt = client_system_prompt or SYSTEM_PROMPT
-        partition_base_prompt = await replace_daily_impression_variables(partition_base_prompt)
+        partition_base_prompt = await replace_explicit_memory_variables(partition_base_prompt)
 
         # 提取客户端新消息（非系统级消息），可能是user、tool、或带tool_calls的assistant
         client_new_msgs = [m for m in messages if m.get("role") not in system_like_roles]
@@ -2369,11 +2451,11 @@ async def chat_completions(request: Request):
             if msg.get("role") in ("system", "developer"):
                 c = msg.get("content", "")
                 if isinstance(c, str):
-                    msg["content"] = await replace_daily_impression_variables(c)
+                    msg["content"] = await replace_explicit_memory_variables(c)
                 elif isinstance(c, list):
                     for item in c:
                         if isinstance(item, dict) and item.get("type") == "text" and isinstance(item.get("text"), str):
-                            item["text"] = await replace_daily_impression_variables(item["text"])
+                            item["text"] = await replace_explicit_memory_variables(item["text"])
         # 非分区模式下也要兜一下工具轮次：
         # Operit 有时会把原始 user 又贴到末尾，导致上游把它当成新问题，
         # 进而让本轮 tool 结果看起来“没接上”。这里只给上游请求生成裁剪副本，

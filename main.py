@@ -3738,11 +3738,10 @@ async def save_memory_palace_embedding(memory_id: str, content: str) -> bool:
     pool = await get_pool()
     async with pool.acquire() as conn:
         await conn.execute("DELETE FROM memory_palace_vectors WHERE memory_id = $1", memory_id)
-        vec_str = '[' + ','.join(str(float(x)) for x in embedding) + ']'
         await conn.execute("""
-            INSERT INTO memory_palace_vectors (memory_id, embedding, dimensions, model, created_at)
-            VALUES ($1, $2::vector, $3, $4, NOW())
-        """, memory_id, vec_str, len(embedding), getattr(_db_module, "EMBEDDING_MODEL", ""))
+            INSERT INTO memory_palace_vectors (memory_id, embedding_json, dimensions, model, created_at, updated_at)
+            VALUES ($1, $2, $3, $4, NOW(), NOW())
+        """, memory_id, json.dumps(embedding), len(embedding), getattr(_db_module, "EMBEDDING_MODEL", ""))
         await conn.execute("UPDATE memory_palace_nodes SET embedded = TRUE, updated_at = NOW() WHERE id = $1", memory_id)
     return True
 
@@ -3874,8 +3873,18 @@ async def api_memory_palace_extract_text(request: Request):
     except Exception:
         data = {}
     try:
-        text = data.get("text") or ""
+        text = (data.get("text") or "").strip()
         character_id = data.get("character_id") or "default"
+        preview = bool(data.get("preview"))
+        if preview:
+            if not text:
+                return {"status": "error", "error": "文本为空"}
+            if len(text) > 20000:
+                text = text[:20000] + "\n…（已截断）"
+            raw_items = await call_memory_palace_extractor(text)
+            normalized = [_normalize_memory_palace_item(x) for x in raw_items]
+            normalized = [x for x in normalized if x]
+            return {"status": "ok", "preview": True, "extracted": len(raw_items), "created": 0, "embedded": 0, "memories": normalized, "nodes": normalized}
         return await extract_memories_from_text_for_palace(text=text, character_id=character_id)
     except Exception as e:
         return {"status": "error", "error": str(e)}

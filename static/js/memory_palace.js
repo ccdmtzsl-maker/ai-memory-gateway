@@ -68,7 +68,7 @@ function renderMemoryPalaceRooms() {
 function mpRoomCardHtml(room) {
     const active = (_mpCurrentRoom || '') === (room.room || '');
     const color = room.color || '#64748b';
-    return '<div onclick=\"selectMemoryPalaceRoom(\\'' + mpEsc(room.room || '') + '\\')\" ' +
+    return '<div onclick="selectMemoryPalaceRoom( + mpEsc(room.room || ) + )" ' +
         'style=\"cursor:pointer;min-height:112px;border-radius:18px;padding:16px;border:2px solid ' + (active ? color : 'transparent') + ';background:linear-gradient(135deg,' + color + '22,#ffffff);box-shadow:0 4px 14px rgba(15,23,42,0.08);\">' +
         '<div style=\"display:flex;justify-content:space-between;align-items:flex-start;gap:8px;\">' +
             '<div style=\"font-size:18px;font-weight:800;color:' + color + ';\">' + mpEsc(room.label) + '</div>' +
@@ -131,8 +131,8 @@ function renderMemoryPalaceNodes() {
                     '<div style=\"font-size:12px;color:var(--text-muted);margin-top:2px;\">importance ' + mpEsc(node.importance || 5) + ' · ' + mpEsc(node.mood || 'neutral') + '</div>' +
                 '</div>' +
                 '<div style=\"display:flex;gap:6px;align-items:flex-start;\">' +
-                    '<button onclick=\"editMemoryPalaceNode(\\'' + mpEsc(node.id) + '\\')\" style=\"padding:4px 8px;border:1px solid var(--border-color);border-radius:6px;background:#fff;cursor:pointer;font-size:12px;\">编辑</button>' +
-                    '<button onclick=\"deleteMemoryPalaceNode(\\'' + mpEsc(node.id) + '\\')\" style=\"padding:4px 8px;border:1px solid #dc2626;color:#dc2626;border-radius:6px;background:#fff;cursor:pointer;font-size:12px;\">删除</button>' +
+                    '<button onclick="editMemoryPalaceNode( + mpEsc(node.id) + )" style="padding:4px 8px;border:1px solid var(--border-color);border-radius:6px;background:#fff;cursor:pointer;font-size:12px;">编辑</button>' +
+                    '<button onclick="deleteMemoryPalaceNode( + mpEsc(node.id) + )" style="padding:4px 8px;border:1px solid #dc2626;color:#dc2626;border-radius:6px;background:#fff;cursor:pointer;font-size:12px;">删除</button>' +
                 '</div>' +
             '</div>' +
             '<div style=\"white-space:pre-wrap;line-height:1.65;font-size:14px;\">' + mpEsc(node.content || '') + '</div>' +

@@ -4289,7 +4289,7 @@ def _normalize_memory_palace_item(item: dict) -> dict:
         pin_days = 0
     pinned_until = None
     if pin_days > 0:
-        pinned_until = datetime.now(timezone.utc) + timedelta(days=min(pin_days, 365))
+        pinned_until = datetime.now(timezone.utc) + timedelta(days=min(pin_days, 30))
     return {
         "content": content,
         "room": room,
@@ -4315,6 +4315,7 @@ async def build_memory_palace_extraction_prompt(messages_text: str) -> str:
 5. tags 必须是 2-5 个短标签。
 6. valence/arousal 是 -1 到 1 的数字。
 7. 每条必须带 date，格式 YYYY-MM-DD。
+8. pinDays 是便利贴置顶天数，默认 0。只有有时效性、近期需要持续记住的信息才设为 1-30：例如这周出差、后天考试、这几天提醒喝水、感冒状态。长期事实、已过去事件、普通情感记忆不要置顶。
 
 房间分配：
 - living_room：纯日常琐事；天气、吃什么、随口吐槽。

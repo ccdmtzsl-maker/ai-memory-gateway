@@ -3497,6 +3497,7 @@ async def api_memory_palace_create_node(request: Request):
         mood=data.get("mood") or "neutral",
         valence=data.get("valence"),
         arousal=data.get("arousal"),
+        date=data.get("date"),
         character_id=data.get("character_id") or "default",
         session_id=data.get("session_id"),
         origin=data.get("origin") or "manual",
@@ -3607,7 +3608,7 @@ def _normalize_memory_palace_item(item: dict) -> dict:
         "valence": _float_or_none(item.get("valence")),
         "arousal": _float_or_none(item.get("arousal")),
         "pinned_until": pinned_until,
-        "source_date": str(item.get("date") or "").strip(),
+        "date": str(item.get("date") or "").strip(),
     }
 
 
@@ -3763,7 +3764,7 @@ async def extract_memories_from_recent_conversations(limit: int = 50, session_id
         metadata = json.dumps({
             "extract_source": "recent_conversations",
             "source_message_ids": source_message_ids,
-            "source_date": item.get("source_date", ""),
+            "source_date": item.get("date", ""),
         }, ensure_ascii=False)
         node = await create_memory_palace_node(
             node_id=node_id,
@@ -3774,6 +3775,7 @@ async def extract_memories_from_recent_conversations(limit: int = 50, session_id
             mood=item["mood"],
             valence=item["valence"],
             arousal=item["arousal"],
+            date=item.get("date") or None,
             character_id=character_id,
             session_id=source_session,
             origin="extraction",
@@ -3835,7 +3837,7 @@ async def extract_memories_from_text_for_palace(text: str, character_id: str = "
         node_id = f"mn_{int(datetime.now(timezone.utc).timestamp() * 1000)}_{uuid.uuid4().hex[:6]}"
         metadata = json.dumps({
             "extract_source": "manual_text",
-            "source_date": item.get("source_date", ""),
+            "source_date": item.get("date", ""),
         }, ensure_ascii=False)
         node = await create_memory_palace_node(
             node_id=node_id,
@@ -3846,6 +3848,7 @@ async def extract_memories_from_text_for_palace(text: str, character_id: str = "
             mood=item["mood"],
             valence=item["valence"],
             arousal=item["arousal"],
+            date=item.get("date") or None,
             character_id=character_id,
             session_id="manual-text-extract",
             origin="extraction",

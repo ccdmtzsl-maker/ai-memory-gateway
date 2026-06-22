@@ -27,6 +27,26 @@ function mpRoomMeta(roomId) {
     return _mpRooms.find(r => r.room === roomId) || {room: roomId, label: roomId || '全部房间', description: '', color: '#64748b', count: 0};
 }
 
+function mpDateTimeLocalValue(value) {
+    if (!value) return '';
+    const text = String(value);
+    if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(text)) return text.slice(0, 16);
+    const d = new Date(text);
+    if (Number.isNaN(d.getTime())) return '';
+    const pad = n => String(n).padStart(2, '0');
+    return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + 'T' + pad(d.getHours()) + ':' + pad(d.getMinutes());
+}
+
+function mpPinnedText(value) {
+    if (!value) return '';
+    const d = new Date(value);
+    if (Number.isNaN(d.getTime())) return '';
+    const diff = d.getTime() - Date.now();
+    if (diff <= 0) return '📌 已过期';
+    const days = Math.max(1, Math.ceil(diff / 86400000));
+    return '📌 便利贴剩余 ' + days + ' 天';
+}
+
 async function loadMemoryPalace() {
     const root = document.getElementById('section-memory-palace');
     if (!root) return;
@@ -235,7 +255,8 @@ async function saveMemoryPalaceNode() {
         importance: Number(document.getElementById('mpEditImportance')?.value || 5),
         mood: document.getElementById('mpEditMood')?.value?.trim() || 'neutral',
         valence: valenceText === '' ? null : Number(valenceText),
-        arousal: arousalText === '' ? null : Number(arousalText)
+        arousal: arousalText === '' ? null : Number(arousalText),
+        pinned_until: document.getElementById('mpEditPinnedUntil')?.value || null
     };
 
     try {

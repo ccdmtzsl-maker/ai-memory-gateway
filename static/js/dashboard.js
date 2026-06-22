@@ -2402,7 +2402,7 @@ async function doExtractFromChat() {
         const resp = await fetch('/api/memories/extract-from-chat', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({text: text})
+            body: JSON.stringify({text: text, preview: true})
         });
         const data = await resp.json();
         
@@ -2448,14 +2448,21 @@ async function doExtractToMemoryPalaceFromChat() {
         const resp = await fetch('/api/memory-palace/extract-text', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({text: text})
+            body: JSON.stringify({text: text, preview: true})
         });
         const data = await resp.json();
         if (data.error || data.status === 'error') {
             showImportResult('error', '❌ ' + (data.error || '记忆宫殿提取失败'));
             return;
         }
-        showImportResult('success', '✅ 已提取到记忆宫殿：模型输出 ' + (data.extracted || 0) + ' 条，入库 ' + (data.created || 0) + ' 条，向量化 ' + (data.embedded || 0) + ' 条');
+        _extractedMemories = data.memories || data.nodes || [];
+        if (_extractedMemories.length === 0) {
+            showImportResult('info', '未从聊天记录中提取到可进入记忆宫殿的记忆');
+            return;
+        }
+        renderExtractedMemories();
+        document.getElementById('chat-extract-result').style.display = 'block';
+        showImportResult('success', '✅ 已生成记忆宫殿预览：模型输出 ' + (data.extracted || 0) + ' 条，请勾选后确认导入到宫殿');
     } catch (e) {
         showImportResult('error', '❌ 记忆宫殿提取请求失败: ' + e.message);
     } finally {
@@ -2473,7 +2480,7 @@ function renderExtractedMemories() {
             + '<input type="checkbox" checked class="extract-check" value="' + i + '" style="margin-top:3px;">'
             + '<div style="flex:1;">'
             + '<div style="font-size:13px;color:#374151;">' + escapeHtml(m.content) + '</div>'
-            + '<div style="font-size:11px;color:#9ca3af;margin-top:2px;">重要度: ' + imp + '</div>'
+            + '<div style="font-size:11px;color:#9ca3af;margin-top:2px;">重要度: ' + imp + (m.room ? ' · 房间: ' + escapeHtml(m.room) : '') + (m.date ? ' · 日期: ' + escapeHtml(m.date) : '') + '</div>'
             + '</div></label>';
     }).join('');
 }

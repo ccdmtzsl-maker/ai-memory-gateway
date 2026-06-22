@@ -146,11 +146,12 @@ function renderMemoryPalaceNodes() {
         const room = mpRoomMeta(node.room);
         const color = room.color || '#64748b';
         const tags = node.tags ? String(node.tags).split(/[、,，\\n]/).map(t => t.trim()).filter(Boolean) : [];
+        const pinnedText = mpPinnedText(node.pinned_until);
         return '<div class=\"card\" style=\"padding:16px;border-top:4px solid ' + color + ';\">' +
             '<div style=\"display:flex;justify-content:space-between;gap:10px;margin-bottom:10px;\">' +
                 '<div>' +
                     '<div style=\"font-weight:800;color:' + color + ';\">' + mpEsc(room.label || node.room) + '</div>' +
-                    '<div style=\"font-size:12px;color:var(--text-muted);margin-top:2px;\">importance ' + mpEsc(node.importance || 5) + ' · ' + mpEsc(node.mood || 'neutral') + '</div>' +
+                    '<div style=\"font-size:12px;color:var(--text-muted);margin-top:2px;\">importance ' + mpEsc(node.importance || 5) + ' · ' + mpEsc(node.mood || 'neutral') + (pinnedText ? ' · ' + mpEsc(pinnedText) : '') + '</div>' +
                 '</div>' +
                 '<div style=\"display:flex;gap:6px;align-items:flex-start;\">' +
                     '<button class=\"mp-edit-node\" data-id=\"' + mpEsc(node.id) + '\" style=\"padding:4px 8px;border:1px solid var(--border-color);border-radius:6px;background:#fff;cursor:pointer;font-size:12px;\">编辑</button>' +

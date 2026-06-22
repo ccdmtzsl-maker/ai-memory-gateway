@@ -4359,7 +4359,7 @@ async def build_memory_palace_extraction_prompt(messages_text: str) -> str:
 3. 不要每句话都提取；一个话题通常提取 1-5 条。没有值得保存的信息就返回 []。
 4. 重要性决定长度：1-5 写 15-50 字事实；6-7 写 60-120 字并包含我的感受；8-10 写 100-200 字完整叙事。
 5. tags 必须是 2-5 个短标签。
-6. valence/arousal 是 -1 到 1 的数字。
+6. valence/arousal 是 -1 到 1 的数字。可选的 mood：neutral, happy, sad, angry, anxious, calm, excited, tender, nostalgic, confused, hopeful, hurt。
 7. 每条必须带 date，格式 YYYY-MM-DD。
 8. pinDays 是便利贴置顶天数，默认 0。只有有时效性、近期需要持续记住的信息才设为 1-365；0 表示不置顶。pinDays 从该条记忆的 date 当天开始计算，到期后系统会自动摘掉便利贴但保留记忆本体。适用：这周出差、后天考试、这几天提醒喝水、临时身体状态、短期约定。长期事实、已过去事件、普通情感记忆不要置顶。
 

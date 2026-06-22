@@ -2520,6 +2520,13 @@ async function doImportExtractedToPalace() {
         }
     }
     showImportResult(failed ? 'info' : 'success', '已导入到记忆宫殿 ' + imported + ' 条' + (failed ? '，失败 ' + failed + ' 条' : ''));
+    if (imported > 0) {
+        const result = document.getElementById('chat-extract-result');
+        const list = document.getElementById('chat-extract-list');
+        if (result) result.style.display = 'none';
+        if (list) list.innerHTML = '';
+        _extractedMemories = [];
+    }
 }
 
 async function doImportExtracted() {

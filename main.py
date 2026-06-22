@@ -601,6 +601,61 @@ def _memory_palace_message_text(msg: dict) -> str:
     return str(content or "")
 
 
+def _memory_palace_month_range(year: int, month: int):
+    start = datetime(year, month, 1).date()
+    if month == 12:
+        end = datetime(year + 1, 1, 1).date()
+    else:
+        end = datetime(year, month + 1, 1).date()
+    return start, end
+
+
+def _memory_palace_resolve_fuzzy_date_references(text: str):
+    """只解析模糊时间词，不解析具体数字日期，避免系统时间戳每轮误触发。"""
+    text = text or ""
+    today = datetime.now(timezone(timedelta(hours=TIMEZONE_HOURS))).date()
+    ranges = []
+    seen = set()
+
+    def add(label, start, end):
+        if not start or not end or start >= end:
+            return
+        key = (label, start.isoformat(), end.isoformat())
+        if key in seen:
+            return
+        seen.add(key)
+        ranges.append({"label": label, "start": start, "end": end})
+
+    if "今天" in text:
+        add("今天", today, today + timedelta(days=1))
+    if "昨天" in text:
+        d = today - timedelta(days=1)
+        add("昨天", d, d + timedelta(days=1))
+    if "前天" in text:
+        d = today - timedelta(days=2)
+        add("前天", d, d + timedelta(days=1))
+    if "这周" in text or "本周" in text:
+        start = today - timedelta(days=today.weekday())
+        add("本周", start, start + timedelta(days=7))
+    if "上周" in text:
+        start = today - timedelta(days=today.weekday() + 7)
+        add("上周", start, start + timedelta(days=7))
+    if "这个月" in text or "本月" in text:
+        add("本月", *_memory_palace_month_range(today.year, today.month))
+    if "上个月" in text:
+        y, m = today.year, today.month - 1
+        if m == 0:
+            y, m = y - 1, 12
+        add("上个月", *_memory_palace_month_range(y, m))
+    if "今年" in text:
+        add("今年", datetime(today.year, 1, 1).date(), datetime(today.year + 1, 1, 1).date())
+    if "去年" in text:
+        add("去年", datetime(today.year - 1, 1, 1).date(), datetime(today.year, 1, 1).date())
+    if "最近" in text or "近期" in text:
+        add("近期", today - timedelta(days=14), today + timedelta(days=1))
+    return ranges
+
+
 def _memory_palace_split_last_turn_queries(messages):
     if not messages:
         return [], "", ""
@@ -754,6 +809,24 @@ async def retrieve_memory_palace_rows_for_prompt(query: str = "", limit: int = 5
         fallback = fallback_query or query
         for item in await search_memory_palace_for_prompt(fallback, limit=30, room=room, character_id=character_id, rows=rows):
             merged[item["id"]] = item
+    date_query = "\n".join([query or "", context_query or "", fallback_query or ""] + [s["text"] for s in spikes])
+    date_ranges = _memory_palace_resolve_fuzzy_date_references(date_query)
+    if date_ranges:
+        for row in rows:
+            row_date = row["date"]
+            if not row_date:
+                continue
+            for dr in date_ranges:
+                if dr["start"] <= row_date < dr["end"]:
+                    item = dict(row)
+                    existing = merged.get(item["id"])
+                    if existing:
+                        existing["score"] = max(existing["score"], existing["score"] + 0.3)
+                    else:
+                        item["score"] = 0.8
+                        item["similarity_score"] = 0.0
+                        merged[item["id"]] = item
+                    break
     selected = sorted(merged.values(), key=lambda x: x["score"], reverse=True)[:limit]
     now = datetime.now(timezone.utc)
     pinned = []

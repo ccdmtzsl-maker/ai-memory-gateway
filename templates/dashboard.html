@@ -506,6 +506,26 @@
                     </div>
                 </div>
 
+                <div class="card" style="margin-top:14px;padding:16px;">
+                    <div style="font-weight:800;margin-bottom:10px;">召回调试</div>
+                    <div style="display:grid;grid-template-columns:minmax(220px,1fr) 110px 160px auto;gap:10px;align-items:center;">
+                        <input id="mpDebugQuery" class="form-control" placeholder="输入测试问题，例如：上周我们聊了什么 / 我最近在担心什么">
+                        <input id="mpDebugLimit" class="form-control" type="number" min="1" max="30" value="5">
+                        <select id="mpDebugRoom" class="form-control">
+                            <option value="">全部房间</option>
+                            <option value="living_room">客厅</option>
+                            <option value="bedroom">卧室</option>
+                            <option value="study">书房</option>
+                            <option value="user_room">用户房间</option>
+                            <option value="self_room">自我房间</option>
+                            <option value="attic">阁楼</option>
+                            <option value="windowsill">窗台</option>
+                        </select>
+                        <button class="btn btn-secondary" onclick="debugRetrieveMemoryPalace()">调试召回</button>
+                    </div>
+                    <div id="mpDebugResult" style="display:none;margin-top:12px;"></div>
+                </div>
+
                 <div id="mpNodeList" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:14px;margin-top:14px;">
                     加载中...
                 </div>
@@ -948,6 +968,6 @@
     });
 
     </script>
-    <script src="/static/js/memory_palace.js?v=1.3"></script>
+    <script src="/static/js/memory_palace.js?v=1.4"></script>
 </body>
 </html>

@@ -2478,6 +2478,43 @@ function renderExtractedMemories() {
     }).join('');
 }
 
+
+async function doImportExtractedToPalace() {
+    const checked = [...document.querySelectorAll('.extract-check:checked')].map(c => parseInt(c.value));
+    if (checked.length === 0) {
+        showImportResult('error', '请至少选择一条记忆');
+        return;
+    }
+    const memories = checked.map(i => _extractedMemories[i]).filter(Boolean);
+    let imported = 0;
+    let failed = 0;
+    for (const m of memories) {
+        try {
+            const resp = await fetch('/api/memory-palace/nodes', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    content: m.content || '',
+                    room: m.room || 'living_room',
+                    tags: Array.isArray(m.tags) ? m.tags.join('、') : (m.tags || ''),
+                    importance: m.importance || 5,
+                    mood: m.mood || 'neutral',
+                    valence: m.valence ?? null,
+                    arousal: m.arousal ?? null,
+                    date: m.date || new Date().toISOString().slice(0, 10),
+                    origin: 'extraction',
+                    metadata: {source: 'chat-extract-selection'}
+                })
+            });
+            const data = await resp.json();
+            if (data.error) failed++; else imported++;
+        } catch (e) {
+            failed++;
+        }
+    }
+    showImportResult(failed ? 'info' : 'success', '已导入到记忆宫殿 ' + imported + ' 条' + (failed ? '，失败 ' + failed + ' 条' : ''));
+}
+
 async function doImportExtracted() {
     const checked = [...document.querySelectorAll('.extract-check:checked')].map(c => parseInt(c.value));
     if (checked.length === 0) {

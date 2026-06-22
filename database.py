@@ -2346,7 +2346,38 @@ def _parse_memory_palace_pinned_until(value):
                 return None
     return value
 
+async def clear_expired_memory_palace_pins(character_id: str = None):
+    """到期自动摘掉便利贴：清空 pinned_until，保留记忆本体。"""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        if character_id:
+            result = await conn.execute(
+                """
+                UPDATE memory_palace_nodes
+                SET pinned_until = NULL, updated_at = NOW()
+                WHERE character_id = $1
+                  AND pinned_until IS NOT NULL
+                  AND pinned_until <= NOW()
+                """,
+                character_id,
+            )
+        else:
+            result = await conn.execute(
+                """
+                UPDATE memory_palace_nodes
+                SET pinned_until = NULL, updated_at = NOW()
+                WHERE pinned_until IS NOT NULL
+                  AND pinned_until <= NOW()
+                """
+            )
+    try:
+        return int(str(result).split()[-1])
+    except Exception:
+        return 0
+
+
 async def list_memory_palace_rooms(character_id: str = "default"):
+    await clear_expired_memory_palace_pins(character_id)
     pool = await get_pool()
     async with pool.acquire() as conn:
         rows = await conn.fetch("""
@@ -2373,6 +2404,7 @@ async def list_memory_palace_nodes(
 ):
     limit = max(1, min(int(limit or 100), 500))
     offset = max(0, int(offset or 0))
+    await clear_expired_memory_palace_pins(character_id)
     pool = await get_pool()
     async with pool.acquire() as conn:
         conditions = ["character_id = $1", "archived = $2"]

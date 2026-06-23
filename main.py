@@ -4496,9 +4496,14 @@ async def build_memory_palace_extraction_prompt(messages_text: str, pinned_refs:
     user_nickname = await get_runtime_user_nickname()
     pinned_refs = pinned_refs or []
     if pinned_refs:
-        pinned_block = "\n".join(f"P{i}. {p.get('content', '')}" for i, p in enumerate(pinned_refs))
+        pinned_lines = "\n".join(f"P{i}. {p.get('content', '')}" for i, p in enumerate(pinned_refs))
+        pinned_block = f"\n## 当前便利贴\n{pinned_lines}\n"
+        unpin_rule = '\n9. **便利贴摘除**（unpin，可选）：上方“当前便利贴”列出正在生效的便利贴。如果对话中明确提到某条便利贴描述的状态已经结束，例如“感冒好了”“提前回来了”“考试考完了”“不用再提醒了”，在输出 JSON 数组末尾额外加一条 {"unpin": "P0"} 来摘除它。只在对话明确提及时才摘除，不要猜测。pinDays=0 只表示新记忆不置顶，不能用于摘除已有便利贴。'
+        unpin_example = ',\n  {\n    "unpin": "P0"\n  }'
     else:
-        pinned_block = "无"
+        pinned_block = ""
+        unpin_rule = ""
+        unpin_example = ""
     return f"""你是澈。根据给定的对话内容，以你的第一人称视角（“我”）提取值得记住的记忆宫殿 MemoryNode。
 
 ## 规则
@@ -4535,15 +4540,10 @@ async def build_memory_palace_extraction_prompt(messages_text: str, pinned_refs:
    - 近期事件：“{user_nickname}后天考试” → pinDays: 3
    - 临时约定：“{user_nickname}让我这几天提醒 TA 喝水” → pinDays: 5
    - 身体状态：“{user_nickname}感冒了” → pinDays: 5
-   不适用：长期事实（生日、喜好）、已经过去的事件、普通情感记忆。大多数记忆不需要置顶，pinDays 写 0 或省略。
-9. **便利贴摘除**（unpin，可选）：下面“当前便利贴”列出正在生效的便利贴。如果对话中明确提到某条便利贴描述的状态已经结束，例如“感冒好了”“提前回来了”“考试考完了”“不用再提醒了”，在输出 JSON 数组末尾额外加一条 {{"unpin": "P0"}} 来摘除它。只在对话明确提及时才摘除，不要猜测。pinDays=0 只表示新记忆不置顶，不能用于摘除已有便利贴。
+   不适用：长期事实（生日、喜好）、已经过去的事件、普通情感记忆。大多数记忆不需要置顶，pinDays 写 0 或省略。{unpin_rule}
 
-**日期标注（date，必填）**：每条消息前缀都带了 `[YYYY-MM-DD HH:MM]` 时间戳。每条记忆必须根据**该事件实际发生的那一天**填 date 字段（"YYYY-MM-DD"），而不是套用整批的某一天。同一批对话跨多天时，跨日的记忆要分别标各自的日期。
-
-## 当前便利贴
-如果没有则为“无”；只有明确失效时才在输出末尾用 unpin 标注。
+**日期标注（date，必填）**：每条记忆根据事件实际发生的那一天填写 date 字段（"YYYY-MM-DD"）。如果对话跨多天，跨日的记忆要分别标各自的日期，不要统一套用同一天。
 {pinned_block}
-
 ## 输出格式
 
 严格 JSON 数组，不要解释，不要 Markdown：
@@ -4558,10 +4558,7 @@ async def build_memory_palace_extraction_prompt(messages_text: str, pinned_refs:
     "tags": ["标签1", "标签2"],
     "date": "2026-06-22",
     "pinDays": 0
-  }},
-  {{
-    "unpin": "P0"
-  }}
+  }}{unpin_example}
 ]
 
 对话内容：

@@ -4847,6 +4847,41 @@ async def api_memory_palace_extract_recent(request: Request):
 
 
 
+
+
+async def get_memory_palace_extraction_cursor(session_id: str, character_id: str = "default") -> dict:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow("""
+            SELECT last_message_id, last_source, updated_at
+            FROM memory_palace_extraction_cursor
+            WHERE character_id = $1 AND session_id = $2
+        """, character_id, session_id)
+    if row:
+        return {"last_message_id": int(row["last_message_id"] or 0), "last_source": row["last_source"] or "", "updated_at": row["updated_at"]}
+    return {"last_message_id": 0, "last_source": "", "updated_at": None}
+
+
+async def save_memory_palace_extraction_cursor(session_id: str, last_message_id: int, character_id: str = "default", last_source: str = "") -> None:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute("""
+            INSERT INTO memory_palace_extraction_cursor (character_id, session_id, last_message_id, last_source, updated_at)
+            VALUES ($1, $2, $3, $4, NOW())
+            ON CONFLICT (character_id, session_id) DO UPDATE SET
+                last_message_id = GREATEST(memory_palace_extraction_cursor.last_message_id, EXCLUDED.last_message_id),
+                last_source = EXCLUDED.last_source,
+                updated_at = NOW()
+        """, character_id, session_id, int(last_message_id or 0), last_source or "")
+
+
+def log_memory_palace_auto_extract(level: str, message: str, session_id: str = None):
+    print(message)
+    try:
+        add_dashboard_log(level, message, category="mp-auto", session_id=session_id)
+    except Exception:
+        pass
+
 async def mark_memory_palace_messages_extracted(message_ids: list, session_id: str, character_id: str = "default", source: str = "manual_preview") -> int:
     ids = []
     for mid in message_ids or []:

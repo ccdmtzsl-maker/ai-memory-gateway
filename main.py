@@ -1115,35 +1115,55 @@ def _message_contains_memory_palace_variable(msg: dict) -> bool:
     return False
 
 
-def _append_text_to_message_content(msg: dict, text: str) -> None:
-    content = msg.get("content", "")
+def _message_content_text(msg: dict) -> str:
+    content = msg.get("content", "") if isinstance(msg, dict) else ""
     if isinstance(content, str):
-        msg["content"] = (content.rstrip() + "\n\n" + text.strip()).strip()
-    elif isinstance(content, list):
-        content.append({"type": "text", "text": text.strip()})
-    else:
-        msg["content"] = text.strip()
+        return content
+    if isinstance(content, list):
+        return "\n".join(
+            item.get("text", "") for item in content
+            if isinstance(item, dict) and isinstance(item.get("text"), str)
+        )
+    return str(content or "")
+
+
+def _is_operit_memory_context_message(msg: dict) -> bool:
+    text = _message_content_text(msg)
+    if not text:
+        return False
+    markers = (
+        "【从operit记忆库中检索到的相关记忆】",
+        "【从过往对话中检索到的相关记忆】",
+        "【相关记忆】",
+        "相关记忆",
+    )
+    return any(marker in text for marker in markers)
+
+
+def _insert_memory_palace_system_message(messages: list, text: str) -> None:
+    injection_msg = {"role": "system", "content": text.strip()}
+    insert_at = len(messages)
+    for idx in range(len(messages) - 1, -1, -1):
+        msg = messages[idx]
+        if isinstance(msg, dict) and _is_operit_memory_context_message(msg):
+            insert_at = idx
+    messages.insert(insert_at, injection_msg)
 
 
 async def inject_memory_palace_auto_context(messages: list, query: str = "", character_id: str = "default", recent_messages=None, explicit_present: bool = False) -> bool:
-    """每轮自动把 Memory Palace 召回结果追加到最后一条 user 消息下方。"""
+    """每轮自动把 Memory Palace 召回结果作为靠后的 system 消息注入。"""
     if explicit_present or not isinstance(messages, list):
         return False
     if not await get_runtime_memory_palace_enabled():
         return False
-    target = None
-    for msg in reversed(messages):
-        if isinstance(msg, dict) and msg.get("role") == "user":
-            target = msg
-            break
-    if target is None:
+    if not any(isinstance(msg, dict) and msg.get("role") == "user" for msg in messages):
         return False
     limit = await get_runtime_memory_palace_default_limit()
     context = await format_memory_palace_for_prompt(limit=limit, query=query, character_id=character_id, recent_messages=recent_messages or messages)
     if not context or "暂无可用记忆" in context:
         return False
     injection = "[以下是本轮自动召回的记忆宫殿上下文，供回应时参考，不要逐字复述]\n" + context
-    _append_text_to_message_content(target, injection)
+    _insert_memory_palace_system_message(messages, injection)
     return True
 
 async def build_system_prompt_with_memories(user_message: str) -> str:

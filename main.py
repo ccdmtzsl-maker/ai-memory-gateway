@@ -1102,6 +1102,50 @@ async def replace_explicit_memory_variables(prompt: str, query: str = "", charac
     prompt = await replace_memory_palace_variables(prompt, query=query, character_id=character_id, recent_messages=recent_messages)
     return prompt
 
+
+def _message_contains_memory_palace_variable(msg: dict) -> bool:
+    content = msg.get("content", "") if isinstance(msg, dict) else ""
+    if isinstance(content, str):
+        return "{{memory_palace" in content
+    if isinstance(content, list):
+        return any(
+            isinstance(item, dict) and isinstance(item.get("text"), str) and "{{memory_palace" in item.get("text", "")
+            for item in content
+        )
+    return False
+
+
+def _append_text_to_message_content(msg: dict, text: str) -> None:
+    content = msg.get("content", "")
+    if isinstance(content, str):
+        msg["content"] = (content.rstrip() + "\n\n" + text.strip()).strip()
+    elif isinstance(content, list):
+        content.append({"type": "text", "text": text.strip()})
+    else:
+        msg["content"] = text.strip()
+
+
+async def inject_memory_palace_auto_context(messages: list, query: str = "", character_id: str = "default", recent_messages=None, explicit_present: bool = False) -> bool:
+    """每轮自动把 Memory Palace 召回结果追加到最后一条 user 消息下方。"""
+    if explicit_present or not isinstance(messages, list):
+        return False
+    if not await get_runtime_memory_palace_enabled():
+        return False
+    target = None
+    for msg in reversed(messages):
+        if isinstance(msg, dict) and msg.get("role") == "user":
+            target = msg
+            break
+    if target is None:
+        return False
+    limit = await get_runtime_memory_palace_default_limit()
+    context = await format_memory_palace_for_prompt(limit=limit, query=query, character_id=character_id, recent_messages=recent_messages or messages)
+    if not context or "暂无可用记忆" in context:
+        return False
+    injection = "[以下是本轮自动召回的记忆宫殿上下文，供回应时参考，不要逐字复述]\n" + context
+    _append_text_to_message_content(target, injection)
+    return True
+
 async def build_system_prompt_with_memories(user_message: str) -> str:
     """
     构建带记忆的 system prompt
@@ -2698,6 +2742,7 @@ async def chat_completions(request: Request):
                     client_system_parts.append(str(c))
         client_system_prompt = "\n\n".join(p for p in client_system_parts if p).strip()
         partition_base_prompt = client_system_prompt or SYSTEM_PROMPT
+        partition_has_explicit_memory_palace = "{{memory_palace" in (partition_base_prompt or "")
         partition_base_prompt = await replace_explicit_memory_variables(partition_base_prompt, query=user_message, recent_messages=messages)
 
         # 提取客户端新消息（非系统级消息），可能是user、tool、或带tool_calls的assistant
@@ -3020,6 +3065,7 @@ async def chat_completions(request: Request):
         messages = _normalize_tool_chains_by_id(messages)
         messages = _drop_orphan_tool_messages(messages)
 
+        await inject_memory_palace_auto_context(messages, query=user_message, recent_messages=messages, explicit_present=partition_has_explicit_memory_palace)
         body["messages"] = messages
     
     else:
@@ -3040,6 +3086,10 @@ async def chat_completions(request: Request):
                 else:
                     messages.insert(0, {"role": "system", "content": enhanced_prompt})
 
+        non_partition_has_explicit_memory_palace = any(
+            msg.get("role") in ("system", "developer") and _message_contains_memory_palace_variable(msg)
+            for msg in messages
+        )
         for msg in messages:
             if msg.get("role") in ("system", "developer"):
                 c = msg.get("content", "")
@@ -3049,6 +3099,8 @@ async def chat_completions(request: Request):
                     for item in c:
                         if isinstance(item, dict) and item.get("type") == "text" and isinstance(item.get("text"), str):
                             item["text"] = await replace_explicit_memory_variables(item["text"], query=user_message, recent_messages=messages)
+        await inject_memory_palace_auto_context(messages, query=user_message, recent_messages=messages, explicit_present=non_partition_has_explicit_memory_palace)
+
         # 非分区模式下也要兜一下工具轮次：
         # Operit 有时会把原始 user 又贴到末尾，导致上游把它当成新问题，
         # 进而让本轮 tool 结果看起来“没接上”。这里只给上游请求生成裁剪副本，

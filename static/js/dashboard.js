@@ -1917,7 +1917,16 @@ async function deleteThread(sessionId, messageCount) {
 
 async function openSummaryModal(sessionId) {
     _summaryEditSid = sessionId;
-    document.getElementById('summary-modal-sid').textContent = sessionId;
+    const titleEl = document.getElementById('summary-modal-title');
+    const editor = document.getElementById('summary-editor');
+    const saveBtn = document.getElementById('summary-save-btn');
+    const clearBtn = document.getElementById('summary-clear-btn');
+    if (titleEl) titleEl.innerHTML = '编辑摘要 — <span id="summary-modal-sid"></span>';
+    const sidEl = document.getElementById('summary-modal-sid');
+    if (sidEl) sidEl.textContent = sessionId;
+    if (editor) editor.readOnly = false;
+    if (saveBtn) saveBtn.style.display = '';
+    if (clearBtn) clearBtn.style.display = '';
     
     // 获取完整摘要
     try {
@@ -1946,13 +1955,13 @@ async function openSummaryModal(sessionId) {
 
 async function openThreadMemoryModal(sessionId) {
     _summaryEditSid = sessionId;
-    const sidEl = document.getElementById('summary-modal-sid');
+    const titleEl = document.getElementById('summary-modal-title');
     const editor = document.getElementById('summary-editor');
     const countEl = document.getElementById('summary-char-count');
     const modal = document.getElementById('summaryModal');
-    const saveBtn = document.querySelector('#summaryModal .modal-actions .btn.btn-primary');
-    const clearBtn = document.querySelector('#summaryModal .modal-actions .btn.btn-danger');
-    if (sidEl) sidEl.textContent = '对话线记忆 — ' + sessionId;
+    const saveBtn = document.getElementById('summary-save-btn');
+    const clearBtn = document.getElementById('summary-clear-btn');
+    if (titleEl) titleEl.textContent = '对话线记忆 — ' + sessionId;
     if (editor) {
         editor.value = '正在加载记忆宫殿内容...';
         editor.readOnly = true;
@@ -1996,8 +2005,10 @@ function closeSummaryModal() {
     document.getElementById('summaryModal').style.display = 'none';
     const editor = document.getElementById('summary-editor');
     if (editor) editor.readOnly = false;
-    const saveBtn = document.querySelector('#summaryModal .modal-actions .btn.btn-primary');
-    const clearBtn = document.querySelector('#summaryModal .modal-actions .btn.btn-danger');
+    const titleEl = document.getElementById('summary-modal-title');
+    const saveBtn = document.getElementById('summary-save-btn');
+    const clearBtn = document.getElementById('summary-clear-btn');
+    if (titleEl) titleEl.innerHTML = '编辑摘要 — <span id="summary-modal-sid"></span>';
     if (saveBtn) saveBtn.style.display = '';
     if (clearBtn) clearBtn.style.display = '';
     _summaryEditSid = '';

@@ -1065,8 +1065,11 @@ async def format_memory_palace_for_prompt(limit: int = 5, room: str = None, quer
             continue
         label = _MEMORY_PALACE_ROOM_LABELS.get(room_id, room_id)
         if room_id == "user_room":
-            label = f"{await get_runtime_user_nickname()}房间"
-        desc = _MEMORY_PALACE_ROOM_DESCRIPTIONS.get(room_id, "")
+            user_nickname = await get_runtime_user_nickname()
+            label = f"{user_nickname}房间"
+            desc = f"{user_nickname}个人信息、习惯"
+        else:
+            desc = _MEMORY_PALACE_ROOM_DESCRIPTIONS.get(room_id, "")
         lines.append("")
         lines.append(f"**[{label} · {desc}]**")
         for row in room_rows:

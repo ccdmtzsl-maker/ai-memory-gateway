@@ -4775,7 +4775,47 @@ async def api_memory_palace_extract_recent(request: Request):
 
 
 
-def _serialize_memory_palace_preview_item(item: dict, session_id: str = None, group_index: int = None) -> dict:
+async def mark_memory_palace_messages_extracted(message_ids: list, session_id: str, character_id: str = "default", source: str = "manual_preview") -> int:
+    ids = []
+    for mid in message_ids or []:
+        try:
+            ids.append(int(mid))
+        except Exception:
+            pass
+    ids = list(dict.fromkeys(ids))
+    if not ids or not session_id:
+        return 0
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("""
+            INSERT INTO memory_palace_extracted_messages (character_id, session_id, message_id, source, extracted_at)
+            SELECT $1, $2, x, $3, NOW()
+            FROM unnest($4::bigint[]) AS x
+            ON CONFLICT (character_id, message_id) DO NOTHING
+            RETURNING message_id
+        """, character_id, session_id, source, ids)
+    return len(rows)
+
+
+def collect_memory_palace_source_message_ids(items: list) -> dict:
+    by_session = {}
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        sid = str(item.get("session_id") or item.get("source_session") or "").strip()
+        ids = item.get("source_message_ids") or []
+        if not sid or not isinstance(ids, list):
+            continue
+        bucket = by_session.setdefault(sid, [])
+        for mid in ids:
+            try:
+                bucket.append(int(mid))
+            except Exception:
+                pass
+    return {sid: list(dict.fromkeys(vals)) for sid, vals in by_session.items() if vals}
+
+
+def _serialize_memory_palace_preview_item(item: dict, session_id: str = None, group_index: int = None, source_message_ids: list = None) -> dict:
     out = dict(item or {})
     pu = out.get("pinned_until")
     if pu is not None:
@@ -4788,10 +4828,12 @@ def _serialize_memory_palace_preview_item(item: dict, session_id: str = None, gr
         out["session_id"] = session_id
     if group_index is not None:
         out["group_index"] = group_index
+    if source_message_ids is not None:
+        out["source_message_ids"] = [int(x) for x in source_message_ids if str(x).isdigit()]
     return out
 
 
-def _serialize_memory_palace_unpin_preview(unpin_id: str, pinned_refs: list, session_id: str = None, group_index: int = None) -> dict:
+def _serialize_memory_palace_unpin_preview(unpin_id: str, pinned_refs: list, session_id: str = None, group_index: int = None, source_message_ids: list = None) -> dict:
     ref = next((p for p in pinned_refs if p.get("id") == unpin_id), None)
     return {
         "type": "unpin",
@@ -4799,6 +4841,7 @@ def _serialize_memory_palace_unpin_preview(unpin_id: str, pinned_refs: list, ses
         "content": (ref or {}).get("content", unpin_id),
         "session_id": session_id,
         "group_index": group_index,
+        "source_message_ids": [int(x) for x in (source_message_ids or []) if str(x).isdigit()],
     }
 
 
@@ -4810,23 +4853,28 @@ async def preview_memory_palace_extraction_for_session(session_id: str, characte
     pool = await get_pool()
     async with pool.acquire() as conn:
         rows = await conn.fetch("""
-            SELECT id, session_id, role, content, created_at
-            FROM conversations
-            WHERE session_id = $1 AND content IS NOT NULL AND content <> ''
-            ORDER BY created_at ASC, id ASC
+            SELECT c.id, c.session_id, c.role, c.content, c.created_at
+            FROM conversations c
+            WHERE c.session_id = $1 AND c.content IS NOT NULL AND c.content <> ''
+              AND NOT EXISTS (
+                SELECT 1 FROM memory_palace_extracted_messages em
+                WHERE em.character_id = $3 AND em.message_id = c.id
+              )
+            ORDER BY c.created_at ASC, c.id ASC
             LIMIT $2
-        """, session_id, limit)
+        """, session_id, limit, character_id)
     if not rows:
         return {"session_id": session_id, "status": "empty", "message": "没有可提取的对话", "items": []}
+    source_message_ids = [int(r["id"]) for r in rows]
     messages_text = _format_messages_for_memory_palace(rows)
     pinned_refs = await get_active_memory_palace_pin_refs(character_id)
     raw_items, unpin_ids = await call_memory_palace_extractor(messages_text, character_id=character_id)
     normalized = [_normalize_memory_palace_item(x) for x in raw_items]
     normalized = [x for x in normalized if x]
-    items = [_serialize_memory_palace_preview_item(item, session_id=session_id) for item in normalized]
+    items = [_serialize_memory_palace_preview_item(item, session_id=session_id, source_message_ids=source_message_ids) for item in normalized]
     for unpin_id in unpin_ids:
-        items.append(_serialize_memory_palace_unpin_preview(unpin_id, pinned_refs, session_id=session_id))
-    return {"session_id": session_id, "status": "ok", "message_count": len(rows), "raw_count": len(raw_items), "memory_count": len(normalized), "unpin_count": len(unpin_ids), "items": items}
+        items.append(_serialize_memory_palace_unpin_preview(unpin_id, pinned_refs, session_id=session_id, source_message_ids=source_message_ids))
+    return {"session_id": session_id, "status": "ok", "message_count": len(rows), "source_message_ids": source_message_ids, "raw_count": len(raw_items), "memory_count": len(normalized), "unpin_count": len(unpin_ids), "items": items}
 
 
 async def import_memory_palace_preview_items(items: list, character_id: str = "default") -> dict:
@@ -4865,7 +4913,13 @@ async def import_memory_palace_preview_items(items: list, character_id: str = "d
             unpinned_count = await clear_memory_palace_pins_by_ids(list(dict.fromkeys(unpin_ids)), character_id=character_id)
         except Exception as e:
             print(f"⚠️ 记忆宫殿预览导入摘除便利贴失败: {e}")
-    return {"status": "ok", "created": len(created), "embedded": embedded_count, "unpinned": unpinned_count, "nodes": created}
+    marked_count = 0
+    for sid, mids in collect_memory_palace_source_message_ids(items).items():
+        try:
+            marked_count += await mark_memory_palace_messages_extracted(mids, sid, character_id=character_id, source="manual_preview")
+        except Exception as e:
+            print(f"⚠️ 记忆宫殿预览导入标记已提取失败 session={sid}: {e}")
+    return {"status": "ok", "created": len(created), "embedded": embedded_count, "unpinned": unpinned_count, "marked": marked_count, "nodes": created}
 
 async def extract_memories_from_text_for_palace(text: str, character_id: str = "default"):
     text = str(text or "").strip()

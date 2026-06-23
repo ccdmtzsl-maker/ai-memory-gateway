@@ -4871,10 +4871,30 @@ async def api_memory_palace_extract_text(request: Request):
                 return {"status": "error", "error": "文本为空"}
             if len(text) > 20000:
                 text = text[:20000] + "\n…（已截断）"
-            raw_items = await call_memory_palace_extractor(text)
+            raw_items, unpin_ids = await call_memory_palace_extractor(text, character_id=character_id)
             normalized = [_normalize_memory_palace_item(x) for x in raw_items]
             normalized = [x for x in normalized if x]
-            return {"status": "ok", "preview": True, "extracted": len(raw_items), "created": 0, "embedded": 0, "memories": normalized, "nodes": normalized}
+            raw_count = len(raw_items)
+            memory_count = len(normalized)
+            if memory_count > 0:
+                message = f"已解析到 {raw_count} 项模型输出，其中 {memory_count} 条可进入记忆宫殿"
+            elif raw_count > 0:
+                message = f"模型返回了 {raw_count} 项，但没有可进入记忆宫殿的记忆；通常是项目不是对象或缺少 content 字段"
+            else:
+                message = "模型没有返回可解析的 JSON 数组，或返回了空数组 []"
+            return {
+                "status": "ok",
+                "preview": True,
+                "extracted": raw_count,
+                "raw_count": raw_count,
+                "memory_count": memory_count,
+                "unpin_count": len(unpin_ids),
+                "created": 0,
+                "embedded": 0,
+                "message": message,
+                "memories": normalized,
+                "nodes": normalized,
+            }
         return await extract_memories_from_text_for_palace(text=text, character_id=character_id)
     except Exception as e:
         return {"status": "error", "error": str(e)}

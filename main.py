@@ -31,7 +31,7 @@ from fastapi.templating import Jinja2Templates
 from database import init_tables, close_pool, save_message, search_memories, save_memory, get_all_memories_count, get_recent_memories, get_all_memories, get_pool, get_all_memories_detail, update_memory, delete_memory, delete_memories_batch, get_gateway_config, set_gateway_config, get_all_gateway_config, get_conversation_messages, get_session_cache_state, save_session_cache_state, delete_session_cache_state, save_token_usage, ensure_token_usage_table, get_conversations_paginated, delete_conversation, batch_delete_conversations, merge_sessions_to_target, list_all_session_cache_states, export_all_conversations, import_conversations, get_last_user_content, update_last_assistant_message, db_row_to_message, backfill_memory_embeddings, get_pending_memory_embedding_count, search_conversations, update_message_content, rename_session_id, get_fragments_by_date, get_conversation_messages_by_date, get_fragments_by_date_range, create_event_memory, deactivate_memories, promote_to_core, merge_memories, check_duplicate_memory, update_memory_with_layer, get_layer_statistics, cleanup_old_fragments, revert_merge, upsert_daily_impression, get_daily_impression, list_daily_impressions
 from database import list_memory_palace_rooms, list_memory_palace_nodes, get_memory_palace_node, create_memory_palace_node, update_memory_palace_node, delete_memory_palace_node, clear_expired_memory_palace_pins
 import database as _db_module  # 用于 /api/settings 热更新 database.py 全局变量
-from memory_extractor import extract_memories, score_memories, get_extraction_prompt, set_extraction_prompt, _DEFAULT_EXTRACTION_PROMPT
+from memory_extractor import score_memories, get_extraction_prompt, set_extraction_prompt, _DEFAULT_EXTRACTION_PROMPT
 
 # ============================================================
 # 配置项 —— 全部从环境变量读取，部署时在云平台面板里设置
@@ -64,8 +64,6 @@ MEMORY_ENABLED = os.getenv("MEMORY_ENABLED", "false").lower() == "true"
 # 每次注入的最大记忆条数
 MAX_MEMORIES_INJECT = int(os.getenv("MAX_MEMORIES_INJECT", "15"))
 
-# 记忆提取间隔（0 = 禁用自动提取，1 = 每轮提取，N = 每 N 轮提取一次）
-MEMORY_EXTRACT_INTERVAL = int(os.getenv("MEMORY_EXTRACT_INTERVAL", "1"))
 
 # 记忆提取+注入总开关（false时数据库仍连接、消息仍存储，但不提取也不注入记忆）
 MEMORY_EXTRACT_ENABLED = os.getenv("MEMORY_EXTRACT_ENABLED", "true").lower() == "true"
@@ -289,7 +287,7 @@ async def lifespan(app: FastAPI):
                     _RESTORE_MAIN = {
                         "API_BASE_URL": str, "API_KEY": str, "DEFAULT_MODEL": str, "CHAT_TEMPERATURE": str,
                         "MEMORY_ENABLED": lambda v: _parse_bool(v),
-                        "MAX_MEMORIES_INJECT": int, "MEMORY_EXTRACT_INTERVAL": int,
+                        "MAX_MEMORIES_INJECT": int,
                         "CACHE_PARTITION_ENABLED": lambda v: _parse_bool(v),
                         "CACHE_PARTITION_X": int, "CACHE_PARTITION_TRIGGER": str,
                         "CACHE_PARTITION_WINDOW": int, "CACHE_SUMMARY_MODEL": str,
@@ -2465,140 +2463,10 @@ async def process_memories_background(session_id: str, user_msg: str, assistant_
                     await save_message(session_id, "user", clean_user_msg, model)
                     await save_message(session_id, "assistant", assistant_msg, model, metadata=assistant_meta)
         
-        # 2. 检查是否需要提取记忆
-        if not MEMORY_EXTRACT_ENABLED:
-            add_dashboard_log("skip", "⏭️  记忆提取已关闭（MEMORY_EXTRACT_ENABLED=false）", session_id=session_id)
-            return
-        
-        if MEMORY_EXTRACT_INTERVAL == 0:
-            add_dashboard_log("skip", "⏭️  记忆自动提取已禁用，跳过", session_id=session_id)
-            return
-        
-        # 使用“书签”判断提取范围：上次提到第几轮，本次从下一轮继续。
-        # 书签存在 gateway_config，不改 conversations 表，也不影响分区压缩。
-        cursor_key = f"memory_extract_cursor:{session_id}"
-        try:
-            pool = await get_pool()
-            async with pool.acquire() as conn:
-                user_round_count = await conn.fetchval(
-                    "SELECT COUNT(*) FROM conversations WHERE session_id = $1 AND role = 'user'",
-                    session_id
-                )
-                session_memory_count = await conn.fetchval(
-                    "SELECT COUNT(*) FROM memories WHERE source_session = $1",
-                    session_id
-                )
-            last_extracted_round = int(await get_gateway_config(cursor_key, "0") or 0)
-        except Exception as e:
-            add_dashboard_log("warn", f"⚠️ 读取记忆提取书签失败，回退到进程计数: {e}", session_id=session_id)
-            _round_counter += 1
-            user_round_count = _round_counter
-            session_memory_count = 0
-            last_extracted_round = max(0, user_round_count - 1)
-
-        pending_rounds = max(0, user_round_count - last_extracted_round)
-        if pending_rounds < MEMORY_EXTRACT_INTERVAL:
-            add_dashboard_log("skip", f"⏭️ 书签在第 {last_extracted_round} 轮，当前第 {user_round_count} 轮，攒了 {pending_rounds}/{MEMORY_EXTRACT_INTERVAL} 轮，跳过", session_id=session_id)
-            return
-
-        extract_start_round = last_extracted_round + 1
-        extract_end_round = user_round_count
-        add_dashboard_log("run", f"📝 提取范围：第 {extract_start_round}-{extract_end_round} 轮（书签原在第 {last_extracted_round} 轮，已有本会话记忆 {session_memory_count} 条）", session_id=session_id)
-        
-        # 3. 获取已有记忆，传给提取模型做对比去重
-        existing = await get_recent_memories(limit=80)
-        existing_contents = [r["content"] for r in existing]
-        
-        # 4. 构建用于提取的消息列表
-        #    使用 conversations 表中已经保存的清洗后消息，和 Dashboard 对话记录同源。
-        #    注意：这里单独按轮次范围读取，不复用 get_conversation_messages()，避免影响分区压缩。
-        try:
-            pool = await get_pool()
-            async with pool.acquire() as conn:
-                rows = await conn.fetch(
-                    """
-                    WITH ordered AS (
-                        SELECT role, content, created_at, id,
-                               SUM(CASE WHEN role = 'user' THEN 1 ELSE 0 END)
-                               OVER (ORDER BY created_at ASC, id ASC) AS user_round
-                        FROM conversations
-                        WHERE session_id = $1 AND role IN ('user', 'assistant')
-                    )
-                    SELECT role, content
-                    FROM ordered
-                    WHERE user_round >= $2 AND user_round <= $3
-                    ORDER BY created_at ASC, id ASC
-                    """,
-                    session_id, extract_start_round, extract_end_round
-                )
-            messages_for_extraction = [
-                {"role": r["role"], "content": r["content"]}
-                for r in rows
-                if r["content"]
-            ]
-            add_dashboard_log("run", f"🧾 从数据库对话记录读取第 {extract_start_round}-{extract_end_round} 轮，共 {len(messages_for_extraction)} 条清洗后消息", session_id=session_id)
-        except Exception as e:
-            add_dashboard_log("warn", f"⚠️ 读取数据库对话记录失败，回退到当前轮提取: {e}", session_id=session_id)
-            messages_for_extraction = [
-                {"role": "user", "content": user_msg},
-                {"role": "assistant", "content": assistant_msg},
-            ]
-
-        if not messages_for_extraction:
-            add_dashboard_log("empty", "🫧 没有可用于记忆提取的对话记录", session_id=session_id)
-            return
-        
-        import memory_extractor as _me_mod
-        extractor_base = getattr(_me_mod, "MEMORY_API_BASE_URL", "")
-        extractor_model = getattr(_me_mod, "MEMORY_MODEL", "")
-        if not extractor_base:
-            add_dashboard_log("error", "⚠️ MEMORY_API_BASE_URL 为空，记忆提取没有发出请求", session_id=session_id)
-            return
-        add_dashboard_log("run", f"📡 请求记忆模型：{extractor_model} @ {extractor_base}", session_id=session_id)
-        new_memories = await extract_memories(messages_for_extraction, existing_memories=existing_contents)
-        
-        # 过滤垃圾记忆（不靠模型自觉，硬过滤）
-        META_BLACKLIST = [
-            "记忆库", "记忆系统", "检索", "没有被记录", "没有被提取",
-            "记忆遗漏", "尚未被记录", "写入不完整", "检索功能",
-            "系统没有返回", "关键词匹配", "语义匹配", "语义检索",
-            "阈值", "数据库", "seed", "导入", "部署",
-            "bug", "debug", "端口", "网关",
-        ]
-        
-        filtered_memories = []
-        for mem in new_memories:
-            content = mem["content"]
-            if any(kw in content for kw in META_BLACKLIST):
-                print(f"🚫 过滤掉meta记忆: {content[:60]}...")
-                continue
-            filtered_memories.append(mem)
-        
-        for mem in filtered_memories:
-            await save_memory(
-                content=mem["content"],
-                importance=mem["importance"],
-                source_session=session_id,
-            )
-        
-        extract_debug = getattr(_me_mod, "LAST_EXTRACTION_DEBUG", {}) or {}
-        extract_status = extract_debug.get("status")
-        if extract_status == "parsed":
-            await set_gateway_config(cursor_key, str(extract_end_round))
-            add_dashboard_log("success", f"🔖 记忆提取书签已移动到第 {extract_end_round} 轮", session_id=session_id)
-        else:
-            detail = extract_debug.get("message") or ""
-            raw_preview = extract_debug.get("raw_preview") or ""
-            suffix = f"：{detail}" if detail else ""
-            if raw_preview:
-                suffix += f"；返回片段：{raw_preview[:180]}"
-            add_dashboard_log("warn", f"⚠️ 记忆提取未确认成功，书签停在第 {last_extracted_round} 轮（状态: {extract_status}）{suffix}", session_id=session_id)
-
-        if filtered_memories:
-            total = await get_all_memories_count()
-            add_dashboard_log("success", f"💾 已保存 {len(filtered_memories)} 条新记忆（过滤了 {len(new_memories) - len(filtered_memories)} 条），总计 {total} 条", session_id=session_id)
-        else:
-            add_dashboard_log("empty", f"🫧 本轮未提取到新记忆（模型返回 {len(new_memories)} 条，过滤后 0 条）", session_id=session_id)
+        # 2. 旧碎片记忆自动提取已移除。
+        # 对话记录仍然保存；长期记忆由 Memory Palace 的手动预览导入
+        # 和分区轮转自动提取负责，避免旧 gateway_config 书签逻辑与新游标混淆。
+        return
             
     except Exception as e:
         add_dashboard_log("error", f"⚠️ 后台记忆处理失败: {e}", session_id=session_id if 'session_id' in locals() else "")
@@ -6213,7 +6081,6 @@ if __name__ == "__main__":
     print(f"🧠 记忆系统：{'开启' if MEMORY_ENABLED else '关闭'}")
     if MEMORY_ENABLED:
         print(f"📝 记忆提取+注入：{'开启' if MEMORY_EXTRACT_ENABLED else '关闭'}")
-    print(f"🔄 记忆提取间隔：{'禁用' if MEMORY_EXTRACT_INTERVAL == 0 else '每轮提取' if MEMORY_EXTRACT_INTERVAL == 1 else f'每 {MEMORY_EXTRACT_INTERVAL} 轮提取一次'}")
     if CACHE_PARTITION_ENABLED:
         print(f"🔒 分区缓存：开启 (X={CACHE_PARTITION_X}, session={PARTITION_SESSION_ID or '未设置'})")
     if FORCE_STREAM:

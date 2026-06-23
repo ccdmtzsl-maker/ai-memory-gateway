@@ -1830,7 +1830,7 @@ async def generate_summary(messages: list, session_id: str = "") -> str:
 
 
 async def extract_memory_palace_from_partition_messages(messages: list, session_id: str, character_id: str = "default") -> dict:
-    """把分区轮转出的A区消息自动提取入记忆宫殿，并标记已提取message_id。"""
+    """把缓存区外新挤出的消息自动提取入记忆宫殿，并推进session提取游标。"""
     if not MEMORY_ENABLED or not MEMORY_PALACE_ENABLED or not messages:
         return {"status": "skipped", "reason": "disabled_or_empty", "created": 0, "marked": 0}
     rows = []
@@ -1846,20 +1846,21 @@ async def extract_memory_palace_from_partition_messages(messages: list, session_
         if content:
             rows.append({"id": mid, "session_id": session_id, "role": msg.get("role"), "content": content, "created_at": msg.get("created_at")})
     if not rows:
+        log_memory_palace_auto_extract("info", f"🧠 分区自动提取跳过：A区没有可提取内容 session={session_id}", session_id=session_id)
         return {"status": "empty", "created": 0, "marked": 0}
     try:
-        message_ids = [int(r["id"]) for r in rows]
-        pool = await get_pool()
-        async with pool.acquire() as conn:
-            done = await conn.fetch("""
-                SELECT message_id FROM memory_palace_extracted_messages
-                WHERE character_id = $1 AND message_id = ANY($2::bigint[])
-            """, character_id, message_ids)
-        done_ids = {int(r["message_id"]) for r in done}
-        rows = [r for r in rows if int(r["id"]) not in done_ids]
-        message_ids = [int(r["id"]) for r in rows]
+        cursor = await get_memory_palace_extraction_cursor(session_id, character_id=character_id)
+        last_id = int(cursor.get("last_message_id") or 0)
+        tail_max_id = max(int(r["id"]) for r in rows)
+        if tail_max_id <= last_id:
+            log_memory_palace_auto_extract("info", f"🧠 分区自动提取等待：被挤出内容已在游标内 session={session_id}, cursor={last_id}, tail={tail_max_id}", session_id=session_id)
+            return {"status": "skipped", "reason": "cursor_caught_up", "created": 0, "marked": 0}
+        rows = [r for r in rows if int(r["id"]) > last_id]
         if not rows:
-            return {"status": "skipped", "reason": "already_extracted", "created": 0, "marked": 0}
+            log_memory_palace_auto_extract("info", f"🧠 分区自动提取等待：没有游标后的新消息 session={session_id}, cursor={last_id}", session_id=session_id)
+            return {"status": "skipped", "reason": "no_new_after_cursor", "created": 0, "marked": 0}
+        message_ids = [int(r["id"]) for r in rows]
+        log_memory_palace_auto_extract("run", f"🧠 分区自动提取开始：session={session_id}, cursor={last_id}, 待处理{len(rows)}条", session_id=session_id)
         messages_text = _format_messages_for_memory_palace(rows)
         raw_items, unpin_ids = await call_memory_palace_extractor(messages_text, character_id=character_id)
         normalized = [_normalize_memory_palace_item(x) for x in raw_items]
@@ -1873,27 +1874,29 @@ async def extract_memory_palace_from_partition_messages(messages: list, session_
             try:
                 await build_memory_palace_links_for_node(node)
             except Exception as e:
-                print(f"⚠️ 分区自动提取记忆关联失败 {node_id}: {e}")
+                log_memory_palace_auto_extract("error", f"⚠️ 分区自动提取记忆关联失败 {node_id}: {e}", session_id=session_id)
             try:
                 if await save_memory_palace_embedding(node_id, item["content"]):
                     embedded_count += 1
                     node["embedded"] = True
             except Exception as e:
-                print(f"⚠️ 分区自动提取 embedding 失败 {node_id}: {e}")
+                log_memory_palace_auto_extract("error", f"⚠️ 分区自动提取 embedding 失败 {node_id}: {e}", session_id=session_id)
             created.append(node)
         unpinned_count = 0
         if unpin_ids:
             try:
                 unpinned_count = await clear_memory_palace_pins_by_ids(list(dict.fromkeys(unpin_ids)), character_id=character_id)
             except Exception as e:
-                print(f"⚠️ 分区自动提取摘除便利贴失败: {e}")
+                log_memory_palace_auto_extract("error", f"⚠️ 分区自动提取摘除便利贴失败: {e}", session_id=session_id)
         marked_count = 0
+        max_message_id = max(message_ids)
         if created or unpinned_count:
             marked_count = await mark_memory_palace_messages_extracted(message_ids, session_id, character_id=character_id, source="partition_auto")
-        print(f"🧠 分区自动提取完成: session={session_id}, messages={len(rows)}, memories={len(created)}, unpin={unpinned_count}, marked={marked_count}")
-        return {"status": "ok", "processed_messages": len(rows), "extracted": len(raw_items), "created": len(created), "embedded": embedded_count, "unpinned": unpinned_count, "marked": marked_count}
+            await save_memory_palace_extraction_cursor(session_id, max_message_id, character_id=character_id, last_source="partition_auto")
+        log_memory_palace_auto_extract("success", f"🧠 分区自动提取完成：session={session_id}, 消息{len(rows)}条, 记忆{len(created)}条, unpin={unpinned_count}, 标记{marked_count}条, cursor->{max_message_id}", session_id=session_id)
+        return {"status": "ok", "processed_messages": len(rows), "extracted": len(raw_items), "created": len(created), "embedded": embedded_count, "unpinned": unpinned_count, "marked": marked_count, "cursor": max_message_id}
     except Exception as e:
-        print(f"⚠️ 分区自动提取失败: session={session_id}, error={e}")
+        log_memory_palace_auto_extract("error", f"⚠️ 分区自动提取失败：session={session_id}, error={e}", session_id=session_id)
         return {"status": "error", "error": str(e), "created": 0, "marked": 0}
 
 
@@ -4959,19 +4962,18 @@ async def preview_memory_palace_extraction_for_session(session_id: str, characte
     limit = max(1, min(int(limit or 200), 500))
     pool = await get_pool()
     async with pool.acquire() as conn:
+        cursor = await get_memory_palace_extraction_cursor(session_id, character_id=character_id)
+        last_id = int(cursor.get("last_message_id") or 0)
         rows = await conn.fetch("""
             SELECT c.id, c.session_id, c.role, c.content, c.created_at
             FROM conversations c
             WHERE c.session_id = $1 AND c.content IS NOT NULL AND c.content <> ''
-              AND NOT EXISTS (
-                SELECT 1 FROM memory_palace_extracted_messages em
-                WHERE em.character_id = $3 AND em.message_id = c.id
-              )
+              AND c.id > $3
             ORDER BY c.created_at ASC, c.id ASC
             LIMIT $2
-        """, session_id, limit, character_id)
+        """, session_id, limit, last_id)
     if not rows:
-        return {"session_id": session_id, "status": "empty", "message": "没有可提取的对话", "items": []}
+        return {"session_id": session_id, "status": "empty", "message": "没有游标后的可提取对话", "cursor": last_id, "items": []}
     source_message_ids = [int(r["id"]) for r in rows]
     messages_text = _format_messages_for_memory_palace(rows)
     pinned_refs = await get_active_memory_palace_pin_refs(character_id)
@@ -4981,7 +4983,7 @@ async def preview_memory_palace_extraction_for_session(session_id: str, characte
     items = [_serialize_memory_palace_preview_item(item, session_id=session_id, source_message_ids=source_message_ids) for item in normalized]
     for unpin_id in unpin_ids:
         items.append(_serialize_memory_palace_unpin_preview(unpin_id, pinned_refs, session_id=session_id, source_message_ids=source_message_ids))
-    return {"session_id": session_id, "status": "ok", "message_count": len(rows), "source_message_ids": source_message_ids, "raw_count": len(raw_items), "memory_count": len(normalized), "unpin_count": len(unpin_ids), "items": items}
+    return {"session_id": session_id, "status": "ok", "cursor": last_id, "message_count": len(rows), "source_message_ids": source_message_ids, "raw_count": len(raw_items), "memory_count": len(normalized), "unpin_count": len(unpin_ids), "items": items}
 
 
 async def import_memory_palace_preview_items(items: list, character_id: str = "default") -> dict:
@@ -5024,6 +5026,8 @@ async def import_memory_palace_preview_items(items: list, character_id: str = "d
     for sid, mids in collect_memory_palace_source_message_ids(items).items():
         try:
             marked_count += await mark_memory_palace_messages_extracted(mids, sid, character_id=character_id, source="manual_preview")
+            if mids and (created or unpinned_count):
+                await save_memory_palace_extraction_cursor(sid, max(mids), character_id=character_id, last_source="manual_preview")
         except Exception as e:
             print(f"⚠️ 记忆宫殿预览导入标记已提取失败 session={sid}: {e}")
     return {"status": "ok", "created": len(created), "embedded": embedded_count, "unpinned": unpinned_count, "marked": marked_count, "nodes": created}

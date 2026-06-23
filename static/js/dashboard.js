@@ -2477,13 +2477,18 @@ async function doExtractToMemoryPalaceFromChat() {
             return;
         }
         _extractedMemories = data.memories || data.nodes || [];
+        const rawCount = data.raw_count ?? data.extracted ?? 0;
+        const memoryCount = data.memory_count ?? _extractedMemories.length;
         if (_extractedMemories.length === 0) {
-            showImportResult('info', '未从聊天记录中提取到可进入记忆宫殿的记忆');
+            const detail = data.message || (rawCount > 0
+                ? ('模型返回了 ' + rawCount + ' 项，但没有项目符合记忆宫殿格式或包含 content 字段')
+                : '模型没有返回可解析的记忆数组，或返回了空数组 []');
+            showImportResult('info', detail);
             return;
         }
         renderExtractedMemories();
         document.getElementById('chat-extract-result').style.display = 'block';
-        showImportResult('success', '✅ 已生成记忆宫殿预览：模型输出 ' + (data.extracted || 0) + ' 条，请勾选后确认导入到宫殿');
+        showImportResult('success', '✅ 已生成记忆宫殿预览：模型输出 ' + rawCount + ' 项，可导入 ' + memoryCount + ' 条，请勾选后确认导入到宫殿');
     } catch (e) {
         showImportResult('error', '❌ 记忆宫殿提取请求失败: ' + e.message);
     } finally {

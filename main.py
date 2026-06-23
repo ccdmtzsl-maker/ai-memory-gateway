@@ -1045,7 +1045,7 @@ async def format_memory_palace_for_prompt(limit: int = 5, room: str = None, quer
     lines = [
         "### 记忆宫殿",
         "",
-        "以下是澈脑海中浮现的相关记忆，它们可能影响澈此刻的感受、判断和回应。",
+        "以下是你脑海中浮现的相关记忆，它们可能影响你此刻的感受、判断和回应。",
     ]
     if pinned_count > 0:
         lines.append("")
@@ -1064,6 +1064,8 @@ async def format_memory_palace_for_prompt(limit: int = 5, room: str = None, quer
         if not room_rows:
             continue
         label = _MEMORY_PALACE_ROOM_LABELS.get(room_id, room_id)
+        if room_id == "user_room":
+            label = f"{await get_runtime_user_nickname()}房间"
         desc = _MEMORY_PALACE_ROOM_DESCRIPTIONS.get(room_id, "")
         lines.append("")
         lines.append(f"**[{label} · {desc}]**")

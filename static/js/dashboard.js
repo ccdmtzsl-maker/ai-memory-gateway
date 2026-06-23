@@ -1,4 +1,16 @@
 console.log('[MP Preview] dashboard.js loaded v2.5');
+
+function mpPreviewDashLog(message, level) {
+    try {
+        console.log('[MP Preview]', message);
+        fetch('/api/dashboard/client-log', {
+            method: 'POST',
+            headers: {'Content-Type':'application/json'},
+            body: JSON.stringify({level: level || 'run', category: 'mp-preview', message: String(message || '')})
+        }).catch(() => {});
+    } catch(e) {}
+}
+mpPreviewDashLog('dashboard.js loaded v2.6');
 /**
  * AI Memory Gateway - Dashboard JavaScript
  * 整合记忆管理、导入、导出功能
@@ -1248,7 +1260,7 @@ function renderConvList(conversations, isSearch = false) {
         <span id="conv-selected-count" style="color: var(--text-muted); font-size: 12px; display: none;"></span>
     </div>`;
     
-    console.log('[MP Preview] renderConvList', {count: conversations.length, hasBtn: html.indexOf('conv-batch-mp-btn') >= 0});
+    mpPreviewDashLog('renderConvList count=' + conversations.length + ' hasBtn=' + (html.indexOf('conv-batch-mp-btn') >= 0));
     for (const conv of conversations) {
         const sid = conv.session_id || conv.id;
         const title = escapeHtml(sid);
@@ -1527,7 +1539,7 @@ function updateConvSelectionCount() {
     const allCb = document.getElementById('conv-select-all');
     const allCheckboxes = document.querySelectorAll('.conv-checkbox');
     
-    console.log('[MP Preview] update selection', {checked: checked.length, mpBtn: !!mpBtn, mpDisplay: mpBtn ? mpBtn.style.display : null});
+    mpPreviewDashLog('update selection checked=' + checked.length + ' mpBtn=' + (!!mpBtn) + ' display=' + (mpBtn ? mpBtn.style.display : 'null'));
     if (checked.length > 0) {
         countEl.style.display = '';
         countEl.textContent = `已选 ${checked.length} 个`;
@@ -1610,11 +1622,11 @@ async function batchMergeSessions() {
 
 let _convMemoryPalacePreviewItems = [];
 function convMpPanel(){let p=document.getElementById('conv-memory-preview-panel');if(!p){const c=document.getElementById('conv-list-container');p=document.createElement('div');p.id='conv-memory-preview-panel';p.className='card';p.style.marginTop='12px';p.style.display='none';c.parentNode.insertBefore(p,c.nextSibling);}return p;}
-async function previewMemoryPalaceFromSelectedConversations(){console.log('[MP Preview] button handler entered');const checked=document.querySelectorAll('.conv-checkbox:checked');console.log('[MP Preview] checked boxes', checked.length);if(!checked.length){console.warn('[MP Preview] no checked conversations');return;}const sessionIds=Array.from(checked).map(cb=>cb.value);const p=convMpPanel();p.style.display='';p.innerHTML='<div style="padding:12px;color:var(--text-muted);">🧠 正在逐个对话线提取记忆预览...</div>';try{const r=await fetch('/api/memory-palace/extract-preview-sessions',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({session_ids:sessionIds,character_id:'default',limit:300})});const d=await r.json();console.log('[MP Preview] preview API response', d);if(d.error||d.status==='error'){p.innerHTML='<div style="color:var(--error);padding:12px;">提取失败：'+escapeHtml(d.error||'未知错误')+'</div>';return;}renderConvMemoryPalacePreview(d.groups||[]);}catch(e){p.innerHTML='<div style="color:var(--error);padding:12px;">请求失败：'+escapeHtml(e.message)+'</div>';}}
+async function previewMemoryPalaceFromSelectedConversations(){mpPreviewDashLog('button handler entered');const checked=document.querySelectorAll('.conv-checkbox:checked');mpPreviewDashLog('checked boxes=' + checked.length);if(!checked.length){mpPreviewDashLog('no checked conversations', 'warn');return;}const sessionIds=Array.from(checked).map(cb=>cb.value);const p=convMpPanel();p.style.display='';p.innerHTML='<div style="padding:12px;color:var(--text-muted);">🧠 正在逐个对话线提取记忆预览...</div>';try{const r=await fetch('/api/memory-palace/extract-preview-sessions',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({session_ids:sessionIds,character_id:'default',limit:300})});const d=await r.json();mpPreviewDashLog('preview API response status=' + (d.status || '') + ' groups=' + ((d.groups || []).length) + ' error=' + (d.error || ''));if(d.error||d.status==='error'){p.innerHTML='<div style="color:var(--error);padding:12px;">提取失败：'+escapeHtml(d.error||'未知错误')+'</div>';return;}renderConvMemoryPalacePreview(d.groups||[]);}catch(e){p.innerHTML='<div style="color:var(--error);padding:12px;">请求失败：'+escapeHtml(e.message)+'</div>';}}
 function renderConvMemoryPalacePreview(groups){const p=convMpPanel();_convMemoryPalacePreviewItems=[];let html='<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;"><div><h4 style="margin:0;">记忆宫殿提取预览</h4><div style="font-size:12px;color:var(--text-muted);">逐个对话线处理；勾选后才会真正导入。</div></div><button class="btn btn-sm" onclick="closeConvMemoryPreview()">关闭</button></div>';let idx=0;for(const g of groups){html+='<div style="border-top:1px solid var(--border);padding-top:10px;margin-top:10px;"><b>【对话线：'+escapeHtml(g.session_id||'')+'】</b> ';if(g.status!=='ok'){html+='<span style="color:var(--error);font-size:13px;">'+escapeHtml(g.error||g.message||'没有结果')+'</span></div>';continue;}html+='<span style="font-size:12px;color:var(--text-muted);">'+(g.message_count||0)+' 条消息，'+(g.memory_count||0)+' 条记忆</span>';const items=g.items||[];if(!items.length){html+='<div style="color:var(--text-muted);font-size:13px;margin-top:8px;">没有提取出候选记忆。</div></div>';continue;}for(const item of items){const cur=idx++;_convMemoryPalacePreviewItems.push(item);if(item.type==='unpin'){html+='<label style="display:block;margin:8px 0;padding:10px;border:1px solid var(--border);border-radius:8px;background:rgba(250,204,21,.08);"><input type="checkbox" class="conv-mp-preview-check" value="'+cur+'" checked> <b>📌 摘除便利贴</b><div style="margin-top:6px;font-size:13px;">'+escapeHtml(item.content||'')+'</div></label>';}else{let meta='房间:'+(item.room||'')+'｜重要性:'+(item.importance||5)+'｜情绪:'+(item.mood||'neutral')+'｜日期:'+(item.date||'');if(item.pinned_until)meta+='｜📌便利贴';html+='<label style="display:block;margin:8px 0;padding:10px;border:1px solid var(--border);border-radius:8px;"><input type="checkbox" class="conv-mp-preview-check" value="'+cur+'" checked> <span style="color:var(--text-muted);font-size:12px;">'+escapeHtml(meta)+'</span><div style="margin-top:6px;white-space:pre-wrap;">'+escapeHtml(item.content||'')+'</div></label>';}}html+='</div>';}html+='<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px;"><button class="btn btn-sm" onclick="toggleConvMemoryPreviewChecks(false)">全不选</button><button class="btn btn-sm" onclick="toggleConvMemoryPreviewChecks(true)">全选</button><button class="btn btn-primary btn-sm" onclick="importSelectedConvMemoryPreview()">导入选中</button></div>';p.innerHTML=html;}
 function toggleConvMemoryPreviewChecks(v){document.querySelectorAll('.conv-mp-preview-check').forEach(cb=>cb.checked=v);}
 function closeConvMemoryPreview(){const p=document.getElementById('conv-memory-preview-panel');if(p)p.style.display='none';_convMemoryPalacePreviewItems=[];}
-async function importSelectedConvMemoryPreview(){const items=Array.from(document.querySelectorAll('.conv-mp-preview-check:checked')).map(cb=>_convMemoryPalacePreviewItems[parseInt(cb.value)]).filter(Boolean);if(!items.length){alert('请至少选择一项');return;}try{const r=await fetch('/api/memory-palace/import-preview',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({items:items,character_id:'default'})});const d=await r.json();console.log('[MP Preview] preview API response', d);if(d.error||d.status==='error'){alert('导入失败：'+(d.error||'未知错误'));return;}alert('已导入 '+(d.created||0)+' 条记忆'+((d.unpinned||0)?'，摘除便利贴 '+d.unpinned+' 条':''));closeConvMemoryPreview();}catch(e){alert('请求失败：'+e.message);}}
+async function importSelectedConvMemoryPreview(){const items=Array.from(document.querySelectorAll('.conv-mp-preview-check:checked')).map(cb=>_convMemoryPalacePreviewItems[parseInt(cb.value)]).filter(Boolean);if(!items.length){alert('请至少选择一项');return;}try{const r=await fetch('/api/memory-palace/import-preview',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({items:items,character_id:'default'})});const d=await r.json();mpPreviewDashLog('preview API response status=' + (d.status || '') + ' groups=' + ((d.groups || []).length) + ' error=' + (d.error || ''));if(d.error||d.status==='error'){alert('导入失败：'+(d.error||'未知错误'));return;}alert('已导入 '+(d.created||0)+' 条记忆'+((d.unpinned||0)?'，摘除便利贴 '+d.unpinned+' 条':''));closeConvMemoryPreview();}catch(e){alert('请求失败：'+e.message);}}
 
 // 工具函数
 function escapeHtml(str) {
@@ -2591,7 +2603,7 @@ try {
     window.toggleConvMemoryPreviewChecks = toggleConvMemoryPreviewChecks;
     window.closeConvMemoryPreview = closeConvMemoryPreview;
     window.importSelectedConvMemoryPreview = importSelectedConvMemoryPreview;
-    console.log('[MP Preview] global bindings installed');
+    mpPreviewDashLog('global bindings installed');
 } catch (e) {
     console.warn('Memory Palace preview handler binding failed:', e);
 }

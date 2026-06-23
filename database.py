@@ -543,6 +543,22 @@ async def init_tables():
             ON memory_palace_extracted_messages (extracted_at DESC);
         """)
 
+
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS memory_palace_extraction_cursor (
+                character_id TEXT NOT NULL DEFAULT 'default',
+                session_id TEXT NOT NULL,
+                last_message_id BIGINT DEFAULT 0,
+                last_source TEXT DEFAULT '',
+                updated_at TIMESTAMPTZ DEFAULT NOW(),
+                PRIMARY KEY (character_id, session_id)
+            );
+        """)
+        await conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_mp_extraction_cursor_updated
+            ON memory_palace_extraction_cursor (updated_at DESC);
+        """)
+
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS memory_palace_state (
                 character_id TEXT PRIMARY KEY DEFAULT 'default',

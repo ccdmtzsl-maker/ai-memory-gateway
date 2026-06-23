@@ -1780,7 +1780,7 @@ function renderThreadList(threads) {
     for (const t of threads) {
         const isActive = t.is_active;
         const tokens = t.chat_tokens > 0 ? (t.chat_tokens >= 1000 ? (t.chat_tokens / 1000).toFixed(1) + 'K' : t.chat_tokens) : '0';
-        const summaryPreview = t.summary ? (t.summary.substring(0, 80) + (t.summary.length > 80 ? '...' : '')) : '（无摘要）';
+        const summaryPreview = t.summary ? (t.summary.substring(0, 80) + (t.summary.length > 80 ? '...' : '')) : '（暂无分区摘要）';
         const updatedStr = t.updated_at ? formatConvTime(t.updated_at) : '';
         
         html += `
@@ -1792,7 +1792,7 @@ function renderThreadList(threads) {
                 </div>
                 <div style="display: flex; gap: 6px;">
                     <button class="btn btn-sm" onclick="renameThread('${t.session_id}')">改名</button>
-                    <button class="btn btn-sm" onclick="openSummaryModal('${t.session_id}')">摘要</button>
+                    <button class="btn btn-sm" onclick="openThreadMemoryModal('${t.session_id}')">记忆</button>
                     ${!isActive ? `<button class="btn btn-sm btn-primary" onclick="switchThread('${t.session_id}')">切换到此</button>` : ''}
                     ${!isActive ? `<button class="btn btn-sm" onclick="deleteThread('${t.session_id}', ${t.message_count || 0})" style="color: var(--error);">删除</button>` : ''}
                 </div>
@@ -1802,7 +1802,7 @@ function renderThreadList(threads) {
                 <div style="margin-top: 6px; display: flex; gap: 16px;">
                     <span>${t.message_count} 条消息</span>
                     <span>${tokens}</span>
-                    <span>摘要 ${t.summary_length} 字</span>
+                    <span>分区摘要 ${t.summary_length} 字</span>
                     ${updatedStr ? `<span>更新于 ${updatedStr}</span>` : ''}
                 </div>
             </div>
@@ -1944,6 +1944,8 @@ async function openSummaryModal(sessionId) {
 
 function closeSummaryModal() {
     document.getElementById('summaryModal').style.display = 'none';
+    const editor = document.getElementById('summary-editor');
+    if (editor) editor.readOnly = false;
     _summaryEditSid = '';
 }
 

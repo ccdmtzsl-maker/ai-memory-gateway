@@ -569,16 +569,16 @@
                 </div>
                 <div id="summaryModal" class="modal" style="display:none;">
                     <div class="modal-content" style="max-width: 700px;">
-                        <h3>编辑摘要 — <span id="summary-modal-sid"></span></h3>
+                        <h3 id="summary-modal-title">编辑摘要 — <span id="summary-modal-sid"></span></h3>
                         <div class="form-group">
                             <textarea id="summary-editor" class="textarea" rows="16" style="font-size: 14px; line-height: 1.6;"></textarea>
                         </div>
                         <div style="display: flex; justify-content: space-between; align-items: center;">
                             <span id="summary-char-count" style="color: var(--text-muted); font-size: 13px;"></span>
-                            <div style="display: flex; gap: 8px;">
-                                <button class="btn btn-danger" onclick="clearSummary()">清空摘要</button>
-                                <button class="btn btn-secondary" onclick="closeSummaryModal()">取消</button>
-                                <button class="btn btn-primary" onclick="saveSummary()">保存</button>
+                            <div class="modal-actions" style="display: flex; gap: 8px;">
+                                <button id="summary-clear-btn" class="btn btn-danger" onclick="clearSummary()">清空摘要</button>
+                                <button id="summary-close-btn" class="btn btn-secondary" onclick="closeSummaryModal()">关闭</button>
+                                <button id="summary-save-btn" class="btn btn-primary" onclick="saveSummary()">保存</button>
                             </div>
                         </div>
                     </div>
@@ -834,7 +834,7 @@
         </main>
     </div>
 
-    <script src="/static/js/dashboard.js?v=3.4"></script>
+    <script src="/static/js/dashboard.js?v=3.5"></script>
 <script src="/static/js/daily_impressions.js?v=1.4"></script>
 <script>
     // --- 模型预设管理（右上角切换面板） ---

@@ -1950,6 +1950,8 @@ async function openThreadMemoryModal(sessionId) {
     const editor = document.getElementById('summary-editor');
     const countEl = document.getElementById('summary-char-count');
     const modal = document.getElementById('summaryModal');
+    const saveBtn = document.querySelector('#summaryModal .modal-actions .btn.btn-primary');
+    const clearBtn = document.querySelector('#summaryModal .modal-actions .btn.btn-danger');
     if (sidEl) sidEl.textContent = '对话线记忆 — ' + sessionId;
     if (editor) {
         editor.value = '正在加载记忆宫殿内容...';
@@ -1957,6 +1959,8 @@ async function openThreadMemoryModal(sessionId) {
     }
     if (countEl) countEl.textContent = '';
     if (modal) modal.style.display = 'flex';
+    if (saveBtn) saveBtn.style.display = 'none';
+    if (clearBtn) clearBtn.style.display = 'none';
     try {
         const resp = await fetch('/api/memory-palace/session-nodes?session_id=' + encodeURIComponent(sessionId) + '&character_id=default&limit=100');
         const data = await resp.json();
@@ -1992,6 +1996,10 @@ function closeSummaryModal() {
     document.getElementById('summaryModal').style.display = 'none';
     const editor = document.getElementById('summary-editor');
     if (editor) editor.readOnly = false;
+    const saveBtn = document.querySelector('#summaryModal .modal-actions .btn.btn-primary');
+    const clearBtn = document.querySelector('#summaryModal .modal-actions .btn.btn-danger');
+    if (saveBtn) saveBtn.style.display = '';
+    if (clearBtn) clearBtn.style.display = '';
     _summaryEditSid = '';
 }
 

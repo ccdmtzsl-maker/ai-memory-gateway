@@ -1828,6 +1828,75 @@ async def generate_summary(messages: list, session_id: str = "") -> str:
         print(f"🧠 分区轮转跳过摘要生成: session={session_id}, messages={len(messages)}")
     return ""
 
+
+async def extract_memory_palace_from_partition_messages(messages: list, session_id: str, character_id: str = "default") -> dict:
+    """把分区轮转出的A区消息自动提取入记忆宫殿，并标记已提取message_id。"""
+    if not MEMORY_ENABLED or not MEMORY_PALACE_ENABLED or not messages:
+        return {"status": "skipped", "reason": "disabled_or_empty", "created": 0, "marked": 0}
+    rows = []
+    for msg in messages:
+        try:
+            mid = int(msg.get("id"))
+        except Exception:
+            continue
+        content = msg.get("content")
+        if isinstance(content, list):
+            content = "\n".join(str(x.get("text", "")) for x in content if isinstance(x, dict) and x.get("type") == "text")
+        content = str(content or "").strip()
+        if content:
+            rows.append({"id": mid, "session_id": session_id, "role": msg.get("role"), "content": content, "created_at": msg.get("created_at")})
+    if not rows:
+        return {"status": "empty", "created": 0, "marked": 0}
+    try:
+        message_ids = [int(r["id"]) for r in rows]
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            done = await conn.fetch("""
+                SELECT message_id FROM memory_palace_extracted_messages
+                WHERE character_id = $1 AND message_id = ANY($2::bigint[])
+            """, character_id, message_ids)
+        done_ids = {int(r["message_id"]) for r in done}
+        rows = [r for r in rows if int(r["id"]) not in done_ids]
+        message_ids = [int(r["id"]) for r in rows]
+        if not rows:
+            return {"status": "skipped", "reason": "already_extracted", "created": 0, "marked": 0}
+        messages_text = _format_messages_for_memory_palace(rows)
+        raw_items, unpin_ids = await call_memory_palace_extractor(messages_text, character_id=character_id)
+        normalized = [_normalize_memory_palace_item(x) for x in raw_items]
+        normalized = [x for x in normalized if x]
+        created = []
+        embedded_count = 0
+        for item in normalized:
+            node_id = f"mn_{int(datetime.now(timezone.utc).timestamp() * 1000)}_{uuid.uuid4().hex[:6]}"
+            metadata = json.dumps({"extract_source": "partition_auto", "source_session": session_id, "source_message_ids": message_ids, "source_date": item.get("date", "")}, ensure_ascii=False)
+            node = await create_memory_palace_node(node_id=node_id, content=item["content"], room=item["room"], tags=item["tags"], importance=item["importance"], mood=item["mood"], valence=item["valence"], arousal=item["arousal"], date=item.get("date") or None, character_id=character_id, session_id=session_id, origin="extraction", pinned_until=item.get("pinned_until"), metadata=metadata)
+            try:
+                await build_memory_palace_links_for_node(node)
+            except Exception as e:
+                print(f"⚠️ 分区自动提取记忆关联失败 {node_id}: {e}")
+            try:
+                if await save_memory_palace_embedding(node_id, item["content"]):
+                    embedded_count += 1
+                    node["embedded"] = True
+            except Exception as e:
+                print(f"⚠️ 分区自动提取 embedding 失败 {node_id}: {e}")
+            created.append(node)
+        unpinned_count = 0
+        if unpin_ids:
+            try:
+                unpinned_count = await clear_memory_palace_pins_by_ids(list(dict.fromkeys(unpin_ids)), character_id=character_id)
+            except Exception as e:
+                print(f"⚠️ 分区自动提取摘除便利贴失败: {e}")
+        marked_count = 0
+        if created or unpinned_count:
+            marked_count = await mark_memory_palace_messages_extracted(message_ids, session_id, character_id=character_id, source="partition_auto")
+        print(f"🧠 分区自动提取完成: session={session_id}, messages={len(rows)}, memories={len(created)}, unpin={unpinned_count}, marked={marked_count}")
+        return {"status": "ok", "processed_messages": len(rows), "extracted": len(raw_items), "created": len(created), "embedded": embedded_count, "unpinned": unpinned_count, "marked": marked_count}
+    except Exception as e:
+        print(f"⚠️ 分区自动提取失败: session={session_id}, error={e}")
+        return {"status": "error", "error": str(e), "created": 0, "marked": 0}
+
+
 def group_by_rounds(history: list) -> list:
     """
     按逻辑轮分组：每个user消息开始一轮，到下一个user前结束。
@@ -1965,6 +2034,7 @@ def _prepend_timestamp_to_user_messages(messages: list) -> list:
                                 block['text'] = f"{stamp}{text}"
                             break
                 last_date = local_dt.date()
+        m.pop('id', None)
         m.pop('created_at', None)
         stamped.append(m)
     return stamped
@@ -2027,7 +2097,7 @@ async def build_partitioned_messages(
         rotation_count += 1
         trigger_info = f"B区{b_rounds_count}轮 >= X={X}" if CACHE_PARTITION_TRIGGER != "time" else f"A区首条消息超出{CACHE_PARTITION_WINDOW}分钟窗口"
         print(f"🔄 轮转#{rotation_count}: session={session_id}, {trigger_info}")
-        await generate_summary(a_msgs, session_id)
+        await extract_memory_palace_from_partition_messages(a_msgs, session_id)
         
         a_start_round += X
         a_end_round = a_start_round + X
@@ -2056,7 +2126,7 @@ async def build_partitioned_messages(
     for msg in a_msgs:
         if msg.get('role') == 'tool':
             continue
-        m = {k: v for k, v in msg.items() if k not in ('created_at', 'tool_calls')}
+        m = {k: v for k, v in msg.items() if k not in ('id', 'created_at', 'tool_calls')}
         if m.get('role') == 'assistant' and not (m.get('content') or '').strip():
             continue
         cleaned_a.append(m)
@@ -2666,6 +2736,7 @@ async def chat_completions(request: Request):
             for m in (db_history or []):
                 msg = db_row_to_message(m)
                 msg['created_at'] = m.get('created_at')  # 保留时间戳供分区时间窗口判断
+                msg['id'] = m.get('id')
                 db_msgs.append(msg)
         except Exception as e:
             print(f"[warning] 分区模式读取历史失败: {e}")
@@ -2954,6 +3025,7 @@ async def chat_completions(request: Request):
                     for m in (db_history or []):
                         msg = db_row_to_message(m)
                         msg['created_at'] = m.get('created_at')
+                        msg['id'] = m.get('id')
                         db_msgs.append(msg)
                     client_new_msgs = [m for m in client_new_msgs if m.get("role") != "tool"]
                 except Exception as e:

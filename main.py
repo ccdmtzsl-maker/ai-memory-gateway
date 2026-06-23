@@ -4764,16 +4764,21 @@ async def api_memory_palace_extract_preview_sessions(request: Request):
             return {"status": "error", "error": "请先选择对话"}
         character_id = data.get("character_id") or "default"
         limit = int(data.get("limit", 200))
+        add_dashboard_log("run", f"🧠 记忆宫殿预览请求：{len(session_ids)} 个对话，limit={limit}", category="mp-preview")
         groups = []
         for idx, sid in enumerate(session_ids):
             try:
+                add_dashboard_log("run", f"🧠 开始提取预览：session={sid}", category="mp-preview", session_id=sid)
                 group = await preview_memory_palace_extraction_for_session(sid, character_id=character_id, limit=limit)
                 group["group_index"] = idx
                 for item in group.get("items", []):
                     item["group_index"] = idx
                 groups.append(group)
+                add_dashboard_log("success", f"🧠 预览完成：session={sid} status={group.get('status')} memories={group.get('memory_count', 0)} unpin={group.get('unpin_count', 0)}", category="mp-preview", session_id=sid)
             except Exception as e:
+                add_dashboard_log("error", f"🧠 预览失败：session={sid} error={e}", category="mp-preview", session_id=sid)
                 groups.append({"session_id": sid, "group_index": idx, "status": "error", "error": str(e), "items": []})
+        add_dashboard_log("success", f"🧠 记忆宫殿预览请求结束：返回 {len(groups)} 组", category="mp-preview")
         return {"status": "ok", "groups": groups}
     except Exception as e:
         return {"status": "error", "error": str(e)}

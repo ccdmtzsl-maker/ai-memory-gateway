@@ -4223,6 +4223,52 @@ async def api_memory_palace_nodes(
     return {"nodes": nodes}
 
 
+
+
+@app.get("/api/memory-palace/session-nodes")
+async def api_memory_palace_session_nodes(session_id: str, character_id: str = "default", limit: int = 100):
+    if not MEMORY_ENABLED:
+        return {"error": "记忆系统未启用"}
+    session_id = str(session_id or "").strip()
+    if not session_id:
+        return {"error": "session_id 不能为空"}
+    limit = max(1, min(int(limit or 100), 300))
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT id, content, room, tags, importance, mood, valence, arousal,
+                       date, created_at, updated_at, pinned_until, session_id, metadata
+                FROM memory_palace_nodes
+                WHERE character_id = $1
+                  AND archived = FALSE
+                  AND (
+                    session_id = $2
+                    OR COALESCE(metadata::jsonb ->> 'source_session', '') = $2
+                  )
+                ORDER BY COALESCE(date, created_at::date) DESC, created_at DESC
+                LIMIT $3
+            """, character_id, session_id, limit)
+        nodes = []
+        for r in rows:
+            item = dict(r)
+            for key in ("date", "created_at", "updated_at", "pinned_until"):
+                if item.get(key):
+                    try:
+                        item[key] = item[key].isoformat()
+                    except Exception:
+                        item[key] = str(item[key])
+            if item.get("metadata"):
+                try:
+                    item["metadata"] = json.loads(item["metadata"])
+                except Exception:
+                    pass
+            nodes.append(item)
+        return {"status": "ok", "session_id": session_id, "count": len(nodes), "nodes": nodes}
+    except Exception as e:
+        return {"status": "error", "error": str(e), "nodes": []}
+
+
 @app.get("/api/memory-palace/nodes/{node_id}")
 async def api_memory_palace_get_node(node_id: str):
     if not MEMORY_ENABLED:

@@ -1355,10 +1355,10 @@ async def get_conversation_messages(session_id: str, limit: int = 100):
     pool = await get_pool()
     async with pool.acquire() as conn:
         rows = await conn.fetch("""
-            SELECT role, content, metadata, created_at
+            SELECT id, role, content, metadata, created_at
             FROM conversations
             WHERE session_id = $1
-            ORDER BY created_at ASC
+            ORDER BY created_at ASC, id ASC
             LIMIT $2
         """, session_id, limit)
         return [dict(r) for r in rows]

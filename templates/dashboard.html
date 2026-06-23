@@ -323,7 +323,6 @@
                             <textarea id="chatInput" class="textarea" rows="10" placeholder="粘贴聊天记录，支持格式：&#10;用户: 今天去了公园&#10;助手: 听起来很开心！&#10;用户: 是的，还遇到了一只柯基&#10;&#10;也可以直接粘贴纯文本，会全部当作用户发言"></textarea>
                         </div>
                         <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;">
-                            <button class="btn btn-primary btn-lg" onclick="doExtractFromChat()" id="btn-extract-chat">开始提取</button>
                             <button class="btn btn-secondary btn-lg" onclick="doExtractToMemoryPalaceFromChat()" id="btn-extract-chat-palace">提取到记忆宫殿</button>
                         </div>
                         <div id="chat-extract-result" style="margin-top:16px;display:none;">
@@ -820,21 +819,6 @@
                     </div>
                 </div>
 
-                <!-- 记忆提取提示词 -->
-                <div class="card settings-card">
-                    <h3 class="settings-group-title">记忆提取提示词</h3>
-                    <div class="settings-field">
-                        <textarea id="set-extractionPrompt" class="textarea" rows="14" placeholder="留空则使用默认提取提示词"></textarea>
-                        <small class="form-hint" id="extraction-prompt-char-count"></small>
-                        <small class="form-hint">提示词中必须保留 {existing_memories} 占位符。留空恢复默认。</small>
-                    </div>
-
-        <div class="settings-group">
-          <h3 class="settings-group-title">碎片整理提示词</h3>
-          <p style="font-size:12px;color:#888;margin:4px 0 8px;">碎片记忆整理成事件时使用的提示词。需包含 {fragments} 占位符。留空使用默认。</p>
-          <textarea id="set-consolidationPrompt" class="textarea" rows="14" placeholder="留空则使用默认提示词"></textarea>
-        </div>
-
         <div class="settings-group">
           <h3 class="settings-group-title">日印象提示词</h3>
           <p style="font-size:12px;color:#888;margin:4px 0 8px;">根据当天对话历史生成日印象时使用。需包含 {conversation} 占位符；兼容旧 {fragments} 占位符。留空使用默认。</p>
@@ -850,7 +834,7 @@
         </main>
     </div>
 
-    <script src="/static/js/dashboard.js?v=3.1"></script>
+    <script src="/static/js/dashboard.js?v=3.2"></script>
 <script src="/static/js/daily_impressions.js?v=1.4"></script>
 <script>
     // --- 模型预设管理（右上角切换面板） ---

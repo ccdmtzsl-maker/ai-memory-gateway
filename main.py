@@ -4428,8 +4428,77 @@ def _normalize_memory_palace_item(item: dict) -> dict:
     }
 
 
-async def build_memory_palace_extraction_prompt(messages_text: str) -> str:
+async def get_active_memory_palace_pin_refs(character_id: str = "default", limit: int = 20) -> list:
+    """返回当前未过期便利贴引用，供提取模型判断是否需要主动摘除。"""
+    await clear_expired_memory_palace_pins(character_id)
+    rows = await _memory_palace_fetch_rows(room=None, character_id=character_id)
+    now = datetime.now(timezone.utc)
+    pinned = []
+    for row in rows:
+        pu = _memory_palace_aware_dt(row.get("pinned_until"))
+        if pu and pu > now:
+            content = str(row.get("content") or "").strip().replace("\n", " ")
+            pinned.append({
+                "id": row["id"],
+                "content": content[:120],
+                "pinned_until": pu,
+            })
+    pinned.sort(key=lambda x: x.get("pinned_until") or now)
+    return pinned[:max(0, min(int(limit or 20), 50))]
+
+
+def parse_memory_palace_unpin_ids(raw_items: list, pinned_refs: list) -> list:
+    """解析模型输出的 {"unpin": "P0"}，映射为真实 memory id。"""
+    if not raw_items or not pinned_refs:
+        return []
+    result = []
+    seen = set()
+    for item in raw_items:
+        if not isinstance(item, dict):
+            continue
+        raw = item.get("unpin")
+        if not isinstance(raw, str):
+            continue
+        m = re.match(r"^\s*P(\d+)\s*$", raw, flags=re.I)
+        if not m:
+            continue
+        idx = int(m.group(1))
+        if 0 <= idx < len(pinned_refs):
+            node_id = pinned_refs[idx]["id"]
+            if node_id not in seen:
+                seen.add(node_id)
+                result.append(node_id)
+    return result
+
+
+async def clear_memory_palace_pins_by_ids(node_ids: list, character_id: str = "default") -> int:
+    """主动摘除便利贴：只清空 pinned_until，保留记忆本体。"""
+    ids = [str(x) for x in (node_ids or []) if str(x or "").strip()]
+    if not ids:
+        return 0
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            UPDATE memory_palace_nodes
+            SET pinned_until = NULL, updated_at = NOW()
+            WHERE id = ANY($1::text[])
+              AND character_id = $2
+              AND pinned_until IS NOT NULL
+            RETURNING id
+            """,
+            ids, character_id,
+        )
+    return len(rows)
+
+
+async def build_memory_palace_extraction_prompt(messages_text: str, pinned_refs: list = None) -> str:
     user_nickname = await get_runtime_user_nickname()
+    pinned_refs = pinned_refs or []
+    if pinned_refs:
+        pinned_block = "\n".join(f"P{i}. {p.get('content', '')}" for i, p in enumerate(pinned_refs))
+    else:
+        pinned_block = "无"
     return f"""你是澈的长期记忆整理器。请从下面的对话中提取值得长期保存的记忆宫殿 MemoryNode。
 
 规则：
@@ -4440,7 +4509,8 @@ async def build_memory_palace_extraction_prompt(messages_text: str) -> str:
 5. tags 必须是 2-5 个短标签。
 6. valence/arousal 是 -1 到 1 的数字。可选的 mood：neutral, happy, sad, angry, anxious, calm, excited, tender, nostalgic, confused, hopeful, hurt。
 7. 每条必须带 date，格式 YYYY-MM-DD。
-8. pinDays 是便利贴置顶天数，默认 0。只有有时效性、近期需要持续记住的信息才设为 1-365；0 表示不置顶。pinDays 从该条记忆的 date 当天开始计算，到期后系统会自动摘掉便利贴但保留记忆本体。适用：这周出差、后天考试、这几天提醒喝水、临时身体状态、短期约定。长期事实、已过去事件、普通情感记忆不要置顶。
+8. pinDays 是便利贴置顶天数，默认 0。只有有时效性、近期需要持续记住的信息才设为 1-365；0 表示这条新记忆不置顶。pinDays 从该条记忆的 date 当天开始计算，到期后系统会自动摘掉便利贴但保留记忆本体。适用：这周出差、后天考试、这几天提醒喝水、临时身体状态、短期约定。长期事实、已过去事件、普通情感记忆不要置顶。
+9. 便利贴摘除（unpin，可选）：下面“当前便利贴”列出正在生效的便利贴。如果对话中明确提到某条便利贴描述的状态已经结束，例如“感冒好了”“提前回来了”“考试考完了”“不用再提醒了”，在输出 JSON 数组末尾额外加一条 {{"unpin": "P0"}} 来摘除它。只在对话明确提及时才摘除，不要猜测。pinDays=0 只表示新记忆不置顶，不能用于摘除已有便利贴。
 
 房间分配：
 - living_room：纯日常琐事；天气、吃什么、随口吐槽。
@@ -4450,6 +4520,9 @@ async def build_memory_palace_extraction_prompt(messages_text: str) -> str:
 - self_room：我自身的成长、认同变化。
 - attic：未解决的矛盾、困惑、受到的伤害。
 - windowsill：我的期盼、我们的目标、对未来的憧憬。
+
+当前便利贴（如果没有则为“无”；只有明确失效时才在输出末尾用 unpin 标注）：
+{pinned_block}
 
 只输出 JSON 数组，不要解释，不要 Markdown。格式：
 [
@@ -4463,6 +4536,9 @@ async def build_memory_palace_extraction_prompt(messages_text: str) -> str:
     "arousal": 0.5,
     "date": "2026-06-22",
     "pinDays": 0
+  }},
+  {{
+    "unpin": "P0"
   }}
 ]
 
@@ -4516,7 +4592,7 @@ def _format_messages_for_memory_palace(rows) -> str:
     return "\n".join(parts).strip()
 
 
-async def call_memory_palace_extractor(messages_text: str) -> list:
+async def call_memory_palace_extractor(messages_text: str, character_id: str = "default") -> tuple:
     base_url = await get_runtime_memory_api_base_url()
     if not base_url:
         raise RuntimeError("MEMORY_API_BASE_URL 未设置")
@@ -4524,7 +4600,8 @@ async def call_memory_palace_extractor(messages_text: str) -> list:
     if not memory_model:
         raise RuntimeError("MEMORY_MODEL 未设置")
     memory_api_key = await get_runtime_memory_api_key()
-    prompt = await build_memory_palace_extraction_prompt(messages_text)
+    pinned_refs = await get_active_memory_palace_pin_refs(character_id)
+    prompt = await build_memory_palace_extraction_prompt(messages_text, pinned_refs=pinned_refs)
     headers = {"Content-Type": "application/json"}
     if memory_api_key:
         headers["Authorization"] = f"Bearer {memory_api_key}"
@@ -4545,7 +4622,9 @@ async def call_memory_palace_extractor(messages_text: str) -> list:
         resp.raise_for_status()
         data = resp.json()
     text = data.get("choices", [{}])[0].get("message", {}).get("content", "")
-    return safe_parse_memory_palace_json_array(text)
+    raw_items = safe_parse_memory_palace_json_array(text)
+    unpin_ids = parse_memory_palace_unpin_ids(raw_items, pinned_refs)
+    return raw_items, unpin_ids
 
 
 async def save_memory_palace_embedding(memory_id: str, content: str) -> bool:
@@ -4568,7 +4647,7 @@ async def extract_memories_from_recent_conversations(limit: int = 50, session_id
     if not rows:
         return {"status": "ok", "message": "没有可处理的对话", "created": 0, "embedded": 0, "nodes": []}
     messages_text = _format_messages_for_memory_palace(rows)
-    raw_items = await call_memory_palace_extractor(messages_text)
+    raw_items, unpin_ids = await call_memory_palace_extractor(messages_text, character_id=character_id)
     normalized = [_normalize_memory_palace_item(x) for x in raw_items]
     normalized = [x for x in normalized if x]
     created = []
@@ -4609,6 +4688,13 @@ async def extract_memories_from_recent_conversations(limit: int = 50, session_id
         except Exception as e:
             print(f"⚠️ 记忆宫殿 embedding 入库失败 {node_id}: {e}")
         created.append(node)
+    unpinned_count = 0
+    try:
+        unpinned_count = await clear_memory_palace_pins_by_ids(unpin_ids, character_id=character_id)
+        if unpinned_count:
+            print(f"📌 记忆宫殿主动摘除便利贴 {unpinned_count} 条")
+    except Exception as e:
+        print(f"⚠️ 记忆宫殿主动摘除便利贴失败: {e}")
     try:
         max_id = max(int(r["id"]) for r in rows)
         pool = await get_pool()
@@ -4622,7 +4708,7 @@ async def extract_memories_from_recent_conversations(limit: int = 50, session_id
             """, character_id, max_id)
     except Exception as e:
         print(f"⚠️ 记忆宫殿 high water mark 更新失败: {e}")
-    return {"status": "ok", "processed_messages": len(rows), "extracted": len(raw_items), "created": len(created), "embedded": embedded_count, "nodes": created}
+    return {"status": "ok", "processed_messages": len(rows), "extracted": len(raw_items), "created": len(created), "embedded": embedded_count, "unpinned": unpinned_count, "nodes": created}
 
 
 @app.post("/api/memory-palace/extract-recent")
@@ -4648,7 +4734,7 @@ async def extract_memories_from_text_for_palace(text: str, character_id: str = "
         return {"status": "error", "error": "文本为空"}
     if len(text) > 20000:
         text = text[:20000] + "\n…（已截断）"
-    raw_items = await call_memory_palace_extractor(text)
+    raw_items, unpin_ids = await call_memory_palace_extractor(text, character_id=character_id)
     normalized = [_normalize_memory_palace_item(x) for x in raw_items]
     normalized = [x for x in normalized if x]
     created = []
@@ -4686,7 +4772,14 @@ async def extract_memories_from_text_for_palace(text: str, character_id: str = "
         except Exception as e:
             print(f"⚠️ 记忆宫殿文本提取 embedding 入库失败 {node_id}: {e}")
         created.append(node)
-    return {"status": "ok", "extracted": len(raw_items), "created": len(created), "embedded": embedded_count, "nodes": created}
+    unpinned_count = 0
+    try:
+        unpinned_count = await clear_memory_palace_pins_by_ids(unpin_ids, character_id=character_id)
+        if unpinned_count:
+            print(f"📌 记忆宫殿文本提取主动摘除便利贴 {unpinned_count} 条")
+    except Exception as e:
+        print(f"⚠️ 记忆宫殿文本提取主动摘除便利贴失败: {e}")
+    return {"status": "ok", "extracted": len(raw_items), "created": len(created), "embedded": embedded_count, "unpinned": unpinned_count, "nodes": created}
 
 
 @app.post("/api/memory-palace/extract-text")

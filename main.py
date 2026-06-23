@@ -358,7 +358,7 @@ async def lifespan(app: FastAPI):
                 elif PARTITION_SESSION_ID:
                     await set_gateway_config("partition_session_id", PARTITION_SESSION_ID)
                     print(f"🔗 活跃对话线(ENV→DB): {PARTITION_SESSION_ID}")
-                print(f"🔒 分区缓存已启用: X={CACHE_PARTITION_X}, 摘要模型=MEMORY_MODEL({os.getenv('MEMORY_MODEL', 'anthropic/claude-haiku-4')})")
+                print(f"🔒 分区缓存已启用: X={CACHE_PARTITION_X}, 摘要已架空")
         except Exception as e:
             print(f"⚠️  数据库初始化失败: {e}")
             print("⚠️  记忆系统将不可用，但网关仍可正常转发")
@@ -1823,75 +1823,10 @@ def extract_proxy_sender_context_from_text(text: str) -> tuple[str, str, str]:
 
 
 async def generate_summary(messages: list, session_id: str = "") -> str:
-    """调用轻量模型压缩A区消息为摘要"""
-    if not messages:
-        return ""
-    
-    conversation_text = ""
-    for msg in messages:
-        role_label = "用户" if msg['role'] == 'user' else "AI"
-        content = msg['content'] if isinstance(msg['content'], str) else str(msg['content'])
-        conversation_text += f"{role_label}: {content}\n\n"
-    
-    prompt = f"""请为分区缓存生成一段可长期承接上下文的滚动摘要。
-
-要求：
-- 保留用户明确说过的重要事实、偏好、计划、约定、情绪变化、项目进展和关键互动
-- 保留会影响后续对话理解的细节，不要只写一句泛泛总结
-- 去掉纯寒暄、重复内容和无意义语气词
-- 使用第三人称或中性叙述，避免加入模型没有看到的新信息
-- 如果内容较多，按要点分段；不要强行压缩到几十字
-- 目标长度约 600-1000 字，信息少时可以更短
-
----
-{conversation_text}
----
-
-滚动摘要："""
-    
-    try:
-        headers = {
-            "Authorization": f"Bearer {get_memory_api_key()}",
-            "Content-Type": "application/json",
-        }
-        memory_api_base_url = get_memory_api_base_url()
-        if not memory_api_base_url:
-            print("⚠️ 摘要生成跳过: MEMORY_API_BASE_URL 未设置（不会回退到主 API_BASE_URL）")
-            return ""
-
-        summary_model = os.getenv("MEMORY_MODEL", "anthropic/claude-haiku-4")
-
-        if "openrouter" in memory_api_base_url:
-            headers["HTTP-Referer"] = EXTRA_REFERER
-            headers["X-Title"] = EXTRA_TITLE
-
-        async with httpx.AsyncClient(timeout=60) as client:
-            response = await client.post(memory_api_base_url, headers=headers, json={
-                "model": summary_model,
-                "max_tokens": 9000,
-                "temperature": 0.2,
-                "messages": [{"role": "user", "content": prompt}],
-            })
-            if response.status_code == 200:
-                data = response.json()
-                if "choices" in data:
-                    choice = data["choices"][0]
-                    summary = choice["message"]["content"].strip()
-                    finish_reason = choice.get("finish_reason", "")
-                    if finish_reason:
-                        print(f"📝 摘要生成完成: {len(summary)}字 (压缩{len(messages)}条消息, finish_reason={finish_reason})")
-                    else:
-                        print(f"📝 摘要生成完成: {len(summary)}字 (压缩{len(messages)}条消息)")
-                    if finish_reason in ("length", "max_tokens"):
-                        print("⚠️ 摘要可能被上游截断：finish_reason=length/max_tokens")
-                    return summary
-
-        print(f"⚠️ 摘要生成失败: HTTP {response.status_code} {response.text[:500]}")
-        return ""
-    except Exception as e:
-        print(f"⚠️ 摘要生成异常: {e}")
-        return ""
-
+    """分区摘要已架空：轮转只推进A区，不再生成或注入滚动摘要。"""
+    if messages:
+        print(f"🧠 分区轮转跳过摘要生成: session={session_id}, messages={len(messages)}")
+    return ""
 
 def group_by_rounds(history: list) -> list:
     """
@@ -2092,10 +2027,7 @@ async def build_partitioned_messages(
         rotation_count += 1
         trigger_info = f"B区{b_rounds_count}轮 >= X={X}" if CACHE_PARTITION_TRIGGER != "time" else f"A区首条消息超出{CACHE_PARTITION_WINDOW}分钟窗口"
         print(f"🔄 轮转#{rotation_count}: session={session_id}, {trigger_info}")
-        
-        new_summary = await generate_summary(a_msgs, session_id)
-        if new_summary:
-            summary_parts.append(new_summary)
+        await generate_summary(a_msgs, session_id)
         
         a_start_round += X
         a_end_round = a_start_round + X
@@ -2107,8 +2039,7 @@ async def build_partitioned_messages(
     
     if rotation_count > 0:
         await save_session_cache_state(session_id, summary_parts, a_start_round)
-        summary_total = sum(len(p) for p in summary_parts)
-        print(f"🔄 轮转完成(共{rotation_count}次): 摘要{len(summary_parts)}段/{summary_total}字, A区{len(a_msgs)}条, B区{len(b_msgs)}条")
+        print(f"🔄 轮转完成(共{rotation_count}次): 摘要已架空, A区{len(a_msgs)}条, B区{len(b_msgs)}条")
     
     # 拼装messages
     result = []
@@ -2118,16 +2049,7 @@ async def build_partitioned_messages(
             "content": [{"type": "text", "text": base_prompt, "cache_control": {"type": "ephemeral"}}]
         })
     
-    # 摘要区（多block，尾部追加模式）
-    if summary_parts:
-        blocks = [{"type": "text", "text": "[以下是之前对话的摘要，帮助你回忆上下文]"}]
-        for i, part in enumerate(summary_parts):
-            item = {"type": "text", "text": part}
-            if i == len(summary_parts) - 1:
-                item["cache_control"] = {"type": "ephemeral"}
-            blocks.append(item)
-        result.append({"role": "user", "content": blocks})
-        result.append({"role": "assistant", "content": "好的，我已了解之前的对话内容。"})
+    # 摘要区已架空：不再把历史 summary_parts 注入上下文。
     
     # A区：剥离tool消息和tool_calls，只保留有文本的user/assistant（节省上下文）
     cleaned_a = []

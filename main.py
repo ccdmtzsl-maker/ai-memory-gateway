@@ -1830,7 +1830,9 @@ async def generate_summary(messages: list, session_id: str = "") -> str:
 async def extract_memory_palace_from_partition_messages(messages: list, session_id: str, character_id: str = "default") -> dict:
     """把缓存区外新挤出的消息自动提取入记忆宫殿，并推进session提取游标。"""
     if not MEMORY_ENABLED or not MEMORY_PALACE_ENABLED or not messages:
-        return {"status": "skipped", "reason": "disabled_or_empty", "created": 0, "marked": 0}
+        reason = "disabled_or_empty"
+        log_memory_palace_auto_extract("info", f"🧠 分区自动提取跳过：{reason} session={session_id}", session_id=session_id)
+        return {"status": "skipped", "reason": reason, "created": 0, "marked": 0}
     rows = []
     for msg in messages:
         try:
@@ -2084,6 +2086,13 @@ async def build_partitioned_messages(
     if total_rounds < X:
         return await _build_basic_cached(history, base_prompt, user_message, current_user_msg)
     
+    # 游标补提取：处理已经被 a_start_round 挤出缓存区的历史内容。
+    # 这覆盖“调整分区轮数/之前已轮转但自动提取尚未接入”的情况。
+    if a_start_round > 0:
+        evicted_round_groups = rounds[:min(a_start_round, total_rounds)]
+        evicted_msgs = [msg for rnd in evicted_round_groups for msg in rnd]
+        await extract_memory_palace_from_partition_messages(evicted_msgs, session_id)
+    
     # 计算A/B区（按逻辑轮切片）
     a_end_round = a_start_round + X
     a_round_groups = rounds[a_start_round : a_end_round]
@@ -2098,6 +2107,7 @@ async def build_partitioned_messages(
         rotation_count += 1
         trigger_info = f"B区{b_rounds_count}轮 >= X={X}" if CACHE_PARTITION_TRIGGER != "time" else f"A区首条消息超出{CACHE_PARTITION_WINDOW}分钟窗口"
         print(f"🔄 轮转#{rotation_count}: session={session_id}, {trigger_info}")
+        log_memory_palace_auto_extract("run", f"🧠 分区轮转触发自动提取：session={session_id}, {trigger_info}, A区{len(a_msgs)}条", session_id=session_id)
         await extract_memory_palace_from_partition_messages(a_msgs, session_id)
         
         a_start_round += X

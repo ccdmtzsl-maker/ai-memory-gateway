@@ -3471,6 +3471,24 @@ async def dashboard_page(request: Request):
 # 管理 API
 # ============================================================
 
+
+
+@app.post("/api/dashboard/client-log")
+async def api_dashboard_client_log(request: Request):
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    level = str(data.get("level") or "run")[:32]
+    message = str(data.get("message") or "")[:1000]
+    category = str(data.get("category") or "client")[:64]
+    session_id = str(data.get("session_id") or "")[:128]
+    if not message:
+        return {"status": "empty"}
+    add_dashboard_log(level, f"[前端] {message}", category=category, session_id=session_id)
+    return {"status": "ok"}
+
+
 @app.get("/api/dashboard/logs")
 async def api_dashboard_logs(limit: int = 80):
     """Dashboard 查看最近后台任务/记忆提取日志。"""

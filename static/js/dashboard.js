@@ -1243,6 +1243,7 @@ function renderConvList(conversations, isSearch = false) {
         </label>
         <button class="btn btn-sm" onclick="batchDeleteConversations()" id="conv-batch-delete-btn" style="display: none; font-size: 12px;">${ICONS.trash(13)} 批量删除</button>
         <button class="btn btn-sm" onclick="batchMergeSessions()" id="conv-batch-merge-btn" style="display: none; font-size: 12px;">${ICONS.gitMerge(13)} 合并到...</button>
+        <button class="btn btn-sm btn-primary" onclick="previewMemoryPalaceFromSelectedConversations()" id="conv-batch-mp-btn" style="display: none; font-size: 12px;">🧠 提取记忆</button>
         <span id="conv-selected-count" style="color: var(--text-muted); font-size: 12px; display: none;"></span>
     </div>`;
     
@@ -1520,6 +1521,7 @@ function updateConvSelectionCount() {
     const countEl = document.getElementById('conv-selected-count');
     const btnEl = document.getElementById('conv-batch-delete-btn');
     const mergeBtn = document.getElementById('conv-batch-merge-btn');
+    const mpBtn = document.getElementById('conv-batch-mp-btn');
     const allCb = document.getElementById('conv-select-all');
     const allCheckboxes = document.querySelectorAll('.conv-checkbox');
     
@@ -1528,10 +1530,12 @@ function updateConvSelectionCount() {
         countEl.textContent = `已选 ${checked.length} 个`;
         btnEl.style.display = '';
         if (mergeBtn) mergeBtn.style.display = '';
+        if (mpBtn) mpBtn.style.display = '';
     } else {
         countEl.style.display = 'none';
         btnEl.style.display = 'none';
         if (mergeBtn) mergeBtn.style.display = 'none';
+        if (mpBtn) mpBtn.style.display = 'none';
     }
     
     if (allCb) {

@@ -4496,11 +4496,12 @@ async def build_memory_palace_extraction_prompt(messages_text: str, pinned_refs:
     user_nickname = await get_runtime_user_nickname()
     pinned_refs = pinned_refs or []
     if pinned_refs:
-        pinned_block = "\n".join(f"P{i}. {p.get('content', '')}" for i, p in enumerate(pinned_refs))
+        pinned_lines = "\n".join(f"P{i}. {p.get('content', '')}" for i, p in enumerate(pinned_refs))
+        pinned_block = f"\n当前便利贴：\n{pinned_lines}\n"
         unpin_rule = '\n9. 便利贴摘除（unpin，可选）：上方“当前便利贴”列出正在生效的便利贴。如果对话中明确提到某条便利贴描述的状态已经结束，例如“感冒好了”“提前回来了”“考试考完了”“不用再提醒了”，在输出 JSON 数组末尾额外加一条 {"unpin": "P0"} 来摘除它。只在对话明确提及时才摘除，不要猜测。pinDays=0 只表示新记忆不置顶，不能用于摘除已有便利贴。'
         unpin_example = ',\n  {\n    "unpin": "P0"\n  }'
     else:
-        pinned_block = "无"
+        pinned_block = ""
         unpin_rule = ""
         unpin_example = ""
     return f"""你是澈的长期记忆整理器。请从下面的对话中提取值得长期保存的记忆宫殿 MemoryNode。
@@ -4524,9 +4525,7 @@ async def build_memory_palace_extraction_prompt(messages_text: str, pinned_refs:
 - attic：未解决的矛盾、困惑、受到的伤害。
 - windowsill：我的期盼、我们的目标、对未来的憧憬。
 
-当前便利贴（如果没有则为“无”；只有明确失效时才在输出末尾用 unpin 标注）：
 {pinned_block}
-
 只输出 JSON 数组，不要解释，不要 Markdown。格式：
 [
   {{

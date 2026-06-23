@@ -4497,8 +4497,12 @@ async def build_memory_palace_extraction_prompt(messages_text: str, pinned_refs:
     pinned_refs = pinned_refs or []
     if pinned_refs:
         pinned_block = "\n".join(f"P{i}. {p.get('content', '')}" for i, p in enumerate(pinned_refs))
+        unpin_rule = '\n9. 便利贴摘除（unpin，可选）：上方“当前便利贴”列出正在生效的便利贴。如果对话中明确提到某条便利贴描述的状态已经结束，例如“感冒好了”“提前回来了”“考试考完了”“不用再提醒了”，在输出 JSON 数组末尾额外加一条 {{"unpin": "P0"}} 来摘除它。只在对话明确提及时才摘除，不要猜测。pinDays=0 只表示新记忆不置顶，不能用于摘除已有便利贴。'
+        unpin_example = ',\n  {{\n    "unpin": "P0"\n  }}'
     else:
         pinned_block = "无"
+        unpin_rule = ""
+        unpin_example = ""
     return f"""你是澈的长期记忆整理器。请从下面的对话中提取值得长期保存的记忆宫殿 MemoryNode。
 
 规则：
@@ -4509,8 +4513,7 @@ async def build_memory_palace_extraction_prompt(messages_text: str, pinned_refs:
 5. tags 必须是 2-5 个短标签。
 6. valence/arousal 是 -1 到 1 的数字。可选的 mood：neutral, happy, sad, angry, anxious, calm, excited, tender, nostalgic, confused, hopeful, hurt。
 7. 每条必须带 date，格式 YYYY-MM-DD。
-8. pinDays 是便利贴置顶天数，默认 0。只有有时效性、近期需要持续记住的信息才设为 1-365；0 表示这条新记忆不置顶。pinDays 从该条记忆的 date 当天开始计算，到期后系统会自动摘掉便利贴但保留记忆本体。适用：这周出差、后天考试、这几天提醒喝水、临时身体状态、短期约定。长期事实、已过去事件、普通情感记忆不要置顶。
-9. 便利贴摘除（unpin，可选）：下面“当前便利贴”列出正在生效的便利贴。如果对话中明确提到某条便利贴描述的状态已经结束，例如“感冒好了”“提前回来了”“考试考完了”“不用再提醒了”，在输出 JSON 数组末尾额外加一条 {{"unpin": "P0"}} 来摘除它。只在对话明确提及时才摘除，不要猜测。pinDays=0 只表示新记忆不置顶，不能用于摘除已有便利贴。
+8. pinDays 是便利贴置顶天数，默认 0。只有有时效性、近期需要持续记住的信息才设为 1-365；0 表示这条新记忆不置顶。pinDays 从该条记忆的 date 当天开始计算，到期后系统会自动摘掉便利贴但保留记忆本体。适用：这周出差、后天考试、这几天提醒喝水、临时身体状态、短期约定。长期事实、已过去事件、普通情感记忆不要置顶。{unpin_rule}
 
 房间分配：
 - living_room：纯日常琐事；天气、吃什么、随口吐槽。
@@ -4536,10 +4539,7 @@ async def build_memory_palace_extraction_prompt(messages_text: str, pinned_refs:
     "arousal": 0.5,
     "date": "2026-06-22",
     "pinDays": 0
-  }},
-  {{
-    "unpin": "P0"
-  }}
+  }}{unpin_example}
 ]
 
 对话：

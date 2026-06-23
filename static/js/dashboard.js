@@ -2579,3 +2579,24 @@ async function doImportExtracted() {
 function escapeHtml(str) {
     return str.replace(/&/g,'&').replace(/</g,'<').replace(/>/g,'>').replace(/"/g,'"');
 }
+
+
+// Memory Palace conversation preview: robust global bindings and delegated click fallback.
+try {
+    window.previewMemoryPalaceFromSelectedConversations = previewMemoryPalaceFromSelectedConversations;
+    window.renderConvMemoryPalacePreview = renderConvMemoryPalacePreview;
+    window.toggleConvMemoryPreviewChecks = toggleConvMemoryPreviewChecks;
+    window.closeConvMemoryPreview = closeConvMemoryPreview;
+    window.importSelectedConvMemoryPreview = importSelectedConvMemoryPreview;
+    if (!window.__convMpPreviewClickBound) {
+        window.__convMpPreviewClickBound = true;
+        document.addEventListener('click', function(e) {
+            const btn = e.target && e.target.closest ? e.target.closest('#conv-batch-mp-btn') : null;
+            if (!btn) return;
+            e.preventDefault();
+            previewMemoryPalaceFromSelectedConversations();
+        });
+    }
+} catch (e) {
+    console.warn('Memory Palace preview handler binding failed:', e);
+}

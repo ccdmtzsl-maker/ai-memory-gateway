@@ -1,3 +1,4 @@
+console.log('[MP Preview] dashboard.js loaded v2.5');
 /**
  * AI Memory Gateway - Dashboard JavaScript
  * 整合记忆管理、导入、导出功能

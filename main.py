@@ -3473,22 +3473,6 @@ async def dashboard_page(request: Request):
 
 
 
-@app.post("/api/dashboard/client-log")
-async def api_dashboard_client_log(request: Request):
-    try:
-        data = await request.json()
-    except Exception:
-        data = {}
-    level = str(data.get("level") or "run")[:32]
-    message = str(data.get("message") or "")[:1000]
-    category = str(data.get("category") or "client")[:64]
-    session_id = str(data.get("session_id") or "")[:128]
-    if not message:
-        return {"status": "empty"}
-    add_dashboard_log(level, f"[前端] {message}", category=category, session_id=session_id)
-    return {"status": "ok"}
-
-
 @app.get("/api/dashboard/logs")
 async def api_dashboard_logs(limit: int = 80):
     """Dashboard 查看最近后台任务/记忆提取日志。"""
@@ -4512,6 +4496,8 @@ async def clear_memory_palace_pins_by_ids(node_ids: list, character_id: str = "d
 
 async def build_memory_palace_extraction_prompt(messages_text: str, pinned_refs: list = None) -> str:
     user_nickname = await get_runtime_user_nickname()
+    character_prompt = (await get_system_prompt()).strip()
+    context_block = f"\n## 你的人设（供参考，帮助你理解对话中的关系和角色定位）\n{character_prompt}\n" if character_prompt else ""
     pinned_refs = pinned_refs or []
     if pinned_refs:
         pinned_lines = "\n".join(f"P{i}. {p.get('content', '')}" for i, p in enumerate(pinned_refs))
@@ -4522,7 +4508,7 @@ async def build_memory_palace_extraction_prompt(messages_text: str, pinned_refs:
         pinned_block = ""
         unpin_rule = ""
         unpin_example = ""
-    return f"""你是澈。根据给定的对话内容，以你的第一人称视角（“我”）提取值得记住的记忆宫殿 MemoryNode。
+    return f"""你是澈。根据给定的对话内容，以你的第一人称视角（“我”）提取值得记住的记忆宫殿 MemoryNode。{context_block}
 
 ## 规则
 

@@ -4497,8 +4497,8 @@ async def build_memory_palace_extraction_prompt(messages_text: str, pinned_refs:
     pinned_refs = pinned_refs or []
     if pinned_refs:
         pinned_block = "\n".join(f"P{i}. {p.get('content', '')}" for i, p in enumerate(pinned_refs))
-        unpin_rule = '\n9. 便利贴摘除（unpin，可选）：上方“当前便利贴”列出正在生效的便利贴。如果对话中明确提到某条便利贴描述的状态已经结束，例如“感冒好了”“提前回来了”“考试考完了”“不用再提醒了”，在输出 JSON 数组末尾额外加一条 {{"unpin": "P0"}} 来摘除它。只在对话明确提及时才摘除，不要猜测。pinDays=0 只表示新记忆不置顶，不能用于摘除已有便利贴。'
-        unpin_example = ',\n  {{\n    "unpin": "P0"\n  }}'
+        unpin_rule = '\n9. 便利贴摘除（unpin，可选）：上方“当前便利贴”列出正在生效的便利贴。如果对话中明确提到某条便利贴描述的状态已经结束，例如“感冒好了”“提前回来了”“考试考完了”“不用再提醒了”，在输出 JSON 数组末尾额外加一条 {"unpin": "P0"} 来摘除它。只在对话明确提及时才摘除，不要猜测。pinDays=0 只表示新记忆不置顶，不能用于摘除已有便利贴。'
+        unpin_example = ',\n  {\n    "unpin": "P0"\n  }'
     else:
         pinned_block = "无"
         unpin_rule = ""

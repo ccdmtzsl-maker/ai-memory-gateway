@@ -967,7 +967,7 @@ async def _memory_palace_strengthen_coactivated(node_ids, character_id: str = "d
                 """, f"ml_{int(datetime.now(timezone.utc).timestamp() * 1000)}_{uuid.uuid4().hex[:6]}", character_id, source_id, target_id, _MEMORY_PALACE_CO_ACTIVATION_INCREMENT)
 
 
-async def retrieve_memory_palace_rows_for_prompt(query: str = "", limit: int = 5, room: str = None, character_id: str = "default", recent_messages=None):
+async def retrieve_memory_palace_rows_for_prompt(query: str = "", limit: int = 5, room: str = None, character_id: str = "default", recent_messages=None, touch_access: bool = True):
     limit = max(1, min(int(limit or 5), 30))
     await clear_expired_memory_palace_pins(character_id)
     rows = await _memory_palace_fetch_rows(room=room, character_id=character_id)
@@ -1024,7 +1024,7 @@ async def retrieve_memory_palace_rows_for_prompt(query: str = "", limit: int = 5
             pinned.append(item)
     pinned.sort(key=lambda x: x["pinned_until"] or now)
     final_rows = pinned + selected
-    if final_rows:
+    if touch_access and final_rows:
         try:
             pool = await get_pool()
             async with pool.acquire() as conn:
@@ -1038,8 +1038,8 @@ async def retrieve_memory_palace_rows_for_prompt(query: str = "", limit: int = 5
     return final_rows, len(pinned)
 
 
-async def format_memory_palace_for_prompt(limit: int = 5, room: str = None, query: str = "", character_id: str = "default", recent_messages=None) -> str:
-    rows, pinned_count = await retrieve_memory_palace_rows_for_prompt(query=query, limit=limit, room=room, character_id=character_id, recent_messages=recent_messages)
+async def format_memory_palace_for_prompt(limit: int = 5, room: str = None, query: str = "", character_id: str = "default", recent_messages=None, touch_access: bool = True) -> str:
+    rows, pinned_count = await retrieve_memory_palace_rows_for_prompt(query=query, limit=limit, room=room, character_id=character_id, recent_messages=recent_messages, touch_access=touch_access)
     if not rows:
         return "### 记忆宫殿\n\n暂无可用记忆。"
     lines = [
@@ -4244,6 +4244,7 @@ async def api_memory_palace_debug_retrieve(request: Request):
         room=room,
         character_id=character_id,
         recent_messages=recent_messages,
+        touch_access=False,
     )
     markdown = await format_memory_palace_for_prompt(
         limit=limit,
@@ -4251,6 +4252,7 @@ async def api_memory_palace_debug_retrieve(request: Request):
         query=query,
         character_id=character_id,
         recent_messages=recent_messages,
+        touch_access=False,
     )
     nodes = []
     for row in rows:

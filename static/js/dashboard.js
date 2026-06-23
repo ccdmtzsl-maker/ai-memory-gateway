@@ -1942,6 +1942,52 @@ async function openSummaryModal(sessionId) {
     }
 }
 
+
+
+async function openThreadMemoryModal(sessionId) {
+    _summaryEditSid = sessionId;
+    const sidEl = document.getElementById('summary-modal-sid');
+    const editor = document.getElementById('summary-editor');
+    const countEl = document.getElementById('summary-char-count');
+    const modal = document.getElementById('summaryModal');
+    if (sidEl) sidEl.textContent = '对话线记忆 — ' + sessionId;
+    if (editor) {
+        editor.value = '正在加载记忆宫殿内容...';
+        editor.readOnly = true;
+    }
+    if (countEl) countEl.textContent = '';
+    if (modal) modal.style.display = 'flex';
+    try {
+        const resp = await fetch('/api/memory-palace/session-nodes?session_id=' + encodeURIComponent(sessionId) + '&character_id=default&limit=100');
+        const data = await resp.json();
+        if (!editor) return;
+        if (data.error || data.status === 'error') {
+            editor.value = '加载失败：' + (data.error || '未知错误');
+            return;
+        }
+        const nodes = data.nodes || [];
+        if (!nodes.length) {
+            editor.value = '这个对话线还没有导入记忆宫殿。\n\n可以去「对话记录」勾选该对话，然后点击「提取记忆」，预览后导入。';
+            return;
+        }
+        const lines = [];
+        lines.push('已进入记忆宫殿的内容：' + nodes.length + ' 条');
+        lines.push('');
+        for (const n of nodes) {
+            const dateText = String(n.date || n.created_at || '').slice(0, 10);
+            const tags = n.tags ? '｜标签:' + n.tags : '';
+            const pin = n.pinned_until ? '｜📌便利贴到 ' + String(n.pinned_until).slice(0, 10) : '';
+            lines.push('【' + (n.room || 'living_room') + '】' + dateText + '｜重要性:' + (n.importance || 5) + '｜情绪:' + (n.mood || 'neutral') + tags + pin);
+            lines.push(String(n.content || '').trim());
+            lines.push('');
+        }
+        editor.value = lines.join('\n');
+        if (countEl) countEl.textContent = nodes.length + ' 条记忆';
+    } catch(e) {
+        if (editor) editor.value = '请求失败：' + e.message;
+    }
+}
+
 function closeSummaryModal() {
     document.getElementById('summaryModal').style.display = 'none';
     const editor = document.getElementById('summary-editor');
@@ -2590,6 +2636,7 @@ try {
     window.toggleConvMemoryPreviewChecks = toggleConvMemoryPreviewChecks;
     window.closeConvMemoryPreview = closeConvMemoryPreview;
     window.importSelectedConvMemoryPreview = importSelectedConvMemoryPreview;
+    window.openThreadMemoryModal = openThreadMemoryModal;
     
 } catch (e) {
 

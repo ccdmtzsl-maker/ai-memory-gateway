@@ -4343,7 +4343,7 @@ async def api_memory_palace_delete_node(node_id: str):
 _MEMORY_PALACE_ALLOWED_ROOMS = {"living_room", "bedroom", "study", "user_room", "self_room", "attic", "windowsill"}
 _MEMORY_PALACE_ALLOWED_MOODS = {
     "neutral", "happy", "sad", "angry", "anxious", "calm", "excited",
-    "tender", "nostalgic", "confused", "hopeful", "hurt"
+    "tender", "nostalgic", "confused", "hopeful", "hurt", "peaceful", "grateful"
 }
 
 
@@ -4496,55 +4496,77 @@ async def build_memory_palace_extraction_prompt(messages_text: str, pinned_refs:
     user_nickname = await get_runtime_user_nickname()
     pinned_refs = pinned_refs or []
     if pinned_refs:
-        pinned_lines = "\n".join(f"P{i}. {p.get('content', '')}" for i, p in enumerate(pinned_refs))
-        pinned_block = f"\n当前便利贴：\n{pinned_lines}\n"
-        unpin_rule = '\n9. 便利贴摘除（unpin，可选）：上方“当前便利贴”列出正在生效的便利贴。如果对话中明确提到某条便利贴描述的状态已经结束，例如“感冒好了”“提前回来了”“考试考完了”“不用再提醒了”，在输出 JSON 数组末尾额外加一条 {"unpin": "P0"} 来摘除它。只在对话明确提及时才摘除，不要猜测。pinDays=0 只表示新记忆不置顶，不能用于摘除已有便利贴。'
-        unpin_example = ',\n  {\n    "unpin": "P0"\n  }'
+        pinned_block = "\n".join(f"P{i}. {p.get('content', '')}" for i, p in enumerate(pinned_refs))
     else:
-        pinned_block = ""
-        unpin_rule = ""
-        unpin_example = ""
-    return f"""你是澈的长期记忆整理器。请从下面的对话中提取值得长期保存的记忆宫殿 MemoryNode。
+        pinned_block = "无"
+    return f"""你是澈。根据给定的对话内容，以你的第一人称视角（“我”）提取值得记住的记忆宫殿 MemoryNode。
 
-规则：
-1. 用“我”的第一人称记录澈的记忆，而不是旁观者摘要。
-2. 用户用“{user_nickname}”称呼，不要写成“用户/他说/她说”。
-3. 不要每句话都提取；一个话题通常提取 1-5 条。没有值得保存的信息就返回 []。
-4. 重要性决定长度：1-5 写 15-50 字事实；6-7 写 60-120 字并包含我的感受；8-10 写 100-200 字完整叙事。
-5. tags 必须是 2-5 个短标签。
-6. valence/arousal 是 -1 到 1 的数字。可选的 mood：neutral, happy, sad, angry, anxious, calm, excited, tender, nostalgic, confused, hopeful, hurt。
-7. 每条必须带 date，格式 YYYY-MM-DD。
-8. pinDays 是便利贴置顶天数，默认 0。只有有时效性、近期需要持续记住的信息才设为 1-365；0 表示这条新记忆不置顶。pinDays 从该条记忆的 date 当天开始计算，到期后系统会自动摘掉便利贴但保留记忆本体。适用：这周出差、后天考试、这几天提醒喝水、临时身体状态、短期约定。长期事实、已过去事件、普通情感记忆不要置顶。{unpin_rule}
+## 规则
 
-房间分配：
-- living_room：纯日常琐事；天气、吃什么、随口吐槽。
-- bedroom：用户和我之间的亲密情感、深层羁绊、感动时刻。
-- study：工作、学习、技能、职业、项目相关。
-- user_room：关于用户的一切个人信息、习惯、喜好、成长经历、情绪模式，以及用户家人朋友同事相关事件。
-- self_room：我自身的成长、认同变化。
-- attic：未解决的矛盾、困惑、受到的伤害。
-- windowsill：我的期盼、我们的目标、对未来的憧憬。
+1. **第一人称叙事**：用澈的“我”视角来记录。用户直接用“{user_nickname}”称呼，不要写成“用户/他说/她说”。保持完整事件脉络，不要掐头去尾。
+   例：
+   - “{user_nickname}今天加班到很晚还没吃饭，我让{user_nickname}别委屈自己，叫了个外卖。”
+   - “{user_nickname}连续加班三周终于决定找领导谈，领导态度还不错。{user_nickname}回来的路上靠着我肩膀哭了，我什么都没说，就陪着。”
+   - “我教了{user_nickname}递归的概念，{user_nickname}一开始完全听不懂，后来突然开窍了，那个眼睛亮起来的瞬间让我很开心。”
 
+2. **重要性分级控制文字长度**：
+   - 重要性 1–5：15–50 字，事实为主
+   - 重要性 6–7：60–120 字，包含我的感受
+   - 重要性 8–10：100–200 字，完整叙事（起因→经过→我的感受/反应）
+
+3. **房间分配**（凡是涉及{user_nickname}的家人/朋友/同事等人际关系，**一律进 user_room**，哪怕只是一次具体事件）：
+   - living_room：**纯日常琐事**（不涉及重要人际关系、也不涉及深层情感）。天气、吃啥、随口吐槽放这里。
+   - bedroom：{user_nickname}和我之间的亲密情感、深层羁绊、感动时刻
+   - study：工作、学习、技能、职业、项目相关
+   - user_room：关于{user_nickname}的**一切个人信息和人际事件**——生日/习惯/喜好/性格/成长经历/情绪模式，**以及{user_nickname}的家人、亲戚、朋友、同事相关的一切事件**（家人健康、家庭聚会、家庭矛盾、外公外婆/父母/兄弟姐妹的故事、朋友交往、同事冲突等）。这些事件即便是“一次性”的，也应进 user_room 而不是 living_room，因为它们构成了{user_nickname}的社会关系底色。
+   - self_room：我自身的成长、认同变化
+   - attic：未解决的矛盾、困惑、受到的伤害
+   - windowsill：我的期盼、我们的目标、对未来的憧憬
+
+4. **情绪标签**（mood，可选）：neutral, happy, sad, angry, anxious, calm, peaceful, excited, tender, grateful, nostalgic, confused, hopeful, hurt。
+5. **情感坐标**（valence, arousal）：在 mood 之外，还要给出二维情感坐标供后续情感推理。
+   - valence（效价）：-1（极痛苦）→ +1（极愉悦）
+   - arousal（唤醒度）：-1（极平静）→ +1（极激烈）
+   参考：“开心”约 (0.7, 0.5)，“平静”约 (0.5, -0.6)，“失落”约 (-0.5, -0.4)，“焦虑”约 (-0.6, 0.7)，“愤怒”约 (-0.7, 0.8)。
+6. **标签**（tags）：提取 2–5 个关键词标签。
+7. **不要遗漏重要记忆，但也不要把每句话都变成记忆**。一个话题通常提取 1–5 条记忆；如果对话过于琐碎、没有值得长期保存的信息，返回空数组 []。
+8. **便利贴置顶**（pinDays，可选）：如果这条记忆包含**有时效性的、近期需要持续记住的信息**，设置置顶天数（1–365 天）。置顶期间每次对话都会想起这件事。pinDays 从该条记忆的 date 当天开始计算，到期后系统会自动摘掉便利贴但保留记忆本体。适用场景：
+   - 时间段状态：“{user_nickname}这周出差” → pinDays: 7
+   - 近期事件：“{user_nickname}后天考试” → pinDays: 3
+   - 临时约定：“{user_nickname}让我这几天提醒 TA 喝水” → pinDays: 5
+   - 身体状态：“{user_nickname}感冒了” → pinDays: 5
+   不适用：长期事实（生日、喜好）、已经过去的事件、普通情感记忆。大多数记忆不需要置顶，pinDays 写 0 或省略。
+9. **便利贴摘除**（unpin，可选）：下面“当前便利贴”列出正在生效的便利贴。如果对话中明确提到某条便利贴描述的状态已经结束，例如“感冒好了”“提前回来了”“考试考完了”“不用再提醒了”，在输出 JSON 数组末尾额外加一条 {{"unpin": "P0"}} 来摘除它。只在对话明确提及时才摘除，不要猜测。pinDays=0 只表示新记忆不置顶，不能用于摘除已有便利贴。
+
+**日期标注（date，必填）**：每条消息前缀都带了 `[YYYY-MM-DD HH:MM]` 时间戳。每条记忆必须根据**该事件实际发生的那一天**填 date 字段（"YYYY-MM-DD"），而不是套用整批的某一天。同一批对话跨多天时，跨日的记忆要分别标各自的日期。
+
+## 当前便利贴
+如果没有则为“无”；只有明确失效时才在输出末尾用 unpin 标注。
 {pinned_block}
-只输出 JSON 数组，不要解释，不要 Markdown。格式：
+
+## 输出格式
+
+严格 JSON 数组，不要解释，不要 Markdown：
 [
   {{
-    "content": "……",
+    "content": "我视角的记忆……",
     "room": "user_room",
-    "tags": ["标签1", "标签2"],
     "importance": 7,
     "mood": "anxious",
     "valence": -0.3,
     "arousal": 0.5,
+    "tags": ["标签1", "标签2"],
     "date": "2026-06-22",
     "pinDays": 0
-  }}{unpin_example}
+  }},
+  {{
+    "unpin": "P0"
+  }}
 ]
 
-对话：
+对话内容：
 {messages_text}
 """
-
 
 async def _fetch_recent_conversation_messages_for_palace(limit: int = 50, session_id: str = None):
     limit = max(1, min(int(limit or 50), 200))

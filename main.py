@@ -2341,16 +2341,12 @@ async def persist_assistant_tool_calls_sync(session_id: str, user_msg: str, assi
 
 async def process_memories_background(session_id: str, user_msg: str, assistant_msg: str, model: str, context_messages: list = None, skip_conversation_log: bool = False, tool_messages: list = None, assistant_tool_calls: list = None, assistant_reasoning: str = None):
     """
-    后台异步：存储对话 + 提取记忆（不阻塞主流程）
+    后台异步：存储对话记录（不阻塞主流程）。
     
-    记忆提取受 MEMORY_EXTRACT_INTERVAL 控制：
-    - 0: 禁用自动提取
-    - 1: 每轮提取（默认）
-    - N: 每 N 轮提取一次
-    对话记录始终保存，不受间隔影响（除非 skip_conversation_log=True）。
+    旧碎片记忆自动提取已移除；长期记忆由 Memory Palace 的手动预览导入
+    和分区轮转自动提取负责。
     
-    context_messages: 客户端发来的原始对话上下文（不含system prompt），
-                      用于让提取模型从完整上下文中提取记忆。
+    context_messages: 客户端发来的原始对话上下文（不含system prompt），保留参数兼容旧调用。
     skip_conversation_log: 跳过对话存储（标题生成等辅助请求时使用）
     tool_messages: 客户端发来的工具结果消息列表
     assistant_tool_calls: response中assistant的工具调用列表（如果有）
@@ -2493,7 +2489,6 @@ async def health_check():
         "system_prompt_length": len(SYSTEM_PROMPT),
         "memory_enabled": MEMORY_ENABLED,
         "memory_count": memory_count,
-        "memory_extract_interval": MEMORY_EXTRACT_INTERVAL,
     }
 
 
@@ -3551,20 +3546,11 @@ async def api_extract_from_chat(request: Request):
     if not messages:
         return {"error": "无法从文本中解析出对话内容"}
     
-    # 获取已有记忆用于去重
-    existing = await get_all_memories()
-    existing_contents = [m["content"] for m in existing] if existing else []
-    
-    # 调用提取
-    try:
-        extracted = await extract_memories(messages, existing_memories=existing_contents)
-    except Exception as e:
-        return {"error": f"提取失败: {str(e)}"}
-    
-    if not extracted:
-        return {"status": "ok", "memories": [], "message": "未提取到新记忆"}
-    
-    return {"status": "ok", "memories": extracted, "message": f"提取到 {len(extracted)} 条记忆"}
+    return {
+        "status": "disabled",
+        "memories": [],
+        "message": "旧碎片记忆提取已停用；请使用记忆宫殿的对话记录预览提取。",
+    }
 
 
 @app.post("/api/memories/batch-update")
@@ -5782,7 +5768,6 @@ async def get_settings():
             "MEMORY_MODEL":            db.get("MEMORY_MODEL") or os.environ.get("MEMORY_MODEL", ""),
             "MAX_MEMORIES_INJECT":     int(db.get("MAX_MEMORIES_INJECT") or MAX_MEMORIES_INJECT),
             "MIN_SCORE_THRESHOLD":     float(db.get("MIN_SCORE_THRESHOLD") or _db_module.MIN_SCORE_THRESHOLD),
-            "MEMORY_EXTRACT_INTERVAL": int(db.get("MEMORY_EXTRACT_INTERVAL") or MEMORY_EXTRACT_INTERVAL),
 
             # 缓存分区
             "CACHE_PARTITION_ENABLED": _parse_bool(db.get("CACHE_PARTITION_ENABLED"), CACHE_PARTITION_ENABLED),
@@ -5909,7 +5894,6 @@ async def save_settings(request: Request):
             "MEMORY_API_BASE_URL":   str,
             "MEMORY_ENABLED":        lambda v: _parse_bool(v),
             "MAX_MEMORIES_INJECT":   int,
-            "MEMORY_EXTRACT_INTERVAL": int,
             "CACHE_PARTITION_ENABLED": lambda v: _parse_bool(v),
             "CACHE_PARTITION_X":     int,
             "CACHE_PARTITION_TRIGGER": str,

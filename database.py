@@ -521,6 +521,28 @@ async def init_tables():
             ON memory_palace_event_boxes (character_id);
         """)
         
+
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS memory_palace_extracted_messages (
+                id BIGSERIAL PRIMARY KEY,
+                character_id TEXT DEFAULT 'default',
+                session_id TEXT NOT NULL,
+                message_id BIGINT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+                source TEXT DEFAULT 'manual_preview',
+                extracted_at TIMESTAMPTZ DEFAULT NOW(),
+                metadata JSONB DEFAULT '{}'::jsonb,
+                UNIQUE(character_id, message_id)
+            );
+        """)
+        await conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_mp_extracted_session
+            ON memory_palace_extracted_messages (character_id, session_id, message_id);
+        """)
+        await conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_mp_extracted_at
+            ON memory_palace_extracted_messages (extracted_at DESC);
+        """)
+
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS memory_palace_state (
                 character_id TEXT PRIMARY KEY DEFAULT 'default',

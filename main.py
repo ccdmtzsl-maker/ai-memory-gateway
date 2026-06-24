@@ -122,6 +122,8 @@ USER_NICKNAME = os.getenv("USER_NICKNAME", "用户")
 MEMORY_PALACE_ENABLED = os.getenv("MEMORY_PALACE_ENABLED", "true").lower() == "true"
 MEMORY_PALACE_DEFAULT_LIMIT = int(os.getenv("MEMORY_PALACE_DEFAULT_LIMIT", "5"))
 MEMORY_PALACE_EVENT_BOX_COMPRESS_THRESHOLD = int(os.getenv("MEMORY_PALACE_EVENT_BOX_COMPRESS_THRESHOLD", "4"))
+MEMORY_PALACE_EVENT_BOX_LIVE_HARD_CAP = int(os.getenv("MEMORY_PALACE_EVENT_BOX_LIVE_HARD_CAP", "16"))
+MEMORY_PALACE_EVENT_BOX_SEAL_THRESHOLD = int(os.getenv("MEMORY_PALACE_EVENT_BOX_SEAL_THRESHOLD", "6"))
 
 # 记忆模型专用 API 地址。留空时不会自动回退到主 API_BASE_URL，由调用方决定是否跳过。
 MEMORY_API_BASE_URL = os.getenv("MEMORY_API_BASE_URL", "")
@@ -4966,7 +4968,7 @@ def _merge_text_tags(*values) -> str:
 
 
 async def bind_memory_palace_event_boxes(event_links: list, event_hints: dict, character_id: str = "default") -> int:
-    """把 relatedTo/sameAs 关联收纳进 EventBox。第一版只建盒/合并，不压缩。"""
+    """把 relatedTo/sameAs 关联收纳进 EventBox。sealed/满员盒会开延续新盒。"""
     if not event_links:
         return 0
     touched = set()
@@ -4985,40 +4987,78 @@ async def bind_memory_palace_event_boxes(event_links: list, event_hints: dict, c
             by_id = {r["id"]: r for r in nodes}
             if new_id not in by_id or existing_id not in by_id:
                 continue
-            box_id = by_id[existing_id].get("event_box_id") or by_id[new_id].get("event_box_id")
             hint = event_hints.get(new_id) or {}
-            if not box_id:
-                box_id = f"eb_{int(datetime.now(timezone.utc).timestamp() * 1000)}_{uuid.uuid4().hex[:6]}"
-                name = hint.get("eventName") or str(by_id[existing_id].get("content") or by_id[new_id].get("content") or "未命名事件")[:24]
-                tags = _merge_text_tags(hint.get("eventTags") or [], by_id[existing_id].get("tags"), by_id[new_id].get("tags"))
-                await conn.execute("""
-                    INSERT INTO memory_palace_event_boxes (id, character_id, name, tags, live_memory_ids, archived_memory_ids, sealed, created_at, updated_at)
-                    VALUES ($1, $2, $3, $4, $5::text[], '{}'::text[], FALSE, NOW(), NOW())
-                    ON CONFLICT (id) DO NOTHING
-                """, box_id, character_id, name, tags, [existing_id, new_id])
+            candidate_ids = []
+            for nid in (existing_id, new_id):
+                bid = by_id[nid].get("event_box_id")
+                if bid and bid not in candidate_ids:
+                    candidate_ids.append(bid)
+            boxes = []
+            if candidate_ids:
+                box_rows = await conn.fetch("""
+                    SELECT id, name, tags, live_memory_ids, archived_memory_ids, summary_node_id,
+                           compression_count, sealed, updated_at, last_compressed_at
+                    FROM memory_palace_event_boxes
+                    WHERE character_id = $1 AND id = ANY($2::text[])
+                """, character_id, candidate_ids)
+                boxes = [dict(r) for r in box_rows]
+            open_boxes = []
+            closed_boxes = []
+            hard_cap = max(2, int(MEMORY_PALACE_EVENT_BOX_LIVE_HARD_CAP or 16))
+            for box in boxes:
+                live_count = len(box.get("live_memory_ids") or [])
+                if box.get("sealed") or live_count >= hard_cap:
+                    closed_boxes.append(box)
+                else:
+                    open_boxes.append(box)
+            if open_boxes:
+                box_id = open_boxes[0]["id"]
+                box = open_boxes[0]
             else:
-                box = await conn.fetchrow("SELECT live_memory_ids, tags, name FROM memory_palace_event_boxes WHERE id = $1", box_id)
-                live_ids = list((box or {}).get("live_memory_ids") or [])
-                for nid in (existing_id, new_id):
-                    if nid not in live_ids:
-                        live_ids.append(nid)
-                tags = _merge_text_tags((box or {}).get("tags"), hint.get("eventTags") or [], by_id[existing_id].get("tags"), by_id[new_id].get("tags"))
-                name = (box or {}).get("name") or hint.get("eventName") or "未命名事件"
-                if hint.get("eventName") and name == "未命名事件":
-                    name = hint.get("eventName")
+                predecessor = None
+                if closed_boxes:
+                    def _box_sort_key(b):
+                        return str(b.get("last_compressed_at") or b.get("updated_at") or "")
+                    predecessor = sorted(closed_boxes, key=_box_sort_key, reverse=True)[0]
+                box_id = f"eb_{int(datetime.now(timezone.utc).timestamp() * 1000)}_{uuid.uuid4().hex[:6]}"
+                name = hint.get("eventName") or (predecessor or {}).get("name") or str(by_id[existing_id].get("content") or by_id[new_id].get("content") or "未命名事件")[:24]
+                tags = _merge_text_tags(hint.get("eventTags") or [], (predecessor or {}).get("tags"), by_id[existing_id].get("tags"), by_id[new_id].get("tags"))
                 await conn.execute("""
-                    UPDATE memory_palace_event_boxes
-                    SET live_memory_ids = $2::text[], tags = $3, name = $4, updated_at = NOW()
-                    WHERE id = $1
-                """, box_id, live_ids, tags, name)
+                    INSERT INTO memory_palace_event_boxes (id, character_id, name, tags, predecessor_box_id, live_memory_ids, archived_memory_ids, sealed, created_at, updated_at)
+                    VALUES ($1, $2, $3, $4, $5, $6::text[], '{}'::text[], FALSE, NOW(), NOW())
+                    ON CONFLICT (id) DO NOTHING
+                """, box_id, character_id, name, tags, (predecessor or {}).get("id"), [new_id],)
+                if predecessor:
+                    reason = "已封盒" if predecessor.get("sealed") else f"活节点达硬上限 {hard_cap}"
+                    print(f"📦 EventBox 前任 {predecessor.get('id')} {reason}，{box_id} 作为延续新盒")
+                box = {"id": box_id, "live_memory_ids": [new_id], "tags": tags, "name": name}
+            live_ids = list((box or {}).get("live_memory_ids") or [])
+            closed_ids = {b.get("id") for b in closed_boxes}
+            for nid in (existing_id, new_id):
+                node_box_id = by_id[nid].get("event_box_id")
+                if node_box_id in closed_ids and nid == existing_id:
+                    continue
+                if nid not in live_ids:
+                    live_ids.append(nid)
+            tags = _merge_text_tags((box or {}).get("tags"), hint.get("eventTags") or [], by_id[existing_id].get("tags"), by_id[new_id].get("tags"))
+            name = (box or {}).get("name") or hint.get("eventName") or "未命名事件"
+            if hint.get("eventName") and name == "未命名事件":
+                name = hint.get("eventName")
+            await conn.execute("""
+                UPDATE memory_palace_event_boxes
+                SET live_memory_ids = $2::text[], tags = $3, name = $4, updated_at = NOW()
+                WHERE id = $1 AND character_id = $5
+            """, box_id, live_ids, tags, name, character_id)
+            update_ids = [new_id]
+            if by_id[existing_id].get("event_box_id") not in closed_ids:
+                update_ids.append(existing_id)
             await conn.execute("""
                 UPDATE memory_palace_nodes
                 SET event_box_id = $3, updated_at = NOW()
                 WHERE character_id = $1 AND id = ANY($2::text[])
-            """, character_id, [existing_id, new_id], box_id)
+            """, character_id, list(dict.fromkeys(update_ids)), box_id)
             touched.add(box_id)
     return len(touched)
-
 
 async def build_memory_palace_extraction_prompt(messages_text: str, pinned_refs: list = None, related_refs: list = None) -> str:
     user_nickname = await get_runtime_user_nickname()
@@ -5258,16 +5298,20 @@ async def maybe_compress_memory_palace_event_boxes(box_ids=None, character_id: s
             archived_ids = list(dict.fromkeys([*(box.get("archived_memory_ids") or []), *compressed_ids]))
             remaining_live = [x for x in live_ids if x not in compressed_ids and x != summary_id]
             await conn.execute("UPDATE memory_palace_nodes SET archived=TRUE, updated_at=NOW() WHERE character_id=$1 AND id=ANY($2::text[])", character_id, compressed_ids)
+            next_compression_count = int(box.get("compression_count") or 0) + 1
+            should_seal = next_compression_count >= max(1, int(MEMORY_PALACE_EVENT_BOX_SEAL_THRESHOLD or 6))
             await conn.execute("""
-                UPDATE memory_palace_event_boxes SET name=$3,tags=$4,summary_node_id=$5,live_memory_ids=$6::text[],archived_memory_ids=$7::text[],compression_count=compression_count+1,last_compressed_at=NOW(),updated_at=NOW()
+                UPDATE memory_palace_event_boxes
+                SET name=$3,tags=$4,summary_node_id=$5,live_memory_ids=$6::text[],archived_memory_ids=$7::text[],
+                    compression_count=compression_count+1,sealed=$8,last_compressed_at=NOW(),updated_at=NOW()
                 WHERE character_id=$1 AND id=$2
-            """, character_id, box.get("id"), name, tags, summary_id, remaining_live, archived_ids)
+            """, character_id, box.get("id"), name, tags, summary_id, remaining_live, archived_ids, should_seal)
         try:
             await save_memory_palace_embedding(summary_id, content)
         except Exception as e:
             print(f"⚠️ 事件盒 summary embedding 失败 {summary_id}: {e}")
         compressed += 1
-        print(f"🗜️ 事件盒压缩完成 {box.get('id')}：{len(live_nodes)} 条" + (" + 旧summary" if old_summary else "") + f" → summary {summary_id}")
+        print(f"🗜️ 事件盒压缩完成 {box.get('id')}：{len(live_nodes)} 条" + (" + 旧summary" if old_summary else "") + f" → summary {summary_id}" + ("，已封盒" if should_seal else ""))
     return compressed
 
 

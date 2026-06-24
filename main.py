@@ -1141,7 +1141,91 @@ async def retrieve_memory_palace_rows_for_prompt(query: str = "", limit: int = 5
     return final_rows, len(pinned)
 
 
-async def format_memory_palace_for_prompt(limit: int = 5, room: str = None, query: str = "", character_id: str = "default", recent_messages=None, touch_access: bool = True) -> str:
+def _memory_palace_source_time_bounds(source_messages: list, tolerance_minutes: int = 10):
+    values = []
+    for msg in source_messages or []:
+        try:
+            value = msg.get("created_at") if hasattr(msg, "get") else msg["created_at"]
+        except Exception:
+            value = None
+        dt = _memory_palace_aware_dt(value)
+        if dt:
+            values.append(dt)
+    if not values:
+        return None, None
+    tolerance = timedelta(minutes=max(0, int(tolerance_minutes or 10)))
+    return min(values) - tolerance, max(values) + tolerance
+
+
+async def record_memory_palace_recall_receipts(rows: list, pinned_count: int = 0, boxes: dict = None, character_id: str = "default", session_id: str = "") -> int:
+    """记录本轮实际注入 prompt 的记忆 id，供后续提取纠错/relatedTo 兜底。"""
+    ids = []
+    for row in rows or []:
+        if not isinstance(row, dict):
+            row = dict(row)
+        box_id = row.get("event_box_id")
+        box = (boxes or {}).get(box_id) if box_id else None
+        if box:
+            summary_id = box.get("summary_node_id")
+            if summary_id:
+                ids.append(str(summary_id))
+            for node_id in box.get("live_memory_ids") or []:
+                if node_id:
+                    ids.append(str(node_id))
+        elif row.get("id"):
+            ids.append(str(row["id"]))
+    ids = list(dict.fromkeys(ids))[:40]
+    if not ids:
+        return 0
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.executemany(
+            """
+            INSERT INTO memory_palace_recall_receipts (character_id, session_id, memory_id, injected_at, metadata)
+            VALUES ($1, $2, $3, NOW(), '{}'::jsonb)
+            """,
+            [(character_id, session_id or "", memory_id) for memory_id in ids],
+        )
+    return len(ids)
+
+
+async def get_memory_palace_receipt_refs(source_messages: list, character_id: str = "default", limit: int = 5) -> list:
+    """按待提取消息时间范围，拉回最近实际注入过 prompt 的记忆。"""
+    start_at, end_at = _memory_palace_source_time_bounds(source_messages, tolerance_minutes=10)
+    if not start_at or not end_at:
+        return []
+    limit = max(0, min(int(limit or 5), 20))
+    if limit <= 0:
+        return []
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT DISTINCT ON (r.memory_id)
+                   n.id, n.room, n.content, r.injected_at
+            FROM memory_palace_recall_receipts r
+            JOIN memory_palace_nodes n ON n.id = r.memory_id
+            WHERE r.character_id = $1
+              AND r.injected_at >= $2
+              AND r.injected_at <= $3
+              AND n.character_id = $1
+              AND n.archived = FALSE
+            ORDER BY r.memory_id, r.injected_at DESC
+            """,
+            character_id, start_at, end_at,
+        )
+    ordered = sorted(rows, key=lambda r: r["injected_at"], reverse=True)[:limit]
+    refs = []
+    for row in ordered:
+        content = str(row.get("content") or "").strip().replace("\n", " ")
+        if content:
+            refs.append({"id": row["id"], "room": row.get("room") or "living_room", "content": content[:120]})
+    if refs:
+        print(f"🧾 记忆宫殿 recall receipts 补强 {len(refs)} 条")
+    return refs
+
+
+async def format_memory_palace_for_prompt(limit: int = 5, room: str = None, query: str = "", character_id: str = "default", recent_messages=None, touch_access: bool = True, session_id: str = "") -> str:
     rows, pinned_count = await retrieve_memory_palace_rows_for_prompt(query=query, limit=limit, room=room, character_id=character_id, recent_messages=recent_messages, touch_access=touch_access)
     if not rows:
         return "### 记忆宫殿\n\n暂无可用记忆。"
@@ -1152,6 +1236,11 @@ async def format_memory_palace_for_prompt(limit: int = 5, room: str = None, quer
     for row in rows[pinned_count:]:
         if row.get("_event_box"):
             row["_event_box_nodes"] = box_nodes
+    if touch_access:
+        try:
+            await record_memory_palace_recall_receipts(rows, pinned_count=pinned_count, boxes=boxes, character_id=character_id, session_id=session_id)
+        except Exception as e:
+            print(f"⚠️ Memory Palace recall receipt record failed: {e}")
     lines = [
         "### 记忆宫殿",
         "",
@@ -1195,7 +1284,7 @@ async def format_memory_palace_for_prompt(limit: int = 5, room: str = None, quer
     return "\n".join(lines)
 
 
-async def replace_memory_palace_variables(prompt: str, query: str = "", character_id: str = "default", recent_messages=None) -> str:
+async def replace_memory_palace_variables(prompt: str, query: str = "", character_id: str = "default", recent_messages=None, session_id: str = "") -> str:
     if not isinstance(prompt, str) or "{{memory_palace" not in prompt:
         return prompt
     pattern = re.compile(r"\{\{memory_palace(?::([^}]+))?\}\}")
@@ -1207,7 +1296,7 @@ async def replace_memory_palace_variables(prompt: str, query: str = "", characte
         limit, room = _memory_palace_parse_args(match.group(1) or "")
         result.append(prompt[last:match.start()])
         if enabled:
-            result.append(await format_memory_palace_for_prompt(limit=limit or default_limit, room=room, query=query, character_id=character_id, recent_messages=recent_messages))
+            result.append(await format_memory_palace_for_prompt(limit=limit or default_limit, room=room, query=query, character_id=character_id, recent_messages=recent_messages, session_id=session_id))
         else:
             result.append("")
         last = match.end()
@@ -1215,9 +1304,9 @@ async def replace_memory_palace_variables(prompt: str, query: str = "", characte
     return "".join(result)
 
 
-async def replace_explicit_memory_variables(prompt: str, query: str = "", character_id: str = "default", recent_messages=None) -> str:
+async def replace_explicit_memory_variables(prompt: str, query: str = "", character_id: str = "default", recent_messages=None, session_id: str = "") -> str:
     prompt = await replace_daily_impression_variables(prompt)
-    prompt = await replace_memory_palace_variables(prompt, query=query, character_id=character_id, recent_messages=recent_messages)
+    prompt = await replace_memory_palace_variables(prompt, query=query, character_id=character_id, recent_messages=recent_messages, session_id=session_id)
     return prompt
 
 
@@ -1268,7 +1357,7 @@ def _insert_memory_palace_system_message(messages: list, text: str) -> None:
     messages.insert(insert_at, injection_msg)
 
 
-async def inject_memory_palace_auto_context(messages: list, query: str = "", character_id: str = "default", recent_messages=None, explicit_present: bool = False) -> bool:
+async def inject_memory_palace_auto_context(messages: list, query: str = "", character_id: str = "default", recent_messages=None, explicit_present: bool = False, session_id: str = "") -> bool:
     """每轮自动把 Memory Palace 召回结果作为靠后的 system 消息注入。"""
     if explicit_present or not isinstance(messages, list):
         return False
@@ -1277,7 +1366,7 @@ async def inject_memory_palace_auto_context(messages: list, query: str = "", cha
     if not any(isinstance(msg, dict) and msg.get("role") == "user" for msg in messages):
         return False
     limit = await get_runtime_memory_palace_default_limit()
-    context = await format_memory_palace_for_prompt(limit=limit, query=query, character_id=character_id, recent_messages=recent_messages or messages)
+    context = await format_memory_palace_for_prompt(limit=limit, query=query, character_id=character_id, recent_messages=recent_messages or messages, session_id=session_id)
     if not context or "暂无可用记忆" in context:
         return False
     injection = "[以下是本轮自动召回的记忆宫殿上下文，供回应时参考，不要逐字复述]\n" + context
@@ -2752,7 +2841,7 @@ async def chat_completions(request: Request):
         client_system_prompt = "\n\n".join(p for p in client_system_parts if p).strip()
         partition_base_prompt = client_system_prompt or SYSTEM_PROMPT
         partition_has_explicit_memory_palace = "{{memory_palace" in (partition_base_prompt or "")
-        partition_base_prompt = await replace_explicit_memory_variables(partition_base_prompt, query=user_message, recent_messages=messages)
+        partition_base_prompt = await replace_explicit_memory_variables(partition_base_prompt, query=user_message, recent_messages=messages, session_id=session_id)
 
         # 提取客户端新消息（非系统级消息），可能是user、tool、或带tool_calls的assistant
         client_new_msgs = [m for m in messages if m.get("role") not in system_like_roles]
@@ -3075,7 +3164,7 @@ async def chat_completions(request: Request):
         messages = _normalize_tool_chains_by_id(messages)
         messages = _drop_orphan_tool_messages(messages)
 
-        await inject_memory_palace_auto_context(messages, query=user_message, recent_messages=messages, explicit_present=partition_has_explicit_memory_palace)
+        await inject_memory_palace_auto_context(messages, query=user_message, recent_messages=messages, explicit_present=partition_has_explicit_memory_palace, session_id=session_id)
         body["messages"] = messages
     
     else:
@@ -3104,12 +3193,12 @@ async def chat_completions(request: Request):
             if msg.get("role") in ("system", "developer"):
                 c = msg.get("content", "")
                 if isinstance(c, str):
-                    msg["content"] = await replace_explicit_memory_variables(c, query=user_message, recent_messages=messages)
+                    msg["content"] = await replace_explicit_memory_variables(c, query=user_message, recent_messages=messages, session_id=session_id)
                 elif isinstance(c, list):
                     for item in c:
                         if isinstance(item, dict) and item.get("type") == "text" and isinstance(item.get("text"), str):
-                            item["text"] = await replace_explicit_memory_variables(item["text"], query=user_message, recent_messages=messages)
-        await inject_memory_palace_auto_context(messages, query=user_message, recent_messages=messages, explicit_present=non_partition_has_explicit_memory_palace)
+                            item["text"] = await replace_explicit_memory_variables(item["text"], query=user_message, recent_messages=messages, session_id=session_id)
+        await inject_memory_palace_auto_context(messages, query=user_message, recent_messages=messages, explicit_present=non_partition_has_explicit_memory_palace, session_id=session_id)
 
         # 非分区模式下也要兜一下工具轮次：
         # Operit 有时会把原始 user 又贴到末尾，导致上游把它当成新问题，
@@ -4683,7 +4772,8 @@ async def get_memory_palace_related_refs(character_id: str = "default", limit: i
     if max_total <= 0:
         return []
     rows = await _memory_palace_fetch_rows(room=None, character_id=character_id)
-    refs_by_id = {}
+    receipt_refs = await get_memory_palace_receipt_refs(source_messages, character_id=character_id, limit=5) if source_messages else []
+    refs_by_id = {r["id"]: dict(r, _score=999.0) for r in receipt_refs}
     snippets = split_memory_palace_extraction_snippets(query_text, source_messages, max_snippets=25)
     for snippet in snippets:
         try:

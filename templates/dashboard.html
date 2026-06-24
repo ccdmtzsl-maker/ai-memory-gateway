@@ -539,6 +539,24 @@
                     <div id="mpDebugResult" style="display:none;margin-top:12px;"></div>
                 </div>
 
+                <div class="card" style="margin-top:14px;padding:16px;">
+                    <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:12px;">
+                        <div>
+                            <div style="font-weight:800;">事件盒</div>
+                            <div style="font-size:12px;color:var(--text-muted);margin-top:2px;">查看同一事件下的记忆片段，当前为只读视图。</div>
+                        </div>
+                        <button class="btn btn-secondary" onclick="loadMemoryPalaceEventBoxes()">刷新事件盒</button>
+                    </div>
+                    <div style="display:grid;grid-template-columns:minmax(220px,320px) minmax(0,1fr);gap:14px;align-items:start;">
+                        <div id="mpEventBoxList" style="display:flex;flex-direction:column;gap:8px;max-height:520px;overflow:auto;">
+                            加载中...
+                        </div>
+                        <div id="mpEventBoxDetail" style="min-height:120px;">
+                            <div style="color:var(--text-muted);padding:16px;border:1px dashed var(--border-color);border-radius:10px;">选择一个事件盒查看详情。</div>
+                        </div>
+                    </div>
+                </div>
+
                 <div id="mpNodeList" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:14px;margin-top:14px;">
                     加载中...
                 </div>
@@ -971,6 +989,6 @@
     });
 
     </script>
-    <script src="/static/js/memory_palace.js?v=1.5"></script>
+    <script src="/static/js/memory_palace.js?v=1.6"></script>
 </body>
 </html>

@@ -373,6 +373,20 @@
                     <button class="btn btn-primary btn-lg" onclick="doExport()">下载 JSON 备份</button>
                 </div>
 
+                <div class="card export-card">
+                    <div class="export-info">
+                        <div class="export-icon" style="font-size: 36px; color: var(--primary); display: flex; align-items: center;"><svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 5a2 2 0 0 1 2-2h4l2 3h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M12 11v6"/><path d="m9 14 3 3 3-3"/></svg></div>
+                        <div class="export-text">
+                            <h3>导出记忆宫殿</h3>
+                            <p>导出新记忆系统数据，包含节点、向量、连接、事件盒与自动提取游标</p>
+                        </div>
+                    </div>
+                    <div class="export-stats" id="mp-export-stats">
+                        正在统计...
+                    </div>
+                    <button class="btn btn-primary btn-lg" onclick="exportMemoryPalace()">下载记忆宫殿备份</button>
+                </div>
+
                 <div class="card tips-card">
                     <h4>小贴士</h4>
                     <ul>

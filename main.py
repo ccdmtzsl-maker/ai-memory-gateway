@@ -4887,7 +4887,7 @@ def _normalize_memory_palace_item(item: dict) -> dict:
         pin_days = int(float(str(raw_pin_days).strip() or "0"))
     except Exception:
         pin_days = 0
-    pin_days = max(0, min(pin_days, 365))
+    pin_days = max(0, min(pin_days, 30))
     memory_date_text = str(item.get("date") or "").strip()
     pinned_until = None
     if pin_days > 0:
@@ -5348,10 +5348,17 @@ async def build_memory_palace_extraction_prompt(messages_text: str, pinned_refs:
 5. **情感坐标**（valence, arousal）：-1 到 1。参考：开心 (0.7,0.5)，平静 (0.5,-0.6)，失落 (-0.5,-0.4)，焦虑 (-0.6,0.7)，愤怒 (-0.7,0.8)。
 6. **标签**（tags）：提取 2–5 个关键词标签。
 7. **不要遗漏重要记忆，但也不要把每句话都变成记忆**。一个话题通常提取 1–5 条记忆；如果没有值得长期保存的信息，返回空数组 []。
-8. **便利贴置顶**（pinDays，可选）：有时效性、近期需要持续记住的信息才设为 1–365 天；大多数记忆 pinDays 写 0 或省略。pinDays 从该条记忆的 date 当天开始计算，到期后系统会自动摘掉便利贴但保留记忆本体。{related_rule}{unpin_rule}
+8. **便利贴置顶**（pinDays，可选）：如果这条记忆包含**有时效性的、近期需要持续记住的信息**，设置置顶天数（1–30 天）。置顶期间每次对话都会想起这件事。适用场景：
+   - 时间段状态：“{user_nickname}这周出差” → pinDays: 7
+   - 近期事件：“{user_nickname}后天考试” → pinDays: 3
+   - 临时约定：“{user_nickname}让我这几天提醒TA喝水” → pinDays: 5
+   - 身体状态：“{user_nickname}感冒了” → pinDays: 5
+   不适用：长期事实（生日、喜好）、已经过去的事件、情感记忆。没有明确临时性/近期持续提醒需求时，pinDays 必须写 0 或省略。pinDays 从该条记忆的 date 当天开始计算，到期后系统会自动摘掉便利贴但保留记忆本体。{related_rule}{unpin_rule}
 
 **日期标注（date，必填）**：每条记忆根据事件实际发生的那一天填写 date 字段（"YYYY-MM-DD"）。如果对话跨多天，跨日的记忆要分别标各自的日期，不要统一套用同一天。
 {pinned_block}
+pinDays 仅在需要置顶时才写；大多数记忆不需要，默认写 0 或省略。
+
 ## 输出格式
 严格 JSON 数组，不要解释，不要 Markdown：
 [

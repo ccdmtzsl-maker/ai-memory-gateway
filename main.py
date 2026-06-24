@@ -1976,7 +1976,7 @@ async def extract_memory_palace_from_partition_messages(messages: list, session_
         message_ids = [int(r["id"]) for r in rows]
         log_memory_palace_auto_extract("run", f"🧠 分区自动提取开始：session={session_id}, cursor={last_id}, 待处理{len(rows)}条", session_id=session_id)
         messages_text = _format_messages_for_memory_palace(rows)
-        raw_items, unpin_ids, related_refs = await call_memory_palace_extractor(messages_text, character_id=character_id)
+        raw_items, unpin_ids, related_refs, corrections = await call_memory_palace_extractor(messages_text, character_id=character_id)
         normalized = [_normalize_memory_palace_item(x) for x in raw_items]
         normalized = [x for x in normalized if x]
         created = []
@@ -4675,6 +4675,101 @@ def parse_memory_palace_event_links(raw_items: list, created_nodes: list, relate
     return links, hints
 
 
+
+
+def parse_memory_palace_corrections(raw_items: list, related_refs: list) -> list:
+    """解析模型输出的 {"correct":"O0","note":"..."}，映射到真实旧记忆 id。"""
+    if not raw_items or not related_refs:
+        return []
+    corrections = []
+    seen = set()
+    for item in raw_items:
+        if not isinstance(item, dict):
+            continue
+        raw = item.get("correct")
+        note = str(item.get("note") or "").strip()
+        if not isinstance(raw, str) or not note:
+            continue
+        m = re.match(r"^\s*O(\d+)\s*$", raw, flags=re.I)
+        if not m:
+            continue
+        idx = int(m.group(1))
+        if 0 <= idx < len(related_refs):
+            target_id = related_refs[idx].get("id")
+            key = (target_id, note)
+            if target_id and key not in seen:
+                seen.add(key)
+                corrections.append({"targetId": target_id, "note": note})
+    return corrections
+
+
+async def apply_memory_palace_corrections(corrections: list, character_id: str = "default") -> int:
+    """把纠错 note 追加到旧节点 content，并重新向量化。"""
+    if not corrections:
+        return 0
+    grouped = {}
+    for corr in corrections:
+        target_id = str(corr.get("targetId") or "").strip()
+        note = str(corr.get("note") or "").strip()
+        if not target_id or not note:
+            continue
+        bucket = grouped.setdefault(target_id, [])
+        if note not in bucket:
+            bucket.append(note)
+    if not grouped:
+        return 0
+    changed = 0
+    date_text = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        for target_id, notes in grouped.items():
+            row = await conn.fetchrow(
+                "SELECT id, content FROM memory_palace_nodes WHERE id = $1 AND character_id = $2",
+                target_id, character_id,
+            )
+            if not row:
+                continue
+            content = str(row.get("content") or "").rstrip()
+            additions = []
+            for note in notes:
+                line = f"（{date_text} 纠正：{note}）"
+                if note not in content and line not in content:
+                    additions.append(line)
+            if not additions:
+                continue
+            new_content = content + "\n" + "\n".join(additions)
+            await conn.execute(
+                "UPDATE memory_palace_nodes SET content = $3, updated_at = NOW() WHERE id = $1 AND character_id = $2",
+                target_id, character_id, new_content,
+            )
+            try:
+                await save_memory_palace_embedding(target_id, new_content)
+            except Exception as e:
+                print(f"⚠️ 记忆宫殿纠错后重建 embedding 失败 {target_id}: {e}")
+            changed += 1
+    return changed
+
+
+def serialize_memory_palace_correction_previews(corrections: list, related_refs: list, session_id: str = None, group_index: int = None, source_message_ids: list = None) -> list:
+    items = []
+    by_id = {str(r.get("id")): r for r in (related_refs or []) if r.get("id")}
+    for corr in corrections or []:
+        target_id = str(corr.get("targetId") or "").strip()
+        note = str(corr.get("note") or "").strip()
+        if not target_id or not note:
+            continue
+        ref = by_id.get(target_id) or {}
+        items.append({
+            "type": "correct",
+            "target_id": target_id,
+            "note": note,
+            "content": ref.get("content") or target_id,
+            "session_id": session_id,
+            "group_index": group_index,
+            "source_message_ids": [int(x) for x in (source_message_ids or []) if str(x).isdigit()],
+        })
+    return items
+
 def _merge_text_tags(*values) -> str:
     seen = []
     for value in values:
@@ -4750,7 +4845,7 @@ async def build_memory_palace_extraction_prompt(messages_text: str, pinned_refs:
     if related_refs:
         related_lines = "\n".join(f"O{i}. [{r.get('room', 'living_room')}] {r.get('content', '')}" for i, r in enumerate(related_refs))
         related_block = f"\n## 已有记忆\n如果新记忆与某条旧记忆描述的是同一件事或直接相关，请在 relatedTo 中标注编号，并给出 eventName / eventTags 用于建/合并事件盒。\n{related_lines}\n"
-        related_rule = '\n9. **事件盒关联**（relatedTo / sameAs + eventName + eventTags）：与旧记忆同事件或直接相关时，在 relatedTo 中写对应 O 编号（如 ["O0"]）；与本次输出的前面某条新记忆同事件时，在 sameAs 中写其 0 基索引（如 ["0"]）。只标真正同一事件、后续、结局、复现或直接因果；仅主题相似不要标。只要 relatedTo 或 sameAs 非空，必须同时写 eventName（5-12 字名词短语）和 eventTags（3-6 个具体标签）。'
+        related_rule = '\n9. **事件盒关联**（relatedTo / sameAs + eventName + eventTags）：与旧记忆同事件或直接相关时，在 relatedTo 中写对应 O 编号（如 ["O0"]）；与本次输出的前面某条新记忆同事件时，在 sameAs 中写其 0 基索引（如 ["0"]）。只标真正同一事件、后续、结局、复现或直接因果；仅主题相似不要标。只要 relatedTo 或 sameAs 非空，必须同时写 eventName（5-12 字名词短语）和 eventTags（3-6 个具体标签）。\n10. **纠正旧记忆**（correct，可选）：仅当对话中明确指出某条已有记忆记错、过时或不准确时，在 JSON 数组末尾额外追加 {"correct":"O0","note":"新的准确事实"}。note 写简短陈述句，不写解释；事件后续用 relatedTo，不要滥用 correct。'
         related_format = ',\n    "relatedTo": ["O0"],\n    "sameAs": ["0"],\n    "eventName": "买衣服的话题",\n    "eventTags": ["衣服", "购物", "退货"]'
     else:
         related_block = ""
@@ -4759,7 +4854,7 @@ async def build_memory_palace_extraction_prompt(messages_text: str, pinned_refs:
     if pinned_refs:
         pinned_lines = "\n".join(f"P{i}. {p.get('content', '')}" for i, p in enumerate(pinned_refs))
         pinned_block = f"\n## 当前便利贴\n{pinned_lines}\n"
-        unpin_rule = '\n10. **便利贴摘除**（unpin，可选）：上方“当前便利贴”列出正在生效的便利贴。如果对话中明确提到某条便利贴描述的状态已经结束，例如“感冒好了”“提前回来了”“考试考完了”“不用再提醒了”，在输出 JSON 数组末尾额外加一条 {"unpin": "P0"} 来摘除它。只在对话明确提及时才摘除，不要猜测。pinDays=0 只表示新记忆不置顶，不能用于摘除已有便利贴。'
+        unpin_rule = '\n11. **便利贴摘除**（unpin，可选）：上方“当前便利贴”列出正在生效的便利贴。如果对话中明确提到某条便利贴描述的状态已经结束，例如“感冒好了”“提前回来了”“考试考完了”“不用再提醒了”，在输出 JSON 数组末尾额外加一条 {"unpin": "P0"} 来摘除它。只在对话明确提及时才摘除，不要猜测。pinDays=0 只表示新记忆不置顶，不能用于摘除已有便利贴。'
         unpin_example = ',\n  {\n    "unpin": "P0"\n  }'
     else:
         pinned_block = ""
@@ -4877,7 +4972,8 @@ async def call_memory_palace_extractor(messages_text: str, character_id: str = "
     text = data.get("choices", [{}])[0].get("message", {}).get("content", "")
     raw_items = safe_parse_memory_palace_json_array(text)
     unpin_ids = parse_memory_palace_unpin_ids(raw_items, pinned_refs)
-    return raw_items, unpin_ids, related_refs
+    corrections = parse_memory_palace_corrections(raw_items, related_refs)
+    return raw_items, unpin_ids, related_refs, corrections
 
 
 async def save_memory_palace_embedding(memory_id: str, content: str) -> bool:
@@ -4900,7 +4996,7 @@ async def extract_memories_from_recent_conversations(limit: int = 50, session_id
     if not rows:
         return {"status": "ok", "message": "没有可处理的对话", "created": 0, "embedded": 0, "nodes": []}
     messages_text = _format_messages_for_memory_palace(rows)
-    raw_items, unpin_ids, related_refs = await call_memory_palace_extractor(messages_text, character_id=character_id)
+    raw_items, unpin_ids, related_refs, corrections = await call_memory_palace_extractor(messages_text, character_id=character_id)
     normalized = [_normalize_memory_palace_item(x) for x in raw_items]
     normalized = [x for x in normalized if x]
     created = []
@@ -4949,6 +5045,18 @@ async def extract_memories_from_recent_conversations(limit: int = 50, session_id
             print(f"📦 记忆宫殿事件盒绑定 {event_box_count} 个")
     except Exception as e:
         print(f"⚠️ 记忆宫殿事件盒绑定失败: {e}")
+    corrected_count = 0
+    try:
+        corrected_count = await apply_memory_palace_corrections(corrections, character_id=character_id)
+        if corrected_count:
+            print(f"✏️ 记忆宫殿纠正旧记忆 {corrected_count} 条")
+    except Exception as e:
+        print(f"⚠️ 记忆宫殿纠错失败: {e}")
+    corrected_count = 0
+    try:
+        corrected_count = await apply_memory_palace_corrections(corrections, character_id=character_id)
+    except Exception as e:
+        print(f"⚠️ 记忆宫殿文本提取纠错失败: {e}")
     unpinned_count = 0
     try:
         unpinned_count = await clear_memory_palace_pins_by_ids(unpin_ids, character_id=character_id)
@@ -4969,7 +5077,7 @@ async def extract_memories_from_recent_conversations(limit: int = 50, session_id
             """, character_id, max_id)
     except Exception as e:
         print(f"⚠️ 记忆宫殿 high water mark 更新失败: {e}")
-    return {"status": "ok", "processed_messages": len(rows), "extracted": len(raw_items), "created": len(created), "embedded": embedded_count, "event_boxes": event_box_count, "unpinned": unpinned_count, "nodes": created}
+    return {"status": "ok", "processed_messages": len(rows), "extracted": len(raw_items), "created": len(created), "embedded": embedded_count, "event_boxes": event_box_count, "corrected": corrected_count, "unpinned": unpinned_count, "nodes": created}
 
 
 @app.post("/api/memory-palace/extract-preview-sessions")
@@ -5175,27 +5283,36 @@ async def preview_memory_palace_extraction_for_session(session_id: str, characte
     source_message_ids = [int(r["id"]) for r in rows]
     messages_text = _format_messages_for_memory_palace(rows)
     pinned_refs = await get_active_memory_palace_pin_refs(character_id)
-    raw_items, unpin_ids, related_refs = await call_memory_palace_extractor(messages_text, character_id=character_id)
+    raw_items, unpin_ids, related_refs, corrections = await call_memory_palace_extractor(messages_text, character_id=character_id)
     normalized = [_normalize_memory_palace_item(x) for x in raw_items]
     normalized = [x for x in normalized if x]
     related_ref_ids = [str(r.get("id")) for r in (related_refs or []) if r.get("id")]
     items = [_serialize_memory_palace_preview_item(item, session_id=session_id, source_message_ids=source_message_ids, related_ref_ids=related_ref_ids) for item in normalized]
+    items.extend(serialize_memory_palace_correction_previews(corrections, related_refs, session_id=session_id, source_message_ids=source_message_ids))
     for unpin_id in unpin_ids:
         items.append(_serialize_memory_palace_unpin_preview(unpin_id, pinned_refs, session_id=session_id, source_message_ids=source_message_ids))
-    return {"session_id": session_id, "status": "ok", "cursor": last_id, "message_count": len(rows), "source_message_ids": source_message_ids, "raw_count": len(raw_items), "memory_count": len(normalized), "unpin_count": len(unpin_ids), "items": items}
+    return {"session_id": session_id, "status": "ok", "cursor": last_id, "message_count": len(rows), "source_message_ids": source_message_ids, "raw_count": len(raw_items), "memory_count": len(normalized), "correction_count": len(corrections), "unpin_count": len(unpin_ids), "items": items}
 
 
 async def import_memory_palace_preview_items(items: list, character_id: str = "default") -> dict:
     created = []
     embedded_count = 0
     unpin_ids = []
+    corrections = []
     for item in items or []:
         if not isinstance(item, dict):
             continue
-        if (item.get("type") or "memory") == "unpin":
+        item_type = item.get("type") or "memory"
+        if item_type == "unpin":
             uid = str(item.get("unpin_id") or "").strip()
             if uid:
                 unpin_ids.append(uid)
+            continue
+        if item_type == "correct":
+            target_id = str(item.get("target_id") or item.get("targetId") or "").strip()
+            note = str(item.get("note") or "").strip()
+            if target_id and note:
+                corrections.append({"targetId": target_id, "note": note})
             continue
         norm = _normalize_memory_palace_item(item)
         if not norm:
@@ -5228,6 +5345,12 @@ async def import_memory_palace_preview_items(items: list, character_id: str = "d
         event_box_count = await bind_memory_palace_event_boxes(event_links, event_hints, character_id=character_id)
     except Exception as e:
         print(f"⚠️ 记忆宫殿预览导入事件盒绑定失败: {e}")
+    corrected_count = 0
+    if corrections:
+        try:
+            corrected_count = await apply_memory_palace_corrections(corrections, character_id=character_id)
+        except Exception as e:
+            print(f"⚠️ 记忆宫殿预览导入纠错失败: {e}")
     unpinned_count = 0
     if unpin_ids:
         try:
@@ -5242,7 +5365,7 @@ async def import_memory_palace_preview_items(items: list, character_id: str = "d
                 await save_memory_palace_extraction_cursor(sid, max(mids), character_id=character_id, last_source="manual_preview")
         except Exception as e:
             print(f"⚠️ 记忆宫殿预览导入标记已提取失败 session={sid}: {e}")
-    return {"status": "ok", "created": len(created), "embedded": embedded_count, "event_boxes": event_box_count, "unpinned": unpinned_count, "marked": marked_count, "nodes": created}
+    return {"status": "ok", "created": len(created), "embedded": embedded_count, "event_boxes": event_box_count, "corrected": corrected_count, "unpinned": unpinned_count, "marked": marked_count, "nodes": created}
 
 async def extract_memories_from_text_for_palace(text: str, character_id: str = "default"):
     text = str(text or "").strip()
@@ -5250,7 +5373,7 @@ async def extract_memories_from_text_for_palace(text: str, character_id: str = "
         return {"status": "error", "error": "文本为空"}
     if len(text) > 20000:
         text = text[:20000] + "\n…（已截断）"
-    raw_items, unpin_ids, related_refs = await call_memory_palace_extractor(text, character_id=character_id)
+    raw_items, unpin_ids, related_refs, corrections = await call_memory_palace_extractor(text, character_id=character_id)
     normalized = [_normalize_memory_palace_item(x) for x in raw_items]
     normalized = [x for x in normalized if x]
     created = []
@@ -5301,7 +5424,7 @@ async def extract_memories_from_text_for_palace(text: str, character_id: str = "
             print(f"📌 记忆宫殿文本提取主动摘除便利贴 {unpinned_count} 条")
     except Exception as e:
         print(f"⚠️ 记忆宫殿文本提取主动摘除便利贴失败: {e}")
-    return {"status": "ok", "extracted": len(raw_items), "created": len(created), "embedded": embedded_count, "event_boxes": event_box_count, "unpinned": unpinned_count, "nodes": created}
+    return {"status": "ok", "extracted": len(raw_items), "created": len(created), "embedded": embedded_count, "event_boxes": event_box_count, "corrected": corrected_count, "unpinned": unpinned_count, "nodes": created}
 
 
 @app.post("/api/memory-palace/extract-text")
@@ -5321,7 +5444,7 @@ async def api_memory_palace_extract_text(request: Request):
                 return {"status": "error", "error": "文本为空"}
             if len(text) > 20000:
                 text = text[:20000] + "\n…（已截断）"
-            raw_items, unpin_ids, related_refs = await call_memory_palace_extractor(text, character_id=character_id)
+            raw_items, unpin_ids, related_refs, corrections = await call_memory_palace_extractor(text, character_id=character_id)
             normalized = [_normalize_memory_palace_item(x) for x in raw_items]
             normalized = [x for x in normalized if x]
             raw_count = len(raw_items)

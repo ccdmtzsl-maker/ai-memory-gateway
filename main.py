@@ -5653,95 +5653,6 @@ async def save_memory_palace_embedding(memory_id: str, content: str) -> bool:
     return True
 
 
-async def extract_memories_from_recent_conversations(limit: int = 50, session_id: str = None, character_id: str = "default"):
-    rows = await _fetch_recent_conversation_messages_for_palace(limit=limit, session_id=session_id)
-    if not rows:
-        return {"status": "ok", "message": "没有可处理的对话", "created": 0, "embedded": 0, "nodes": []}
-    messages_text = _format_messages_for_memory_palace(rows)
-    raw_items, unpin_ids, related_refs, corrections = await call_memory_palace_extractor(messages_text, character_id=character_id, source_messages=rows)
-    normalized = [_normalize_memory_palace_item(x) for x in raw_items]
-    normalized = [x for x in normalized if x]
-    created = []
-    embedded_count = 0
-    source_session = session_id or (rows[-1]["session_id"] if rows else None)
-    source_message_ids = [int(r["id"]) for r in rows]
-    for item in normalized:
-        node_id = f"mn_{int(datetime.now(timezone.utc).timestamp() * 1000)}_{uuid.uuid4().hex[:6]}"
-        metadata = json.dumps({
-            "extract_source": "recent_conversations",
-            "source_message_ids": source_message_ids,
-            "source_date": item.get("date", ""),
-        }, ensure_ascii=False)
-        node = await create_memory_palace_node(
-            node_id=node_id,
-            content=item["content"],
-            room=item["room"],
-            tags=item["tags"],
-            importance=item["importance"],
-            mood=item["mood"],
-            valence=item["valence"],
-            arousal=item["arousal"],
-            date=item.get("date") or None,
-            character_id=character_id,
-            session_id=source_session,
-            origin="extraction",
-            pinned_until=item.get("pinned_until"),
-            metadata=metadata,
-        )
-        try:
-            await build_memory_palace_links_for_node(node)
-        except Exception as e:
-            print(f"⚠️ 记忆宫殿自动关联失败 {node_id}: {e}")
-        try:
-            if await save_memory_palace_embedding(node_id, item["content"]):
-                embedded_count += 1
-                node["embedded"] = True
-        except Exception as e:
-            print(f"⚠️ 记忆宫殿 embedding 入库失败 {node_id}: {e}")
-        created.append(node)
-    event_links, event_hints = parse_memory_palace_event_links(raw_items, created, related_refs)
-    event_box_count = 0
-    try:
-        event_box_count = await bind_memory_palace_event_boxes(event_links, event_hints, character_id=character_id)
-        if event_box_count:
-            print(f"📦 记忆宫殿事件盒绑定 {event_box_count} 个")
-    except Exception as e:
-        print(f"⚠️ 记忆宫殿事件盒绑定失败: {e}")
-    compressed_count = 0
-    try:
-        compressed_count = await maybe_compress_memory_palace_event_boxes(None, character_id=character_id) if event_box_count else 0
-    except Exception as e:
-        print(f"⚠️ 记忆宫殿事件盒压缩失败: {e}")
-    corrected_count = 0
-    try:
-        corrected_count = await apply_memory_palace_corrections(corrections, character_id=character_id)
-        if corrected_count:
-            print(f"✏️ 记忆宫殿纠正旧记忆 {corrected_count} 条")
-    except Exception as e:
-        print(f"⚠️ 记忆宫殿纠错失败: {e}")
-    unpinned_count = 0
-    try:
-        unpinned_count = await clear_memory_palace_pins_by_ids(unpin_ids, character_id=character_id)
-        if unpinned_count:
-            print(f"📌 记忆宫殿主动摘除便利贴 {unpinned_count} 条")
-    except Exception as e:
-        print(f"⚠️ 记忆宫殿主动摘除便利贴失败: {e}")
-    try:
-        max_id = max(int(r["id"]) for r in rows)
-        pool = await get_pool()
-        async with pool.acquire() as conn:
-            await conn.execute("""
-                INSERT INTO memory_palace_state (character_id, last_processed_message_id, updated_at)
-                VALUES ($1, $2, NOW())
-                ON CONFLICT (character_id) DO UPDATE SET
-                    last_processed_message_id = GREATEST(memory_palace_state.last_processed_message_id, EXCLUDED.last_processed_message_id),
-                    updated_at = NOW()
-            """, character_id, max_id)
-    except Exception as e:
-        print(f"⚠️ 记忆宫殿 high water mark 更新失败: {e}")
-    return {"status": "ok", "processed_messages": len(rows), "extracted": len(raw_items), "created": len(created), "embedded": embedded_count, "event_boxes": event_box_count, "compressed": compressed_count, "corrected": corrected_count, "unpinned": unpinned_count, "nodes": created}
-
-
 @app.post("/api/memory-palace/extract-preview-sessions")
 async def api_memory_palace_extract_preview_sessions(request: Request):
     if not MEMORY_ENABLED:
@@ -5795,27 +5706,6 @@ async def api_memory_palace_import_preview(request: Request):
         return await import_memory_palace_preview_items(items, character_id=character_id)
     except Exception as e:
         return {"status": "error", "error": str(e)}
-
-
-@app.post("/api/memory-palace/extract-recent")
-async def api_memory_palace_extract_recent(request: Request):
-    if not MEMORY_ENABLED:
-        return {"error": "记忆系统未启用"}
-    try:
-        data = await request.json()
-    except Exception:
-        data = {}
-    try:
-        limit = int(data.get("limit", 50))
-        session_id = data.get("session_id") or None
-        character_id = data.get("character_id") or "default"
-        return await extract_memories_from_recent_conversations(limit=limit, session_id=session_id, character_id=character_id)
-    except Exception as e:
-        return {"status": "error", "error": str(e)}
-
-
-
-
 
 
 async def get_memory_palace_extraction_cursor(session_id: str, character_id: str = "default") -> dict:

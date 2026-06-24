@@ -5029,7 +5029,7 @@ def collect_memory_palace_source_message_ids(items: list) -> dict:
     return {sid: list(dict.fromkeys(vals)) for sid, vals in by_session.items() if vals}
 
 
-def _serialize_memory_palace_preview_item(item: dict, session_id: str = None, group_index: int = None, source_message_ids: list = None) -> dict:
+def _serialize_memory_palace_preview_item(item: dict, session_id: str = None, group_index: int = None, source_message_ids: list = None, related_ref_ids: list = None) -> dict:
     out = dict(item or {})
     pu = out.get("pinned_until")
     if pu is not None:
@@ -5044,6 +5044,8 @@ def _serialize_memory_palace_preview_item(item: dict, session_id: str = None, gr
         out["group_index"] = group_index
     if source_message_ids is not None:
         out["source_message_ids"] = [int(x) for x in source_message_ids if str(x).isdigit()]
+    if related_ref_ids is not None:
+        out["related_ref_ids"] = [str(x) for x in related_ref_ids if str(x or "").strip()]
     return out
 
 
@@ -5084,7 +5086,8 @@ async def preview_memory_palace_extraction_for_session(session_id: str, characte
     raw_items, unpin_ids, related_refs = await call_memory_palace_extractor(messages_text, character_id=character_id)
     normalized = [_normalize_memory_palace_item(x) for x in raw_items]
     normalized = [x for x in normalized if x]
-    items = [_serialize_memory_palace_preview_item(item, session_id=session_id, source_message_ids=source_message_ids) for item in normalized]
+    related_ref_ids = [str(r.get("id")) for r in (related_refs or []) if r.get("id")]
+    items = [_serialize_memory_palace_preview_item(item, session_id=session_id, source_message_ids=source_message_ids, related_ref_ids=related_ref_ids) for item in normalized]
     for unpin_id in unpin_ids:
         items.append(_serialize_memory_palace_unpin_preview(unpin_id, pinned_refs, session_id=session_id, source_message_ids=source_message_ids))
     return {"session_id": session_id, "status": "ok", "cursor": last_id, "message_count": len(rows), "source_message_ids": source_message_ids, "raw_count": len(raw_items), "memory_count": len(normalized), "unpin_count": len(unpin_ids), "items": items}
@@ -5120,7 +5123,14 @@ async def import_memory_palace_preview_items(items: list, character_id: str = "d
         except Exception as e:
             print(f"⚠️ 记忆宫殿预览导入 embedding 失败 {node_id}: {e}")
         created.append(node)
-    event_links, event_hints = parse_memory_palace_event_links(items, created, [])
+    related_ref_ids = []
+    for item in items or []:
+        for rid in (item.get("related_ref_ids") or []):
+            rid = str(rid or "").strip()
+            if rid and rid not in related_ref_ids:
+                related_ref_ids.append(rid)
+    related_refs = [{"id": rid} for rid in related_ref_ids]
+    event_links, event_hints = parse_memory_palace_event_links(items, created, related_refs)
     event_box_count = 0
     try:
         event_box_count = await bind_memory_palace_event_boxes(event_links, event_hints, character_id=character_id)

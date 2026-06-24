@@ -1977,7 +1977,7 @@ async def extract_memory_palace_from_partition_messages(messages: list, session_
         message_ids = [int(r["id"]) for r in rows]
         log_memory_palace_auto_extract("run", f"🧠 分区自动提取开始：session={session_id}, cursor={last_id}, 待处理{len(rows)}条", session_id=session_id)
         messages_text = _format_messages_for_memory_palace(rows)
-        raw_items, unpin_ids, related_refs, corrections = await call_memory_palace_extractor(messages_text, character_id=character_id)
+        raw_items, unpin_ids, related_refs, corrections = await call_memory_palace_extractor(messages_text, character_id=character_id, source_messages=rows)
         normalized = [_normalize_memory_palace_item(x) for x in raw_items]
         normalized = [x for x in normalized if x]
         created = []
@@ -4632,18 +4632,92 @@ async def clear_memory_palace_pins_by_ids(node_ids: list, character_id: str = "d
     return len(rows)
 
 
-async def get_memory_palace_related_refs(character_id: str = "default", limit: int = 20) -> list:
-    """给提取模型的旧记忆引用，供 relatedTo 绑定 EventBox。"""
+def _memory_palace_clean_query_text(text: str) -> str:
+    return re.sub(r"\s+", " ", str(text or "").strip())
+
+
+def _memory_palace_sample_evenly(items: list, max_items: int) -> list:
+    if len(items) <= max_items:
+        return items
+    step = len(items) / max_items
+    return [items[int(i * step)] for i in range(max_items)]
+
+
+def split_memory_palace_extraction_snippets(messages_text: str = "", source_messages: list = None, max_snippets: int = 25) -> list:
+    """提取 relatedTo 候选用 query：优先每条用户消息，兜底按文本分段。"""
+    snippets = []
+    seen = set()
+    if source_messages:
+        for row in source_messages:
+            try:
+                role = row.get("role") if hasattr(row, "get") else row["role"]
+                content = row.get("content") if hasattr(row, "get") else row["content"]
+            except Exception:
+                continue
+            if role != "user":
+                continue
+            text = _memory_palace_clean_query_text(content)
+            if len(re.sub(r"\W+", "", text, flags=re.UNICODE)) < 4:
+                continue
+            if text not in seen:
+                seen.add(text)
+                snippets.append(text[:300])
+    if not snippets:
+        text = str(messages_text or "").strip()
+        parts = [p.strip() for p in re.split(r"\n{2,}|(?<=[。！？!?])\s+", text) if p.strip()]
+        if len(parts) <= 1 and text:
+            size = 300
+            parts = [text[i:i + size] for i in range(0, len(text), size)]
+        for part in parts:
+            cleaned = _memory_palace_clean_query_text(part)
+            if len(cleaned) < 8 or cleaned in seen:
+                continue
+            seen.add(cleaned)
+            snippets.append(cleaned[:300])
+    return _memory_palace_sample_evenly(snippets, max(1, int(max_snippets or 25)))
+
+
+async def get_memory_palace_related_refs(character_id: str = "default", limit: int = 20, query_text: str = "", source_messages: list = None) -> list:
+    """给提取模型的旧记忆引用：多 query 相关检索优先，最近/高重要兜底。"""
+    max_total = max(0, min(int(limit or 20), 50))
+    if max_total <= 0:
+        return []
     rows = await _memory_palace_fetch_rows(room=None, character_id=character_id)
-    rows = sorted(rows, key=lambda r: (r.get("last_accessed_at") or r.get("created_at"), r.get("importance") or 5), reverse=True)
-    refs = []
-    for row in rows:
-        content = str(row.get("content") or "").strip().replace("\n", " ")
-        if not content:
+    refs_by_id = {}
+    snippets = split_memory_palace_extraction_snippets(query_text, source_messages, max_snippets=25)
+    for snippet in snippets:
+        try:
+            hits = await search_memory_palace_for_prompt(snippet, limit=3, character_id=character_id, rows=rows)
+        except Exception as e:
+            print(f"⚠️ 记忆宫殿 related refs 检索失败: {e}")
             continue
-        refs.append({"id": row["id"], "room": row.get("room") or "living_room", "content": content[:120]})
-        if len(refs) >= max(0, min(int(limit or 20), 50)):
-            break
+        for hit in hits:
+            sim = float(hit.get("similarity_score") or hit.get("score") or 0.0)
+            if sim < 0.40:
+                continue
+            old = refs_by_id.get(hit["id"])
+            if old is None or sim > old.get("_score", 0.0):
+                content = str(hit.get("content") or "").strip().replace("\n", " ")
+                if content:
+                    refs_by_id[hit["id"]] = {"id": hit["id"], "room": hit.get("room") or "living_room", "content": content[:120], "_score": sim}
+    refs = sorted(refs_by_id.values(), key=lambda r: r.get("_score", 0.0), reverse=True)[:min(15, max_total)]
+    seen_ids = {r["id"] for r in refs}
+    if len(refs) < max_total:
+        fallback_rows = sorted(rows, key=lambda r: (r.get("last_accessed_at") or r.get("created_at"), r.get("importance") or 5), reverse=True)
+        for row in fallback_rows:
+            if row["id"] in seen_ids:
+                continue
+            content = str(row.get("content") or "").strip().replace("\n", " ")
+            if not content:
+                continue
+            refs.append({"id": row["id"], "room": row.get("room") or "living_room", "content": content[:120]})
+            seen_ids.add(row["id"])
+            if len(refs) >= max_total:
+                break
+    for ref in refs:
+        ref.pop("_score", None)
+    if snippets:
+        print(f"🏰 记忆宫殿 related refs：{len(snippets)} 段 query → {len(refs)} 条候选")
     return refs
 
 
@@ -5094,7 +5168,7 @@ async def maybe_compress_memory_palace_event_boxes(box_ids=None, character_id: s
     return compressed
 
 
-async def call_memory_palace_extractor(messages_text: str, character_id: str = "default") -> tuple:
+async def call_memory_palace_extractor(messages_text: str, character_id: str = "default", source_messages: list = None) -> tuple:
     base_url = await get_runtime_memory_api_base_url()
     if not base_url:
         raise RuntimeError("MEMORY_API_BASE_URL 未设置")
@@ -5103,7 +5177,7 @@ async def call_memory_palace_extractor(messages_text: str, character_id: str = "
         raise RuntimeError("MEMORY_MODEL 未设置")
     memory_api_key = await get_runtime_memory_api_key()
     pinned_refs = await get_active_memory_palace_pin_refs(character_id)
-    related_refs = await get_memory_palace_related_refs(character_id)
+    related_refs = await get_memory_palace_related_refs(character_id, query_text=messages_text, source_messages=source_messages)
     prompt = await build_memory_palace_extraction_prompt(messages_text, pinned_refs=pinned_refs, related_refs=related_refs)
     headers = {"Content-Type": "application/json"}
     if memory_api_key:
@@ -5151,7 +5225,7 @@ async def extract_memories_from_recent_conversations(limit: int = 50, session_id
     if not rows:
         return {"status": "ok", "message": "没有可处理的对话", "created": 0, "embedded": 0, "nodes": []}
     messages_text = _format_messages_for_memory_palace(rows)
-    raw_items, unpin_ids, related_refs, corrections = await call_memory_palace_extractor(messages_text, character_id=character_id)
+    raw_items, unpin_ids, related_refs, corrections = await call_memory_palace_extractor(messages_text, character_id=character_id, source_messages=rows)
     normalized = [_normalize_memory_palace_item(x) for x in raw_items]
     normalized = [x for x in normalized if x]
     created = []
@@ -5438,7 +5512,7 @@ async def preview_memory_palace_extraction_for_session(session_id: str, characte
     source_message_ids = [int(r["id"]) for r in rows]
     messages_text = _format_messages_for_memory_palace(rows)
     pinned_refs = await get_active_memory_palace_pin_refs(character_id)
-    raw_items, unpin_ids, related_refs, corrections = await call_memory_palace_extractor(messages_text, character_id=character_id)
+    raw_items, unpin_ids, related_refs, corrections = await call_memory_palace_extractor(messages_text, character_id=character_id, source_messages=rows)
     normalized = [_normalize_memory_palace_item(x) for x in raw_items]
     normalized = [x for x in normalized if x]
     related_ref_ids = [str(r.get("id")) for r in (related_refs or []) if r.get("id")]

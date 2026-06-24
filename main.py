@@ -1002,20 +1002,71 @@ def collapse_memory_palace_rows_by_event_box(rows: list, pinned_count: int, boxe
     return pinned + collapsed
 
 
+def _memory_palace_format_node_line(row: dict) -> str:
+    date_text = str(row.get("date") or "")[:10] or str(row.get("created_at") or "")[:10]
+    meta = f"{date_text}｜重要性:{row.get('importance') or 5}｜情绪:{row.get('mood') or 'neutral'}"
+    content = str(row.get("content") or "").strip()
+    return f"- {meta}\n  {content}"
+
+
+def _memory_palace_indent(text: str, prefix: str = "  ") -> str:
+    return "\n".join(prefix + line for line in str(text or "").splitlines())
+
+
+async def load_memory_palace_event_box_nodes(boxes: dict, character_id: str = "default") -> dict:
+    node_ids = []
+    for box in (boxes or {}).values():
+        for node_id in (box.get("live_memory_ids") or []):
+            if node_id:
+                node_ids.append(str(node_id))
+        summary_id = box.get("summary_node_id")
+        if summary_id:
+            node_ids.append(str(summary_id))
+    node_ids = list(dict.fromkeys(node_ids))
+    if not node_ids:
+        return {}
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("""
+            SELECT id, content, room, tags, importance, mood, valence, arousal,
+                   date, created_at, last_accessed_at, access_count, pinned_until, event_box_id, archived, is_box_summary
+            FROM memory_palace_nodes
+            WHERE character_id = $1 AND id = ANY($2::text[])
+        """, character_id, node_ids)
+    return {r["id"]: dict(r) for r in rows}
+
+
 def format_memory_palace_event_box_item(row: dict) -> str:
     box = row.get("_event_box") or {}
+    box_nodes = row.get("_event_box_nodes") or {}
     name = str(box.get("name") or "未命名事件").strip()
     tags = str(box.get("tags") or "").strip()
     tag_text = f" 〈{tags}〉" if tags else ""
-    date_text = str(row.get("date") or "")[:10] or str(row.get("created_at") or "")[:10]
-    content = str(row.get("content") or "").strip()
-    live_count = len(box.get("live_memory_ids") or [])
+    live_ids = [str(x) for x in (box.get("live_memory_ids") or []) if x]
+    summary_id = box.get("summary_node_id")
+    live_nodes = [box_nodes[x] for x in live_ids if x in box_nodes and not box_nodes[x].get("archived")]
+    live_nodes.sort(key=lambda n: n.get("date") or n.get("created_at") or "")
+    summary_node = box_nodes.get(summary_id) if summary_id else None
+    max_live = 8
+    live_to_show = live_nodes[:max_live]
+    omitted = max(0, len(live_nodes) - len(live_to_show))
     lines = [f"📦 **事件盒：{name}**{tag_text}"]
-    if live_count > 1:
-        lines.append(f"  同一事件共 {live_count} 条片段；本次命中片段：")
-    if content:
-        lines.append(f"  - {date_text}｜重要性:{row.get('importance') or 5}｜情绪:{row.get('mood') or 'neutral'}")
-        lines.append(f"    {content}")
+    if summary_node:
+        lines.append("  _整合回忆_：")
+        lines.append(_memory_palace_indent(_memory_palace_format_node_line(summary_node)))
+    if live_to_show:
+        if summary_node:
+            lines.append("  _新增片段_：")
+        else:
+            lines.append(f"  同一事件共 {len(live_nodes)} 条片段：")
+        for node in live_to_show:
+            lines.append(_memory_palace_indent(_memory_palace_format_node_line(node)))
+    else:
+        content = str(row.get("content") or "").strip()
+        if content:
+            lines.append(_memory_palace_indent(_memory_palace_format_node_line(row)))
+    if omitted > 0:
+        lines.append(f"  （另有 {omitted} 条同盒片段未展示）")
     return "\n".join(lines)
 
 async def retrieve_memory_palace_rows_for_prompt(query: str = "", limit: int = 5, room: str = None, character_id: str = "default", recent_messages=None, touch_access: bool = True):
@@ -1095,7 +1146,11 @@ async def format_memory_palace_for_prompt(limit: int = 5, room: str = None, quer
         return "### 记忆宫殿\n\n暂无可用记忆。"
     box_ids = [r.get("event_box_id") for r in rows[pinned_count:] if r.get("event_box_id")]
     boxes = await load_memory_palace_event_boxes(box_ids, character_id=character_id)
+    box_nodes = await load_memory_palace_event_box_nodes(boxes, character_id=character_id)
     rows = collapse_memory_palace_rows_by_event_box(rows, pinned_count, boxes)
+    for row in rows[pinned_count:]:
+        if row.get("_event_box"):
+            row["_event_box_nodes"] = box_nodes
     lines = [
         "### 记忆宫殿",
         "",

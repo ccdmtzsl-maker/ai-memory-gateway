@@ -171,32 +171,30 @@ function renderMemoryPalaceNodes() {
 }
 
 
-async function extractRecentMemoryPalace(limit) {
-    limit = limit || 50;
-    if (!confirm('将调用记忆提取模型处理最近 ' + limit + ' 条对话，并写入记忆宫殿。继续吗？')) return;
-    const btn = document.getElementById('mpExtractRecentBtn');
+async function clearMemoryPalacePins() {
+    if (!confirm('将清除所有当前便利贴，只取消置顶，不删除任何记忆。继续吗？')) return;
+    const btn = document.getElementById('mpClearPinsBtn');
     const oldText = btn ? btn.textContent : '';
     if (btn) {
         btn.disabled = true;
-        btn.textContent = '处理中...';
+        btn.textContent = '清除中...';
     }
     try {
-        mpMsg('正在处理最近 ' + limit + ' 条对话，请稍候...');
-        const resp = await fetch('/api/memory-palace/extract-recent', {
+        const resp = await fetch('/api/memory-palace/pins/clear', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({limit})
+            body: JSON.stringify({})
         });
         const data = await resp.json();
-        if (data.error || data.status === 'error') throw new Error(data.error || '提取失败');
-        mpMsg('处理完成：读取 ' + (data.processed_messages || 0) + ' 条，对模型提取 ' + (data.extracted || 0) + ' 条，入库 ' + (data.created || 0) + ' 条，向量化 ' + (data.embedded || 0) + ' 条。');
+        if (data.error || data.status === 'error') throw new Error(data.error || '清除失败');
+        mpMsg('已清除便利贴：' + Number(data.cleared || 0) + ' 条');
         await loadMemoryPalace();
     } catch (e) {
-        mpMsg('处理失败：' + e.message, 'error');
+        mpMsg('清除便利贴失败：' + e.message, 'error');
     } finally {
         if (btn) {
             btn.disabled = false;
-            btn.textContent = oldText || '处理最近50条';
+            btn.textContent = oldText || '清除便利贴';
         }
     }
 }

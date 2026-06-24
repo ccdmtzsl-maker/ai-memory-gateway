@@ -1061,8 +1061,38 @@ function doExport() {
     window.location.href = '/export/memories';
 }
 
-function exportMemoryPalace() {
-    window.location.href = '/export/memory-palace';
+async function exportMemoryPalace() {
+    try {
+        const resp = await fetch('/export/memory-palace');
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        const contentType = resp.headers.get('content-type') || '';
+        if (contentType.includes('application/json')) {
+            const clone = resp.clone();
+            const data = await clone.json().catch(() => null);
+            if (data && data.error) {
+                alert('导出失败: ' + data.error);
+                return;
+            }
+        }
+        const blob = await resp.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        const now = new Date();
+        const ts = now.getFullYear() +
+            String(now.getMonth() + 1).padStart(2, '0') +
+            String(now.getDate()).padStart(2, '0') + '_' +
+            String(now.getHours()).padStart(2, '0') +
+            String(now.getMinutes()).padStart(2, '0') +
+            String(now.getSeconds()).padStart(2, '0');
+        a.href = url;
+        a.download = 'memory_palace_backup_' + ts + '.json';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+    } catch (e) {
+        alert('导出失败: ' + e.message);
+    }
 }
 
 

@@ -350,6 +350,24 @@ function renderMemoryPalaceEventBoxes() {
     }).join('');
 }
 
+async function compressMemoryPalaceEventBoxes() {
+    if (!confirm('将调用记忆模型压缩达到阈值的事件盒，压缩后的 live 节点会归档并生成 summary。继续吗？')) return;
+    try {
+        mpMsg('正在压缩可压缩事件盒...');
+        const resp = await fetch('/api/memory-palace/event-boxes/compress', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({})
+        });
+        const data = await resp.json();
+        if (data.error || data.status === 'error') throw new Error(data.error || '压缩失败');
+        mpMsg('事件盒压缩完成：压缩 ' + Number(data.compressed || 0) + ' 个');
+        await loadMemoryPalace();
+    } catch (e) {
+        mpMsg('事件盒压缩失败：' + e.message, 'error');
+    }
+}
+
 async function selectMemoryPalaceEventBox(id) {
     _mpCurrentEventBoxId = id || null;
     renderMemoryPalaceEventBoxes();

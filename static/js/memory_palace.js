@@ -2,6 +2,8 @@ let _mpRooms = [];
 let _mpNodes = [];
 let _mpCurrentRoom = '';
 let _mpEditingId = null;
+let _mpEventBoxes = [];
+let _mpCurrentEventBoxId = null;
 
 function mpEsc(s) {
     return String(s == null ? '' : s)
@@ -59,6 +61,7 @@ async function loadMemoryPalace() {
         _mpRooms = data.rooms || [];
         renderMemoryPalaceRooms();
         await loadMemoryPalaceNodes(_mpCurrentRoom);
+        await loadMemoryPalaceEventBoxes();
     } catch (e) {
         mpMsg('加载记忆宫殿失败：' + e.message, 'error');
         const roomsEl = document.getElementById('mpRooms');
@@ -294,6 +297,109 @@ async function deleteMemoryPalaceNode(id) {
 }
 
 
+function mpTagsHtml(tags, color) {
+    const parts = String(tags || '').split(/[、,，\n]/).map(t => t.trim()).filter(Boolean);
+    if (!parts.length) return '';
+    return '<div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap;">' +
+        parts.slice(0, 8).map(t => '<span style="font-size:12px;padding:3px 8px;border-radius:999px;background:' + color + '18;color:' + color + ';">#' + mpEsc(t) + '</span>').join('') +
+        '</div>';
+}
+
+async function loadMemoryPalaceEventBoxes() {
+    const listEl = document.getElementById('mpEventBoxList');
+    if (!listEl) return;
+    listEl.innerHTML = '<div style="color:var(--text-muted);padding:12px;">加载中...</div>';
+    try {
+        const resp = await fetch('/api/memory-palace/event-boxes?limit=100');
+        const data = await resp.json();
+        if (data.error || data.status === 'error') throw new Error(data.error || '加载失败');
+        _mpEventBoxes = data.boxes || [];
+        if (_mpCurrentEventBoxId && !_mpEventBoxes.some(b => b.id === _mpCurrentEventBoxId)) {
+            _mpCurrentEventBoxId = null;
+        }
+        renderMemoryPalaceEventBoxes();
+        if (_mpCurrentEventBoxId) {
+            await loadMemoryPalaceEventBoxDetail(_mpCurrentEventBoxId);
+        } else {
+            const detailEl = document.getElementById('mpEventBoxDetail');
+            if (detailEl) detailEl.innerHTML = '<div style="color:var(--text-muted);padding:16px;border:1px dashed var(--border-color);border-radius:10px;">选择一个事件盒查看详情。</div>';
+        }
+    } catch (e) {
+        listEl.innerHTML = '<div style="color:#dc2626;padding:12px;">加载事件盒失败：' + mpEsc(e.message) + '</div>';
+    }
+}
+
+function renderMemoryPalaceEventBoxes() {
+    const el = document.getElementById('mpEventBoxList');
+    if (!el) return;
+    if (!_mpEventBoxes.length) {
+        el.innerHTML = '<div style="color:var(--text-muted);padding:12px;">还没有事件盒。新的 relatedTo / sameAs 关联入库后会出现在这里。</div>';
+        return;
+    }
+    el.innerHTML = _mpEventBoxes.map(box => {
+        const active = box.id === _mpCurrentEventBoxId;
+        const tags = mpTagsHtml(box.tags || '', active ? '#2563eb' : '#64748b');
+        const updated = String(box.updated_at || '').slice(0, 19).replace('T', ' ');
+        return '<button type="button" class="mp-event-box-card" data-id="' + mpEsc(box.id) + '" ' +
+            'style="text-align:left;width:100%;border:1px solid ' + (active ? '#2563eb' : 'var(--border-color)') + ';background:' + (active ? '#eff6ff' : '#fff') + ';border-radius:10px;padding:12px;cursor:pointer;">' +
+            '<div style="font-weight:800;color:' + (active ? '#1d4ed8' : 'var(--text-primary)') + ';">' + mpEsc(box.name || '未命名事件') + '</div>' +
+            '<div style="font-size:12px;color:var(--text-muted);margin-top:4px;">live ' + Number(box.live_count || 0) + ' · archived ' + Number(box.archived_count || 0) + ' · 压缩 ' + Number(box.compression_count || 0) + '</div>' +
+            tags +
+            '<div style="font-size:11px;color:var(--text-muted);margin-top:8px;">' + mpEsc(updated || box.id) + '</div>' +
+        '</button>';
+    }).join('');
+}
+
+async function selectMemoryPalaceEventBox(id) {
+    _mpCurrentEventBoxId = id || null;
+    renderMemoryPalaceEventBoxes();
+    if (id) await loadMemoryPalaceEventBoxDetail(id);
+}
+
+function mpEventBoxNodeHtml(node) {
+    const room = mpRoomMeta(node.room);
+    const color = node.is_box_summary ? '#7c3aed' : (node.archived ? '#64748b' : (room.color || '#64748b'));
+    const label = node.is_box_summary ? 'summary' : (node.archived ? 'archived' : 'live');
+    const date = node.date || String(node.created_at || '').slice(0, 10);
+    return '<div style="border:1px solid var(--border-color);border-left:4px solid ' + color + ';border-radius:10px;padding:12px;background:#fff;">' +
+        '<div style="display:flex;justify-content:space-between;gap:8px;align-items:flex-start;">' +
+            '<div style="font-size:12px;color:var(--text-muted);">' + mpEsc(label) + ' · ' + mpEsc(room.label || node.room || '') + ' · ' + mpEsc(date || '') + '</div>' +
+            '<div style="font-size:12px;color:var(--text-muted);white-space:nowrap;">importance ' + mpEsc(node.importance || 5) + ' · ' + mpEsc(node.mood || 'neutral') + '</div>' +
+        '</div>' +
+        '<div style="white-space:pre-wrap;line-height:1.6;margin-top:8px;font-size:14px;">' + mpEsc(node.content || '') + '</div>' +
+        mpTagsHtml(node.tags || '', color) +
+    '</div>';
+}
+
+async function loadMemoryPalaceEventBoxDetail(id) {
+    const el = document.getElementById('mpEventBoxDetail');
+    if (!el) return;
+    el.innerHTML = '<div style="color:var(--text-muted);padding:16px;">加载中...</div>';
+    try {
+        const resp = await fetch('/api/memory-palace/event-boxes/' + encodeURIComponent(id));
+        const data = await resp.json();
+        if (data.error || data.status === 'error') throw new Error(data.error || '加载失败');
+        const box = data.box || {};
+        const nodes = data.nodes || [];
+        const tags = mpTagsHtml(box.tags || '', '#2563eb');
+        const nodeCards = nodes.map(mpEventBoxNodeHtml).join('');
+        el.innerHTML = '<div style="border:1px solid var(--border-color);border-radius:12px;padding:14px;background:#fff;">' +
+            '<div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start;flex-wrap:wrap;">' +
+                '<div>' +
+                    '<div style="font-weight:900;font-size:18px;">' + mpEsc(box.name || '未命名事件') + '</div>' +
+                    '<div style="font-size:12px;color:var(--text-muted);margin-top:4px;">' + mpEsc(box.id || '') + '</div>' +
+                '</div>' +
+                '<div style="font-size:12px;color:var(--text-muted);text-align:right;">live ' + Number(box.live_count || 0) + ' · archived ' + Number(box.archived_count || 0) + '<br>压缩 ' + Number(box.compression_count || 0) + (box.sealed ? ' · sealed' : '') + '</div>' +
+            '</div>' +
+            tags +
+            '<div style="display:flex;flex-direction:column;gap:10px;margin-top:14px;">' + (nodeCards || '<div style="color:var(--text-muted);">这个事件盒里暂时没有节点。</div>') + '</div>' +
+        '</div>';
+    } catch (e) {
+        el.innerHTML = '<div style="color:#dc2626;padding:16px;border:1px solid #fecaca;border-radius:10px;background:#fff;">加载事件盒详情失败：' + mpEsc(e.message) + '</div>';
+    }
+}
+
+
 function initMemoryPalaceInteractions() {
     const section = document.getElementById('section-memory-palace');
     if (!section || section.dataset.mpBound === '1') return;
@@ -312,6 +418,11 @@ function initMemoryPalaceInteractions() {
         const deleteBtn = event.target.closest('.mp-delete-node');
         if (deleteBtn) {
             deleteMemoryPalaceNode(deleteBtn.dataset.id || '');
+            return;
+        }
+        const eventBoxBtn = event.target.closest('.mp-event-box-card');
+        if (eventBoxBtn) {
+            selectMemoryPalaceEventBox(eventBoxBtn.dataset.id || '');
         }
     });
 }

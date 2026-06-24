@@ -965,6 +965,59 @@ async def _memory_palace_strengthen_coactivated(node_ids, character_id: str = "d
                 """, f"ml_{int(datetime.now(timezone.utc).timestamp() * 1000)}_{uuid.uuid4().hex[:6]}", character_id, source_id, target_id, _MEMORY_PALACE_CO_ACTIVATION_INCREMENT)
 
 
+
+
+async def load_memory_palace_event_boxes(box_ids: list, character_id: str = "default") -> dict:
+    ids = [str(x) for x in (box_ids or []) if str(x or "").strip()]
+    ids = list(dict.fromkeys(ids))
+    if not ids:
+        return {}
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("""
+            SELECT id, character_id, name, tags, summary_node_id, live_memory_ids, archived_memory_ids, compression_count, sealed, created_at, updated_at
+            FROM memory_palace_event_boxes
+            WHERE character_id = $1 AND id = ANY($2::text[])
+        """, character_id, ids)
+    return {r["id"]: dict(r) for r in rows}
+
+
+def collapse_memory_palace_rows_by_event_box(rows: list, pinned_count: int, boxes: dict) -> list:
+    """普通记忆按 event_box_id 去重；便利贴保持逐条置顶。"""
+    pinned = rows[:pinned_count]
+    normal = rows[pinned_count:]
+    collapsed = []
+    seen_boxes = set()
+    for row in normal:
+        box_id = row.get("event_box_id")
+        if box_id and box_id in boxes:
+            if box_id in seen_boxes:
+                continue
+            item = dict(row)
+            item["_event_box"] = boxes[box_id]
+            collapsed.append(item)
+            seen_boxes.add(box_id)
+        else:
+            collapsed.append(row)
+    return pinned + collapsed
+
+
+def format_memory_palace_event_box_item(row: dict) -> str:
+    box = row.get("_event_box") or {}
+    name = str(box.get("name") or "未命名事件").strip()
+    tags = str(box.get("tags") or "").strip()
+    tag_text = f" 〈{tags}〉" if tags else ""
+    date_text = str(row.get("date") or "")[:10] or str(row.get("created_at") or "")[:10]
+    content = str(row.get("content") or "").strip()
+    live_count = len(box.get("live_memory_ids") or [])
+    lines = [f"📦 **事件盒：{name}**{tag_text}"]
+    if live_count > 1:
+        lines.append(f"  同一事件共 {live_count} 条片段；本次命中片段：")
+    if content:
+        lines.append(f"  - {date_text}｜重要性:{row.get('importance') or 5}｜情绪:{row.get('mood') or 'neutral'}")
+        lines.append(f"    {content}")
+    return "\n".join(lines)
+
 async def retrieve_memory_palace_rows_for_prompt(query: str = "", limit: int = 5, room: str = None, character_id: str = "default", recent_messages=None, touch_access: bool = True):
     limit = max(1, min(int(limit or 5), 30))
     await clear_expired_memory_palace_pins(character_id)
@@ -1040,6 +1093,9 @@ async def format_memory_palace_for_prompt(limit: int = 5, room: str = None, quer
     rows, pinned_count = await retrieve_memory_palace_rows_for_prompt(query=query, limit=limit, room=room, character_id=character_id, recent_messages=recent_messages, touch_access=touch_access)
     if not rows:
         return "### 记忆宫殿\n\n暂无可用记忆。"
+    box_ids = [r.get("event_box_id") for r in rows[pinned_count:] if r.get("event_box_id")]
+    boxes = await load_memory_palace_event_boxes(box_ids, character_id=character_id)
+    rows = collapse_memory_palace_rows_by_event_box(rows, pinned_count, boxes)
     lines = [
         "### 记忆宫殿",
         "",
@@ -1071,6 +1127,9 @@ async def format_memory_palace_for_prompt(limit: int = 5, room: str = None, quer
         lines.append("")
         lines.append(f"**[{label} · {desc}]**")
         for row in room_rows:
+            if row.get("_event_box"):
+                lines.append(format_memory_palace_event_box_item(row))
+                continue
             date_text = str(row["date"] or "")[:10] or str(row["created_at"] or "")[:10]
             tags = (row["tags"] or "").strip()
             meta = f"{date_text}｜重要性:{row['importance'] or 5}｜情绪:{row['mood'] or 'neutral'}"

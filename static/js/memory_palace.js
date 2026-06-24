@@ -157,6 +157,8 @@ function renderMemoryPalaceNodes() {
                     '<div style=\"font-size:12px;color:var(--text-muted);margin-top:2px;\">importance ' + mpEsc(node.importance || 5) + ' · ' + mpEsc(node.mood || 'neutral') + (pinnedText ? ' · ' + mpEsc(pinnedText) : '') + '</div>' +
                 '</div>' +
                 '<div style=\"display:flex;gap:6px;align-items:flex-start;\">' +
+                    '<button class=\"mp-add-node-current-box\" data-id=\"' + mpEsc(node.id) + '\" style=\"padding:4px 8px;border:1px solid var(--border-color);border-radius:6px;background:#fff;cursor:pointer;font-size:12px;\">入盒</button>' +
+                    '<button class=\"mp-manual-bind-node\" data-id=\"' + mpEsc(node.id) + '\" style=\"padding:4px 8px;border:1px solid var(--border-color);border-radius:6px;background:#fff;cursor:pointer;font-size:12px;\">绑定</button>' +
                     '<button class=\"mp-edit-node\" data-id=\"' + mpEsc(node.id) + '\" style=\"padding:4px 8px;border:1px solid var(--border-color);border-radius:6px;background:#fff;cursor:pointer;font-size:12px;\">编辑</button>' +
                     '<button class=\"mp-delete-node\" data-id=\"' + mpEsc(node.id) + '\" style=\"padding:4px 8px;border:1px solid #dc2626;color:#dc2626;border-radius:6px;background:#fff;cursor:pointer;font-size:12px;\">删除</button>' +
                 '</div>' +
@@ -384,7 +386,7 @@ function mpEventBoxTimeText(value) {
 }
 
 function mpEventBoxSectionHtml(title, nodes, emptyText, collapsed) {
-    const body = (nodes || []).map(n => mpEventBoxNodeHtml(n, {actions: collapsed && n.archived ? '<div style=\"margin-top:8px;display:flex;justify-content:flex-end;\"><button class=\"btn btn-secondary btn-sm mp-revive-archived-node\" data-id=\"' + mpEsc(n.id || '') + '\">复活</button></div>' : ''})).join('') || '<div style="color:var(--text-muted);padding:12px;border:1px dashed var(--border-color);border-radius:10px;">' + mpEsc(emptyText || '暂无节点') + '</div>';
+    const body = (nodes || []).map(n => { const acts = []; if (!n.is_box_summary) acts.push('<button class=\"btn btn-secondary btn-sm mp-remove-node-from-box\" data-id=\"' + mpEsc(n.id || '') + '\">移出盒</button>'); if (collapsed && n.archived) acts.push('<button class=\"btn btn-secondary btn-sm mp-revive-archived-node\" data-id=\"' + mpEsc(n.id || '') + '\">复活</button>'); return mpEventBoxNodeHtml(n, {actions: acts.length ? '<div style=\"margin-top:8px;display:flex;justify-content:flex-end;gap:8px;flex-wrap:wrap;\">' + acts.join('') + '</div>' : ''}); }).join('') || '<div style="color:var(--text-muted);padding:12px;border:1px dashed var(--border-color);border-radius:10px;">' + mpEsc(emptyText || '暂无节点') + '</div>';
     if (collapsed) {
         return '<details style="margin-top:12px;border:1px solid var(--border-color);border-radius:12px;background:#fff;">' +
             '<summary style="cursor:pointer;padding:12px 14px;font-weight:800;">' + mpEsc(title) + ' <span style="color:var(--text-muted);font-weight:500;">(' + Number((nodes || []).length) + ')</span></summary>' +
@@ -531,6 +533,52 @@ async function reviveMemoryPalaceArchivedNode(id) {
     } catch (e) { mpMsg('复活 archived 节点失败：' + e.message, 'error'); }
 }
 
+
+async function addMemoryPalaceNodeToCurrentBox(nodeId) {
+    if (!_mpCurrentEventBoxId) { mpMsg('请先选择一个事件盒', 'error'); return; }
+    if (!nodeId) return;
+    if (!confirm('将这条记忆加入当前事件盒。继续吗？')) return;
+    try {
+        const resp = await fetch('/api/memory-palace/event-boxes/' + encodeURIComponent(_mpCurrentEventBoxId) + '/add-node', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({node_id:nodeId})});
+        const data = await resp.json();
+        if (data.error || data.status === 'error') throw new Error(data.error || '加入失败');
+        mpMsg('已加入当前事件盒');
+        await loadMemoryPalaceEventBoxes();
+        await loadMemoryPalaceEventBoxDetail(_mpCurrentEventBoxId);
+        await loadMemoryPalaceNodes(_mpCurrentRoom);
+    } catch (e) { mpMsg('加入事件盒失败：' + e.message, 'error'); }
+}
+
+async function removeMemoryPalaceNodeFromBox(nodeId) {
+    if (!nodeId) return;
+    if (!confirm('将这条记忆移出事件盒，恢复为独立记忆。继续吗？')) return;
+    try {
+        const resp = await fetch('/api/memory-palace/nodes/' + encodeURIComponent(nodeId) + '/remove-from-box', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({})});
+        const data = await resp.json();
+        if (data.error || data.status === 'error') throw new Error(data.error || '移出失败');
+        mpMsg('已移出事件盒');
+        if (data.deleted) _mpCurrentEventBoxId = null;
+        await loadMemoryPalaceEventBoxes();
+        if (_mpCurrentEventBoxId) await loadMemoryPalaceEventBoxDetail(_mpCurrentEventBoxId);
+        await loadMemoryPalaceNodes(_mpCurrentRoom);
+    } catch (e) { mpMsg('移出事件盒失败：' + e.message, 'error'); }
+}
+
+async function manualBindMemoryPalaceNode(nodeId) {
+    if (!nodeId) return;
+    const otherId = prompt('输入另一条记忆节点 ID，用来与当前节点绑定成事件盒');
+    if (!otherId) return;
+    const name = prompt('事件盒名称（可留空）') || '';
+    const tags = prompt('事件标签（可留空，用逗号/顿号分隔）') || '';
+    try {
+        const resp = await fetch('/api/memory-palace/event-boxes/manual-bind', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({node_id:nodeId, existing_node_id:otherId.trim(), eventName:name.trim(), eventTags:tags.trim()})});
+        const data = await resp.json();
+        if (data.error || data.status === 'error') throw new Error(data.error || '绑定失败');
+        mpMsg('手动绑定完成：触达事件盒 ' + Number(data.event_boxes || 0) + ' 个');
+        await loadMemoryPalace();
+    } catch (e) { mpMsg('手动绑定失败：' + e.message, 'error'); }
+}
+
 function initMemoryPalaceInteractions() {
     const section = document.getElementById('section-memory-palace');
     if (!section || section.dataset.mpBound === '1') return;
@@ -541,6 +589,12 @@ function initMemoryPalaceInteractions() {
             selectMemoryPalaceRoom(roomCard.dataset.room || '');
             return;
         }
+        const addCurrentBoxBtn = event.target.closest('.mp-add-node-current-box');
+        if (addCurrentBoxBtn) { addMemoryPalaceNodeToCurrentBox(addCurrentBoxBtn.dataset.id || ''); return; }
+        const manualBindBtn = event.target.closest('.mp-manual-bind-node');
+        if (manualBindBtn) { manualBindMemoryPalaceNode(manualBindBtn.dataset.id || ''); return; }
+        const removeFromBoxBtn = event.target.closest('.mp-remove-node-from-box');
+        if (removeFromBoxBtn) { removeMemoryPalaceNodeFromBox(removeFromBoxBtn.dataset.id || ''); return; }
         const editBtn = event.target.closest('.mp-edit-node');
         if (editBtn) {
             editMemoryPalaceNode(editBtn.dataset.id || '');

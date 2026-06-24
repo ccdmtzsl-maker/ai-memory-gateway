@@ -560,6 +560,25 @@ async def init_tables():
         """)
 
         await conn.execute("""
+            CREATE TABLE IF NOT EXISTS memory_palace_recall_receipts (
+                id BIGSERIAL PRIMARY KEY,
+                character_id TEXT DEFAULT 'default',
+                session_id TEXT DEFAULT '',
+                memory_id TEXT NOT NULL REFERENCES memory_palace_nodes(id) ON DELETE CASCADE,
+                injected_at TIMESTAMPTZ DEFAULT NOW(),
+                metadata JSONB DEFAULT '{}'::jsonb
+            );
+        """)
+        await conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_mp_recall_receipts_time
+            ON memory_palace_recall_receipts (character_id, injected_at DESC);
+        """)
+        await conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_mp_recall_receipts_memory
+            ON memory_palace_recall_receipts (memory_id);
+        """)
+
+        await conn.execute("""
             CREATE TABLE IF NOT EXISTS memory_palace_state (
                 character_id TEXT PRIMARY KEY DEFAULT 'default',
                 last_processed_message_id BIGINT DEFAULT 0,

@@ -374,6 +374,36 @@ async function selectMemoryPalaceEventBox(id) {
     if (id) await loadMemoryPalaceEventBoxDetail(id);
 }
 
+
+function mpEventBoxTimeText(value) {
+    if (!value) return '';
+    const d = new Date(value);
+    if (Number.isNaN(d.getTime())) return String(value).slice(0, 19).replace('T', ' ');
+    const pad = n => String(n).padStart(2, '0');
+    return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes());
+}
+
+function mpEventBoxSectionHtml(title, nodes, emptyText, collapsed) {
+    const body = (nodes || []).map(mpEventBoxNodeHtml).join('') || '<div style="color:var(--text-muted);padding:12px;border:1px dashed var(--border-color);border-radius:10px;">' + mpEsc(emptyText || '暂无节点') + '</div>';
+    if (collapsed) {
+        return '<details style="margin-top:12px;border:1px solid var(--border-color);border-radius:12px;background:#fff;">' +
+            '<summary style="cursor:pointer;padding:12px 14px;font-weight:800;">' + mpEsc(title) + ' <span style="color:var(--text-muted);font-weight:500;">(' + Number((nodes || []).length) + ')</span></summary>' +
+            '<div style="display:flex;flex-direction:column;gap:10px;padding:0 14px 14px;">' + body + '</div>' +
+        '</details>';
+    }
+    return '<div style="margin-top:12px;">' +
+        '<div style="font-weight:800;margin-bottom:8px;">' + mpEsc(title) + ' <span style="color:var(--text-muted);font-weight:500;">(' + Number((nodes || []).length) + ')</span></div>' +
+        '<div style="display:flex;flex-direction:column;gap:10px;">' + body + '</div>' +
+    '</div>';
+}
+
+function mpEventBoxStatHtml(label, value, color) {
+    return '<div style="padding:8px 10px;border:1px solid var(--border-color);border-radius:10px;background:#f8fafc;min-width:82px;">' +
+        '<div style="font-size:11px;color:var(--text-muted);">' + mpEsc(label) + '</div>' +
+        '<div style="font-weight:800;color:' + (color || 'var(--text-color)') + ';margin-top:2px;">' + mpEsc(value) + '</div>' +
+    '</div>';
+}
+
 function mpEventBoxNodeHtml(node) {
     const room = mpRoomMeta(node.room);
     const color = node.is_box_summary ? '#7c3aed' : (node.archived ? '#64748b' : (room.color || '#64748b'));
@@ -399,18 +429,37 @@ async function loadMemoryPalaceEventBoxDetail(id) {
         if (data.error || data.status === 'error') throw new Error(data.error || '加载失败');
         const box = data.box || {};
         const nodes = data.nodes || [];
+        const summaryNodes = nodes.filter(n => n.is_box_summary);
+        const liveNodes = nodes.filter(n => !n.is_box_summary && !n.archived);
+        const archivedNodes = nodes.filter(n => n.archived && !n.is_box_summary);
         const tags = mpTagsHtml(box.tags || '', '#2563eb');
-        const nodeCards = nodes.map(mpEventBoxNodeHtml).join('');
+        const statusBadge = box.sealed
+            ? '<span style="display:inline-flex;align-items:center;padding:3px 8px;border-radius:999px;background:#fee2e2;color:#991b1b;font-size:12px;font-weight:700;">sealed</span>'
+            : '<span style="display:inline-flex;align-items:center;padding:3px 8px;border-radius:999px;background:#dcfce7;color:#166534;font-size:12px;font-weight:700;">open</span>';
+        const metaLines = [];
+        metaLines.push('ID: ' + (box.id || ''));
+        if (box.predecessor_box_id) metaLines.push('前任盒: ' + box.predecessor_box_id);
+        if (box.summary_node_id) metaLines.push('summary: ' + box.summary_node_id);
+        if (box.last_compressed_at) metaLines.push('最后压缩: ' + mpEventBoxTimeText(box.last_compressed_at));
+        const stats = [
+            mpEventBoxStatHtml('live', Number(box.live_count || liveNodes.length), '#059669'),
+            mpEventBoxStatHtml('archived', Number(box.archived_count || archivedNodes.length), '#64748b'),
+            mpEventBoxStatHtml('压缩次数', Number(box.compression_count || 0), '#7c3aed')
+        ].join('');
         el.innerHTML = '<div style="border:1px solid var(--border-color);border-radius:12px;padding:14px;background:#fff;">' +
             '<div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start;flex-wrap:wrap;">' +
-                '<div>' +
-                    '<div style="font-weight:900;font-size:18px;">' + mpEsc(box.name || '未命名事件') + '</div>' +
-                    '<div style="font-size:12px;color:var(--text-muted);margin-top:4px;">' + mpEsc(box.id || '') + '</div>' +
+                '<div style="min-width:220px;">' +
+                    '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">' +
+                        '<div style="font-weight:900;font-size:18px;">' + mpEsc(box.name || '未命名事件') + '</div>' + statusBadge +
+                    '</div>' +
+                    '<div style="font-size:12px;color:var(--text-muted);margin-top:6px;line-height:1.6;white-space:pre-wrap;">' + mpEsc(metaLines.join('\n')) + '</div>' +
                 '</div>' +
-                '<div style="font-size:12px;color:var(--text-muted);text-align:right;">live ' + Number(box.live_count || 0) + ' · archived ' + Number(box.archived_count || 0) + '<br>压缩 ' + Number(box.compression_count || 0) + (box.sealed ? ' · sealed' : '') + '</div>' +
+                '<div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end;">' + stats + '</div>' +
             '</div>' +
             tags +
-            '<div style="display:flex;flex-direction:column;gap:10px;margin-top:14px;">' + (nodeCards || '<div style="color:var(--text-muted);">这个事件盒里暂时没有节点。</div>') + '</div>' +
+            mpEventBoxSectionHtml('Summary', summaryNodes, '尚未生成 summary。达到压缩阈值后会在这里置顶显示。') +
+            mpEventBoxSectionHtml('Live 节点', liveNodes, '暂无 live 节点。') +
+            mpEventBoxSectionHtml('Archived 节点', archivedNodes, '暂无 archived 节点。', true) +
         '</div>';
     } catch (e) {
         el.innerHTML = '<div style="color:#dc2626;padding:16px;border:1px solid #fecaca;border-radius:10px;background:#fff;">加载事件盒详情失败：' + mpEsc(e.message) + '</div>';

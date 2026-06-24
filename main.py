@@ -4447,6 +4447,130 @@ async def api_memory_palace_compress_event_boxes(request: Request):
     except Exception as e:
         return {"status": "error", "error": str(e), "compressed": 0}
 
+@app.patch("/api/memory-palace/event-boxes/{box_id}")
+async def api_memory_palace_update_event_box(box_id: str, request: Request):
+    if not MEMORY_ENABLED:
+        return {"error": "记忆系统未启用"}
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    character_id = data.get("character_id") or "default"
+    updates = []
+    args = []
+    if "sealed" in data:
+        updates.append("sealed = $%d" % (len(args) + 3))
+        args.append(bool(data.get("sealed")))
+    if not updates:
+        return {"status": "ok", "updated": 0}
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                f"""
+                UPDATE memory_palace_event_boxes
+                SET {', '.join(updates)}, updated_at = NOW()
+                WHERE character_id = $1 AND id = $2
+                RETURNING id, character_id, name, tags, summary_node_id, live_memory_ids, archived_memory_ids,
+                          compression_count, sealed, predecessor_box_id, created_at, updated_at, last_compressed_at
+                """,
+                character_id, box_id, *args,
+            )
+        if not row:
+            return JSONResponse({"error": "事件盒不存在"}, status_code=404)
+        return {"status": "ok", "updated": 1, "box": _serialize_event_box(dict(row))}
+    except Exception as e:
+        return {"status": "error", "error": str(e), "updated": 0}
+
+
+@app.post("/api/memory-palace/event-boxes/{box_id}/unbind-live")
+async def api_memory_palace_unbind_event_box_live(box_id: str, request: Request):
+    if not MEMORY_ENABLED:
+        return {"error": "记忆系统未启用"}
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    character_id = data.get("character_id") or "default"
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            box = await conn.fetchrow("""
+                SELECT id, summary_node_id, live_memory_ids, archived_memory_ids
+                FROM memory_palace_event_boxes
+                WHERE character_id = $1 AND id = $2
+            """, character_id, box_id)
+            if not box:
+                return JSONResponse({"error": "事件盒不存在"}, status_code=404)
+            live_ids = [str(x) for x in (box.get("live_memory_ids") or []) if x]
+            if live_ids:
+                await conn.execute("""
+                    UPDATE memory_palace_nodes
+                    SET event_box_id = NULL, updated_at = NOW()
+                    WHERE character_id = $1 AND id = ANY($2::text[])
+                """, character_id, live_ids)
+            empty = not box.get("summary_node_id") and not (box.get("archived_memory_ids") or [])
+            if empty:
+                await conn.execute("DELETE FROM memory_palace_event_boxes WHERE character_id = $1 AND id = $2", character_id, box_id)
+                deleted = True
+            else:
+                await conn.execute("""
+                    UPDATE memory_palace_event_boxes
+                    SET live_memory_ids = '{}'::text[], updated_at = NOW()
+                    WHERE character_id = $1 AND id = $2
+                """, character_id, box_id)
+                deleted = False
+        return {"status": "ok", "moved": len(live_ids), "deleted": deleted, "memory_ids": live_ids}
+    except Exception as e:
+        return {"status": "error", "error": str(e), "moved": 0}
+
+
+@app.post("/api/memory-palace/nodes/{node_id}/revive")
+async def api_memory_palace_revive_node(node_id: str, request: Request):
+    if not MEMORY_ENABLED:
+        return {"error": "记忆系统未启用"}
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    character_id = data.get("character_id") or "default"
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            node = await conn.fetchrow("""
+                SELECT id, event_box_id, archived, is_box_summary
+                FROM memory_palace_nodes
+                WHERE character_id = $1 AND id = $2
+            """, character_id, node_id)
+            if not node:
+                return JSONResponse({"error": "记忆节点不存在"}, status_code=404)
+            box_id = node.get("event_box_id")
+            await conn.execute("""
+                UPDATE memory_palace_nodes
+                SET archived = FALSE, is_box_summary = FALSE, updated_at = NOW()
+                WHERE character_id = $1 AND id = $2
+            """, character_id, node_id)
+            if box_id:
+                box = await conn.fetchrow("""
+                    SELECT live_memory_ids, archived_memory_ids
+                    FROM memory_palace_event_boxes
+                    WHERE character_id = $1 AND id = $2
+                """, character_id, box_id)
+                if box:
+                    live_ids = [str(x) for x in (box.get("live_memory_ids") or []) if x]
+                    archived_ids = [str(x) for x in (box.get("archived_memory_ids") or []) if x and str(x) != node_id]
+                    if node_id not in live_ids:
+                        live_ids.append(node_id)
+                    await conn.execute("""
+                        UPDATE memory_palace_event_boxes
+                        SET live_memory_ids = $3::text[], archived_memory_ids = $4::text[], updated_at = NOW()
+                        WHERE character_id = $1 AND id = $2
+                    """, character_id, box_id, live_ids, archived_ids)
+        return {"status": "ok", "revived": 1, "box_id": box_id}
+    except Exception as e:
+        return {"status": "error", "error": str(e), "revived": 0}
+
+
 
 @app.get("/api/memory-palace/nodes/{node_id}")
 async def api_memory_palace_get_node(node_id: str):

@@ -545,7 +545,10 @@
                             <div style="font-weight:800;">事件盒</div>
                             <div style="font-size:12px;color:var(--text-muted);margin-top:2px;">查看同一事件下的记忆片段，当前为只读视图。</div>
                         </div>
-                        <button class="btn btn-secondary" onclick="loadMemoryPalaceEventBoxes()">刷新事件盒</button>
+                        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+                            <button class="btn btn-secondary" onclick="compressMemoryPalaceEventBoxes()">压缩可压缩事件盒</button>
+                            <button class="btn btn-secondary" onclick="loadMemoryPalaceEventBoxes()">刷新事件盒</button>
+                        </div>
                     </div>
                     <div style="display:grid;grid-template-columns:minmax(220px,320px) minmax(0,1fr);gap:14px;align-items:start;">
                         <div id="mpEventBoxList" style="display:flex;flex-direction:column;gap:8px;max-height:520px;overflow:auto;">
@@ -989,6 +992,6 @@
     });
 
     </script>
-    <script src="/static/js/memory_palace.js?v=1.6"></script>
+    <script src="/static/js/memory_palace.js?v=1.7"></script>
 </body>
 </html>

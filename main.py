@@ -3327,6 +3327,88 @@ async def export_memories():
         return {"error": str(e)}
 
 
+_MEMORY_PALACE_BACKUP_TABLES = [
+    "memory_palace_nodes",
+    "memory_palace_vectors",
+    "memory_palace_links",
+    "memory_palace_event_boxes",
+    "memory_palace_extracted_messages",
+    "memory_palace_extraction_cursor",
+    "memory_palace_state",
+]
+
+
+def _json_safe_value(value):
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, (list, tuple)):
+        return [_json_safe_value(v) for v in value]
+    if isinstance(value, dict):
+        return {str(k): _json_safe_value(v) for k, v in value.items()}
+    try:
+        return value.isoformat()
+    except Exception:
+        return str(value)
+
+
+def _json_safe_row(row):
+    return {k: _json_safe_value(v) for k, v in dict(row).items()}
+
+
+async def export_memory_palace_backup_data():
+    """导出新记忆宫殿系统的完整备份数据。"""
+    pool = await get_pool()
+    data = {
+        "schema": "memory_palace_backup_v1",
+        "exported_at": datetime.now(timezone.utc).isoformat(),
+        "tables": {},
+        "counts": {},
+    }
+    async with pool.acquire() as conn:
+        for table in _MEMORY_PALACE_BACKUP_TABLES:
+            rows = await conn.fetch(f"SELECT * FROM {table} ORDER BY 1")
+            safe_rows = [_json_safe_row(row) for row in rows]
+            data["tables"][table] = safe_rows
+            data["counts"][table] = len(safe_rows)
+    data["total_nodes"] = data["counts"].get("memory_palace_nodes", 0)
+    data["total_vectors"] = data["counts"].get("memory_palace_vectors", 0)
+    data["total_links"] = data["counts"].get("memory_palace_links", 0)
+    data["total_event_boxes"] = data["counts"].get("memory_palace_event_boxes", 0)
+    return data
+
+
+@app.get("/api/memory-palace/export-stats")
+async def api_memory_palace_export_stats():
+    if not MEMORY_ENABLED:
+        return {"error": "记忆系统未启用"}
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            counts = {}
+            for table in _MEMORY_PALACE_BACKUP_TABLES:
+                counts[table] = await conn.fetchval(f"SELECT COUNT(*) FROM {table}")
+        return {
+            "status": "ok",
+            "counts": counts,
+            "total_nodes": counts.get("memory_palace_nodes", 0),
+            "total_vectors": counts.get("memory_palace_vectors", 0),
+            "total_links": counts.get("memory_palace_links", 0),
+            "total_event_boxes": counts.get("memory_palace_event_boxes", 0),
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.get("/export/memory-palace")
+async def export_memory_palace_backup():
+    if not MEMORY_ENABLED:
+        return {"error": "记忆系统未启用（设置 MEMORY_ENABLED=true 开启）"}
+    try:
+        return JSONResponse(content=await export_memory_palace_backup_data())
+    except Exception as e:
+        return {"error": str(e)}
+
+
 @app.get("/dashboard", response_class=HTMLResponse)
 async def dashboard_page(request: Request):
     """Dashboard - 整合的记忆管理界面"""

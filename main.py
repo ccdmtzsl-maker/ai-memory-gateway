@@ -5136,7 +5136,7 @@ def _memory_palace_parse_summary_json(text: str) -> dict:
     return {}
 
 
-async def call_memory_palace_event_box_summarizer(box: dict, live_nodes: list, character_id: str = "default") -> dict:
+async def call_memory_palace_event_box_summarizer(box: dict, live_nodes: list, character_id: str = "default", old_summary: dict = None) -> dict:
     base_url = await get_runtime_memory_api_base_url()
     if not base_url:
         raise RuntimeError("MEMORY_API_BASE_URL 未设置")
@@ -5148,21 +5148,27 @@ async def call_memory_palace_event_box_summarizer(box: dict, live_nodes: list, c
     for idx, node in enumerate(live_nodes, 1):
         date_text = str(node.get("date") or node.get("created_at") or "")[:10]
         lines.append(f"{idx}. [{date_text}] ({node.get('room')}, importance {node.get('importance')}) {node.get('content')}")
-    prompt = f"""你正在整理记忆宫殿里的同一事件盒。请把这些活跃记忆片段压缩成一条稳定的整合回忆。
-
-事件盒名称：{box.get('name') or '未命名事件'}
-事件盒标签：{box.get('tags') or ''}
-
-活跃片段：
-{chr(10).join(lines)}
-
-要求：
-1. 用第一人称“我”写，保留事件起因、发展、重要结果和我的感受。
-2. 不要凭空添加新事实。
-3. 120-260 字，重要关系和时间线不要丢。
-4. 返回严格 JSON 对象，不要 markdown：
-{{"content":"整合回忆正文","name":"5-12字事件名","tags":["标签1","标签2"],"mood":"neutral","importance":8,"valence":0,"arousal":0}}
-"""
+    old_summary_text = str((old_summary or {}).get("content") or "").strip()
+    if old_summary_text:
+        fragment_block = "旧整合回忆:\n" + old_summary_text + "\n\n这次新增的活跃片段:\n" + "\n".join(lines)
+    else:
+        fragment_block = "活跃片段:\n" + "\n".join(lines)
+    prompt = "\n".join([
+        "你正在整理记忆宫殿里的同一事件盒。请把旧整合回忆和新增片段重写成一条稳定的整合回忆。",
+        "",
+        f"事件盒名称:{box.get('name') or '未命名事件'}",
+        f"事件盒标签:{box.get('tags') or ''}",
+        "",
+        fragment_block,
+        "",
+        "要求:",
+        "1. 用第一人称'我'写，保留事件起因、发展、重要结果和我的感受。",
+        "2. 如果有旧整合回忆，必须把旧回忆里的关键信息保留下来，再融合新增片段；不要只总结新增片段。",
+        "3. 不要凭空添加新事实。",
+        "4. 120-320 字，重要关系和时间线不要丢。",
+        "5. 返回严格 JSON 对象，不要 markdown:",
+        '{"content":"整合回忆正文","name":"5-12字事件名","tags":["标签1","标签2"],"mood":"neutral","importance":8,"valence":0,"arousal":0}',
+    ])
     headers = {"Content-Type": "application/json"}
     if memory_api_key:
         headers["Authorization"] = f"Bearer {memory_api_key}"
@@ -5178,7 +5184,6 @@ async def call_memory_palace_event_box_summarizer(box: dict, live_nodes: list, c
     if not str(item.get("content") or "").strip():
         raise RuntimeError("事件盒压缩未返回 content")
     return item
-
 
 async def maybe_compress_memory_palace_event_boxes(box_ids=None, character_id: str = "default", threshold: int = None) -> int:
     threshold = max(2, int(threshold or MEMORY_PALACE_EVENT_BOX_COMPRESS_THRESHOLD or 4))
@@ -5211,11 +5216,19 @@ async def maybe_compress_memory_palace_event_boxes(box_ids=None, character_id: s
                 WHERE character_id = $1 AND id = ANY($2::text[]) AND archived = FALSE AND is_box_summary = FALSE
                 ORDER BY COALESCE(date, created_at::date) ASC, created_at ASC
             """, character_id, live_ids)
+            old_summary_row = None
+            if box.get("summary_node_id"):
+                old_summary_row = await conn.fetchrow("""
+                    SELECT id, content, room, tags, importance, mood, valence, arousal, date, created_at
+                    FROM memory_palace_nodes
+                    WHERE character_id = $1 AND id = $2 AND is_box_summary = TRUE
+                """, character_id, box.get("summary_node_id"))
         live_nodes = [dict(r) for r in live_rows]
+        old_summary = dict(old_summary_row) if old_summary_row else None
         if len(live_nodes) < threshold:
             continue
         try:
-            summary = await call_memory_palace_event_box_summarizer(box, live_nodes, character_id=character_id)
+            summary = await call_memory_palace_event_box_summarizer(box, live_nodes, character_id=character_id, old_summary=old_summary)
         except Exception as e:
             print(f"⚠️ 事件盒压缩失败 {box.get('id')}: {e}")
             continue
@@ -5229,7 +5242,7 @@ async def maybe_compress_memory_palace_event_boxes(box_ids=None, character_id: s
         arousal = _float_or_none(summary.get("arousal"))
         summary_id = box.get("summary_node_id") or f"mn_{int(datetime.now(timezone.utc).timestamp() * 1000)}_{uuid.uuid4().hex[:6]}"
         first_date = str(live_nodes[0].get("date") or live_nodes[0].get("created_at") or "")[:10] or None
-        metadata = json.dumps({"event_box_id": box.get("id"), "source_live_memory_ids": [n["id"] for n in live_nodes], "summary_kind": "event_box"}, ensure_ascii=False)
+        metadata = json.dumps({"event_box_id": box.get("id"), "source_live_memory_ids": [n["id"] for n in live_nodes], "previous_summary_node_id": (old_summary or {}).get("id"), "summary_kind": "event_box", "compression_mode": "rewrite_with_previous_summary" if old_summary else "initial"}, ensure_ascii=False)
         async with pool.acquire() as conn:
             if box.get("summary_node_id"):
                 await conn.execute("""
@@ -5254,7 +5267,7 @@ async def maybe_compress_memory_palace_event_boxes(box_ids=None, character_id: s
         except Exception as e:
             print(f"⚠️ 事件盒 summary embedding 失败 {summary_id}: {e}")
         compressed += 1
-        print(f"🗜️ 事件盒压缩完成 {box.get('id')}：{len(live_nodes)} 条 → summary {summary_id}")
+        print(f"🗜️ 事件盒压缩完成 {box.get('id')}：{len(live_nodes)} 条" + (" + 旧summary" if old_summary else "") + f" → summary {summary_id}")
     return compressed
 
 

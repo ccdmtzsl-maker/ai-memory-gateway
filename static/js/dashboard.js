@@ -1035,19 +1035,34 @@ function clearImportResult() {
 // ============================================
 async function loadExportStats() {
     const el = document.getElementById('export-stats');
+    const mpEl = document.getElementById('mp-export-stats');
     try {
         const resp = await fetch('/api/memories');
         const data = await resp.json();
         const count = (data.memories || []).length;
-        el.textContent = '当前共有 ' + count + ' 条记忆';
+        if (el) el.textContent = '当前共有 ' + count + ' 条记忆';
     } catch(e) {
-        el.textContent = '无法加载统计';
+        if (el) el.textContent = '无法加载统计';
+    }
+    if (mpEl) {
+        try {
+            const resp = await fetch('/api/memory-palace/export-stats');
+            const data = await resp.json();
+            if (data.error) throw new Error(data.error);
+            mpEl.textContent = '节点 ' + (data.total_nodes || 0) + ' 条 · 连接 ' + (data.total_links || 0) + ' 条 · 事件盒 ' + (data.total_event_boxes || 0) + ' 个';
+        } catch(e) {
+            mpEl.textContent = '无法加载统计';
+        }
     }
 }
 
 function doExport() {
     // 直接跳转到导出接口，浏览器会下载文件
     window.location.href = '/export/memories';
+}
+
+function exportMemoryPalace() {
+    window.location.href = '/export/memory-palace';
 }
 
 

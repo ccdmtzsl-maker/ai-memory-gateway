@@ -807,14 +807,14 @@ async def _memory_palace_fetch_rows(room: str = None, character_id: str = "defau
         if room:
             return await conn.fetch("""
                 SELECT n.id, n.content, n.room, n.tags, n.importance, n.mood, n.valence, n.arousal,
-                       n.date, n.created_at, n.last_accessed_at, n.access_count, n.pinned_until, n.event_box_id, v.embedding_json
+                       n.date, n.created_at, n.last_accessed_at, n.access_count, n.pinned_until, n.event_box_id, n.archived, n.is_box_summary, v.embedding_json
                 FROM memory_palace_nodes n
                 LEFT JOIN memory_palace_vectors v ON v.memory_id = n.id
                 WHERE n.character_id = $1 AND n.room = $2 AND ($3::boolean OR n.archived = FALSE)
             """, character_id, room, include_archived)
         return await conn.fetch("""
             SELECT n.id, n.content, n.room, n.tags, n.importance, n.mood, n.valence, n.arousal,
-                   n.date, n.created_at, n.last_accessed_at, n.access_count, n.pinned_until, n.event_box_id, v.embedding_json
+                   n.date, n.created_at, n.last_accessed_at, n.access_count, n.pinned_until, n.event_box_id, n.archived, n.is_box_summary, v.embedding_json
             FROM memory_palace_nodes n
             LEFT JOIN memory_palace_vectors v ON v.memory_id = n.id
             WHERE n.character_id = $1 AND ($2::boolean OR n.archived = FALSE)
@@ -875,6 +875,57 @@ async def search_memory_palace_for_prompt(query: str = "", limit: int = 5, room:
             query_embedding = None
     rows = rows if rows is not None else await _memory_palace_fetch_rows(room=room, character_id=character_id)
     return _memory_palace_score_rows(rows, query=query, query_embedding=query_embedding)[:limit]
+
+
+async def route_archived_memory_palace_rows_to_summaries(items: list, character_id: str = "default") -> list:
+    """把命中的 archived EventBox 片段路由到对应 summary 节点，保留命中分数。"""
+    if not items:
+        return []
+    box_ids = []
+    for item in items:
+        if item.get("archived") and item.get("event_box_id"):
+            box_ids.append(str(item.get("event_box_id")))
+    box_ids = list(dict.fromkeys(box_ids))
+    if not box_ids:
+        return items
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        boxes = await conn.fetch("""
+            SELECT id, summary_node_id
+            FROM memory_palace_event_boxes
+            WHERE character_id = $1 AND id = ANY($2::text[]) AND summary_node_id IS NOT NULL
+        """, character_id, box_ids)
+        summary_ids = [str(r["summary_node_id"]) for r in boxes if r.get("summary_node_id")]
+        summary_rows = []
+        if summary_ids:
+            summary_rows = await conn.fetch("""
+                SELECT n.id, n.content, n.room, n.tags, n.importance, n.mood, n.valence, n.arousal,
+                       n.date, n.created_at, n.last_accessed_at, n.access_count, n.pinned_until,
+                       n.event_box_id, n.archived, n.is_box_summary, v.embedding_json
+                FROM memory_palace_nodes n
+                LEFT JOIN memory_palace_vectors v ON v.memory_id = n.id
+                WHERE n.character_id = $1 AND n.id = ANY($2::text[]) AND n.archived = FALSE
+            """, character_id, summary_ids)
+    summary_id_by_box = {r["id"]: str(r["summary_node_id"]) for r in boxes if r.get("summary_node_id")}
+    summary_by_id = {r["id"]: dict(r) for r in summary_rows}
+    routed = []
+    routed_count = 0
+    for item in items:
+        if item.get("archived") and item.get("event_box_id"):
+            summary_id = summary_id_by_box.get(str(item.get("event_box_id")))
+            summary = summary_by_id.get(summary_id)
+            if summary:
+                replacement = dict(summary)
+                replacement["score"] = item.get("score", replacement.get("score", 0.0))
+                replacement["similarity_score"] = item.get("similarity_score", replacement.get("similarity_score", 0.0))
+                replacement["_routed_from_archived_id"] = item.get("id")
+                routed.append(replacement)
+                routed_count += 1
+                continue
+        routed.append(item)
+    if routed_count:
+        print(f"↪️ 记忆宫殿 archived 路由到 summary：{routed_count} 条")
+    return routed
 
 
 async def build_memory_palace_links_for_node(node: dict):
@@ -1075,7 +1126,8 @@ def format_memory_palace_event_box_item(row: dict) -> str:
 async def retrieve_memory_palace_rows_for_prompt(query: str = "", limit: int = 5, room: str = None, character_id: str = "default", recent_messages=None, touch_access: bool = True):
     limit = max(1, min(int(limit or 5), 30))
     await clear_expired_memory_palace_pins(character_id)
-    rows = await _memory_palace_fetch_rows(room=room, character_id=character_id)
+    rows = await _memory_palace_fetch_rows(room=room, character_id=character_id, include_archived=True)
+    fallback_rows_for_pins = [r for r in rows if not r.get("archived")]
     merged = {}
     spikes, context_query, fallback_query = _memory_palace_split_last_turn_queries(recent_messages or [])
     if not spikes and query:
@@ -1117,11 +1169,17 @@ async def retrieve_memory_palace_rows_for_prompt(query: str = "", limit: int = 5
                         item["similarity_score"] = 0.0
                         merged[item["id"]] = item
                     break
-    selected = sorted(merged.values(), key=lambda x: x["score"], reverse=True)[:limit]
+    routed_values = await route_archived_memory_palace_rows_to_summaries(list(merged.values()), character_id=character_id)
+    routed_merged = {}
+    for item in routed_values:
+        old = routed_merged.get(item["id"])
+        if old is None or item.get("score", 0.0) > old.get("score", 0.0):
+            routed_merged[item["id"]] = item
+    selected = sorted(routed_merged.values(), key=lambda x: x["score"], reverse=True)[:limit]
     now = datetime.now(timezone.utc)
     pinned = []
     selected_ids = {x["id"] for x in selected}
-    for row in rows:
+    for row in fallback_rows_for_pins:
         pu = _memory_palace_aware_dt(row["pinned_until"])
         if pu and pu > now and row["id"] not in selected_ids:
             item = dict(row)
@@ -4773,13 +4831,16 @@ async def get_memory_palace_related_refs(character_id: str = "default", limit: i
     max_total = max(0, min(int(limit or 20), 50))
     if max_total <= 0:
         return []
-    rows = await _memory_palace_fetch_rows(room=None, character_id=character_id)
+    rows = await _memory_palace_fetch_rows(room=None, character_id=character_id, include_archived=True)
+    fallback_rows_for_refs = [r for r in rows if not r.get("archived")]
     receipt_refs = await get_memory_palace_receipt_refs(source_messages, character_id=character_id, limit=5) if source_messages else []
     refs_by_id = {r["id"]: dict(r, _score=999.0) for r in receipt_refs}
     snippets = split_memory_palace_extraction_snippets(query_text, source_messages, max_snippets=25)
     for snippet in snippets:
         try:
-            hits = await search_memory_palace_for_prompt(snippet, limit=3, character_id=character_id, rows=rows)
+            hits = await search_memory_palace_for_prompt(snippet, limit=8, character_id=character_id, rows=rows)
+            hits = await route_archived_memory_palace_rows_to_summaries(hits, character_id=character_id)
+            hits = hits[:3]
         except Exception as e:
             print(f"⚠️ 记忆宫殿 related refs 检索失败: {e}")
             continue
@@ -4795,7 +4856,7 @@ async def get_memory_palace_related_refs(character_id: str = "default", limit: i
     refs = sorted(refs_by_id.values(), key=lambda r: r.get("_score", 0.0), reverse=True)[:min(15, max_total)]
     seen_ids = {r["id"] for r in refs}
     if len(refs) < max_total:
-        fallback_rows = sorted(rows, key=lambda r: (r.get("last_accessed_at") or r.get("created_at"), r.get("importance") or 5), reverse=True)
+        fallback_rows = sorted(fallback_rows_for_refs, key=lambda r: (r.get("last_accessed_at") or r.get("created_at"), r.get("importance") or 5), reverse=True)
         for row in fallback_rows:
             if row["id"] in seen_ids:
                 continue

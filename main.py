@@ -3404,7 +3404,12 @@ async def export_memory_palace_backup():
     if not MEMORY_ENABLED:
         return {"error": "记忆系统未启用（设置 MEMORY_ENABLED=true 开启）"}
     try:
-        return JSONResponse(content=await export_memory_palace_backup_data())
+        data = await export_memory_palace_backup_data()
+        filename = f"memory_palace_backup_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.json"
+        return JSONResponse(
+            content=data,
+            headers={"Content-Disposition": f"attachment; filename={filename}"},
+        )
     except Exception as e:
         return {"error": str(e)}
 

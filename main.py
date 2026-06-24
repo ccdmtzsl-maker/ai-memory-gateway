@@ -4702,6 +4702,31 @@ async def api_memory_palace_manual_bind_event_box(request: Request):
         return {"status": "error", "error": str(e), "event_boxes": 0}
 
 
+@app.post("/api/memory-palace/pins/clear")
+async def api_memory_palace_clear_pins(request: Request):
+    if not MEMORY_ENABLED:
+        return {"error": "记忆系统未启用"}
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    character_id = data.get("character_id") or "default"
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            result = await conn.execute("""
+                UPDATE memory_palace_nodes
+                SET pinned_until = NULL, updated_at = NOW()
+                WHERE character_id = $1
+                  AND pinned_until IS NOT NULL
+                  AND archived = FALSE
+            """, character_id)
+        cleared = int(str(result).split()[-1]) if result else 0
+        return {"status": "ok", "cleared": cleared}
+    except Exception as e:
+        return {"status": "error", "error": str(e), "cleared": 0}
+
+
 @app.get("/api/memory-palace/nodes/{node_id}")
 async def api_memory_palace_get_node(node_id: str):
     if not MEMORY_ENABLED:

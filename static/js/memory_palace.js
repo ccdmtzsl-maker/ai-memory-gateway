@@ -384,7 +384,7 @@ function mpEventBoxTimeText(value) {
 }
 
 function mpEventBoxSectionHtml(title, nodes, emptyText, collapsed) {
-    const body = (nodes || []).map(mpEventBoxNodeHtml).join('') || '<div style="color:var(--text-muted);padding:12px;border:1px dashed var(--border-color);border-radius:10px;">' + mpEsc(emptyText || '暂无节点') + '</div>';
+    const body = (nodes || []).map(n => mpEventBoxNodeHtml(n, {actions: collapsed && n.archived ? '<div style=\"margin-top:8px;display:flex;justify-content:flex-end;\"><button class=\"btn btn-secondary btn-sm mp-revive-archived-node\" data-id=\"' + mpEsc(n.id || '') + '\">复活</button></div>' : ''})).join('') || '<div style="color:var(--text-muted);padding:12px;border:1px dashed var(--border-color);border-radius:10px;">' + mpEsc(emptyText || '暂无节点') + '</div>';
     if (collapsed) {
         return '<details style="margin-top:12px;border:1px solid var(--border-color);border-radius:12px;background:#fff;">' +
             '<summary style="cursor:pointer;padding:12px 14px;font-weight:800;">' + mpEsc(title) + ' <span style="color:var(--text-muted);font-weight:500;">(' + Number((nodes || []).length) + ')</span></summary>' +
@@ -404,7 +404,8 @@ function mpEventBoxStatHtml(label, value, color) {
     '</div>';
 }
 
-function mpEventBoxNodeHtml(node) {
+function mpEventBoxNodeHtml(node, opts) {
+    opts = opts || {};
     const room = mpRoomMeta(node.room);
     const color = node.is_box_summary ? '#7c3aed' : (node.archived ? '#64748b' : (room.color || '#64748b'));
     const label = node.is_box_summary ? 'summary' : (node.archived ? 'archived' : 'live');
@@ -416,6 +417,7 @@ function mpEventBoxNodeHtml(node) {
         '</div>' +
         '<div style="white-space:pre-wrap;line-height:1.6;margin-top:8px;font-size:14px;">' + mpEsc(node.content || '') + '</div>' +
         mpTagsHtml(node.tags || '', color) +
+        (opts.actions || '') +
     '</div>';
 }
 
@@ -453,6 +455,11 @@ async function loadMemoryPalaceEventBoxDetail(id) {
                         '<div style="font-weight:900;font-size:18px;">' + mpEsc(box.name || '未命名事件') + '</div>' + statusBadge +
                     '</div>' +
                     '<div style="font-size:12px;color:var(--text-muted);margin-top:6px;line-height:1.6;white-space:pre-wrap;">' + mpEsc(metaLines.join('\n')) + '</div>' +
+                    '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;">' +
+                        '<button class="btn btn-secondary btn-sm mp-compress-current-box" data-id="' + mpEsc(box.id || '') + '">压缩此盒</button>' +
+                        '<button class="btn btn-secondary btn-sm mp-toggle-sealed-box" data-id="' + mpEsc(box.id || '') + '" data-sealed="' + (box.sealed ? 'false' : 'true') + '">' + (box.sealed ? '解除封盒' : '封盒') + '</button>' +
+                        '<button class="btn btn-secondary btn-sm mp-unbind-live-box" data-id="' + mpEsc(box.id || '') + '">清空 live</button>' +
+                    '</div>' +
                 '</div>' +
                 '<div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end;">' + stats + '</div>' +
             '</div>' +
@@ -466,6 +473,63 @@ async function loadMemoryPalaceEventBoxDetail(id) {
     }
 }
 
+
+async function compressCurrentMemoryPalaceEventBox(id) {
+    id = id || _mpCurrentEventBoxId;
+    if (!id) return;
+    if (!confirm('将立即压缩这个事件盒的 live 节点。继续吗？')) return;
+    try {
+        const resp = await fetch('/api/memory-palace/event-boxes/compress', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({box_ids:[id], threshold:2})});
+        const data = await resp.json();
+        if (data.error || data.status === 'error') throw new Error(data.error || '压缩失败');
+        mpMsg('事件盒压缩完成：压缩 ' + Number(data.compressed || 0) + ' 个');
+        await loadMemoryPalaceEventBoxes();
+        await loadMemoryPalaceEventBoxDetail(id);
+    } catch (e) { mpMsg('压缩此盒失败：' + e.message, 'error'); }
+}
+
+async function setMemoryPalaceEventBoxSealed(id, sealed) {
+    id = id || _mpCurrentEventBoxId;
+    if (!id) return;
+    if (!confirm((sealed ? '封盒后后续相关记忆会开延续盒。' : '解除封盒后后续相关记忆可能继续写入此盒。') + '继续吗？')) return;
+    try {
+        const resp = await fetch('/api/memory-palace/event-boxes/' + encodeURIComponent(id), {method:'PATCH', headers:{'Content-Type':'application/json'}, body:JSON.stringify({sealed:!!sealed})});
+        const data = await resp.json();
+        if (data.error || data.status === 'error') throw new Error(data.error || '更新失败');
+        mpMsg(sealed ? '已封盒' : '已解除封盒');
+        await loadMemoryPalaceEventBoxes();
+        await loadMemoryPalaceEventBoxDetail(id);
+    } catch (e) { mpMsg('更新事件盒失败：' + e.message, 'error'); }
+}
+
+async function unbindMemoryPalaceEventBoxLive(id) {
+    id = id || _mpCurrentEventBoxId;
+    if (!id) return;
+    if (!confirm('将把此盒所有 live 节点移出事件盒，summary 和 archived 保持不动。继续吗？')) return;
+    try {
+        const resp = await fetch('/api/memory-palace/event-boxes/' + encodeURIComponent(id) + '/unbind-live', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({})});
+        const data = await resp.json();
+        if (data.error || data.status === 'error') throw new Error(data.error || '清空失败');
+        mpMsg('已移出 live 节点：' + Number(data.moved || 0) + ' 条');
+        if (data.deleted) _mpCurrentEventBoxId = null;
+        await loadMemoryPalace();
+        if (_mpCurrentEventBoxId) await loadMemoryPalaceEventBoxDetail(_mpCurrentEventBoxId);
+    } catch (e) { mpMsg('清空 live 池失败：' + e.message, 'error'); }
+}
+
+async function reviveMemoryPalaceArchivedNode(id) {
+    if (!id) return;
+    if (!confirm('将这条 archived 记忆复活为 live 节点。继续吗？')) return;
+    try {
+        const resp = await fetch('/api/memory-palace/nodes/' + encodeURIComponent(id) + '/revive', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({})});
+        const data = await resp.json();
+        if (data.error || data.status === 'error') throw new Error(data.error || '复活失败');
+        mpMsg('已复活 archived 节点');
+        await loadMemoryPalaceEventBoxes();
+        if (_mpCurrentEventBoxId) await loadMemoryPalaceEventBoxDetail(_mpCurrentEventBoxId);
+        await loadMemoryPalaceNodes(_mpCurrentRoom);
+    } catch (e) { mpMsg('复活 archived 节点失败：' + e.message, 'error'); }
+}
 
 function initMemoryPalaceInteractions() {
     const section = document.getElementById('section-memory-palace');
@@ -487,6 +551,14 @@ function initMemoryPalaceInteractions() {
             deleteMemoryPalaceNode(deleteBtn.dataset.id || '');
             return;
         }
+        const compressBoxBtn = event.target.closest('.mp-compress-current-box');
+        if (compressBoxBtn) { compressCurrentMemoryPalaceEventBox(compressBoxBtn.dataset.id || ''); return; }
+        const toggleSealedBtn = event.target.closest('.mp-toggle-sealed-box');
+        if (toggleSealedBtn) { setMemoryPalaceEventBoxSealed(toggleSealedBtn.dataset.id || '', toggleSealedBtn.dataset.sealed === 'true'); return; }
+        const unbindLiveBtn = event.target.closest('.mp-unbind-live-box');
+        if (unbindLiveBtn) { unbindMemoryPalaceEventBoxLive(unbindLiveBtn.dataset.id || ''); return; }
+        const reviveBtn = event.target.closest('.mp-revive-archived-node');
+        if (reviveBtn) { reviveMemoryPalaceArchivedNode(reviveBtn.dataset.id || ''); return; }
         const eventBoxBtn = event.target.closest('.mp-event-box-card');
         if (eventBoxBtn) {
             selectMemoryPalaceEventBox(eventBoxBtn.dataset.id || '');

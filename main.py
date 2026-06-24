@@ -4245,6 +4245,98 @@ async def api_memory_palace_session_nodes(session_id: str, character_id: str = "
         return {"status": "error", "error": str(e), "nodes": []}
 
 
+
+
+def _serialize_event_box(row: dict) -> dict:
+    item = dict(row or {})
+    for key in ("created_at", "updated_at", "last_compressed_at"):
+        if item.get(key):
+            try:
+                item[key] = item[key].isoformat()
+            except Exception:
+                item[key] = str(item[key])
+    item["live_count"] = len(item.get("live_memory_ids") or [])
+    item["archived_count"] = len(item.get("archived_memory_ids") or [])
+    return item
+
+
+def _serialize_event_box_node(row: dict) -> dict:
+    item = dict(row or {})
+    for key in ("date", "created_at", "updated_at", "pinned_until"):
+        if item.get(key):
+            try:
+                item[key] = item[key].isoformat()
+            except Exception:
+                item[key] = str(item[key])
+    if item.get("metadata") and isinstance(item["metadata"], str):
+        try:
+            item["metadata"] = json.loads(item["metadata"])
+        except Exception:
+            pass
+    return item
+
+
+@app.get("/api/memory-palace/event-boxes")
+async def api_memory_palace_event_boxes(character_id: str = "default", limit: int = 100, offset: int = 0):
+    if not MEMORY_ENABLED:
+        return {"error": "记忆系统未启用"}
+    limit = max(1, min(int(limit or 100), 300))
+    offset = max(0, int(offset or 0))
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT id, character_id, name, tags, summary_node_id, live_memory_ids, archived_memory_ids,
+                       compression_count, sealed, predecessor_box_id, created_at, updated_at, last_compressed_at
+                FROM memory_palace_event_boxes
+                WHERE character_id = $1
+                ORDER BY updated_at DESC, created_at DESC
+                LIMIT $2 OFFSET $3
+            """, character_id, limit, offset)
+            total = await conn.fetchval("SELECT COUNT(*) FROM memory_palace_event_boxes WHERE character_id = $1", character_id)
+        boxes = [_serialize_event_box(dict(r)) for r in rows]
+        return {"status": "ok", "total": int(total or 0), "boxes": boxes}
+    except Exception as e:
+        return {"status": "error", "error": str(e), "boxes": []}
+
+
+@app.get("/api/memory-palace/event-boxes/{box_id}")
+async def api_memory_palace_event_box_detail(box_id: str, character_id: str = "default"):
+    if not MEMORY_ENABLED:
+        return {"error": "记忆系统未启用"}
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            box = await conn.fetchrow("""
+                SELECT id, character_id, name, tags, summary_node_id, live_memory_ids, archived_memory_ids,
+                       compression_count, sealed, predecessor_box_id, created_at, updated_at, last_compressed_at
+                FROM memory_palace_event_boxes
+                WHERE character_id = $1 AND id = $2
+            """, character_id, box_id)
+            if not box:
+                return JSONResponse({"error": "事件盒不存在"}, status_code=404)
+            ids = []
+            summary_id = box.get("summary_node_id")
+            if summary_id:
+                ids.append(str(summary_id))
+            ids.extend(str(x) for x in (box.get("live_memory_ids") or []) if x)
+            ids.extend(str(x) for x in (box.get("archived_memory_ids") or []) if x)
+            ids = list(dict.fromkeys(ids))
+            nodes = []
+            if ids:
+                node_rows = await conn.fetch("""
+                    SELECT id, content, room, tags, importance, mood, valence, arousal, date, created_at, updated_at,
+                           pinned_until, session_id, event_box_id, archived, is_box_summary, metadata
+                    FROM memory_palace_nodes
+                    WHERE character_id = $1 AND id = ANY($2::text[])
+                    ORDER BY is_box_summary DESC, COALESCE(date, created_at::date) ASC, created_at ASC
+                """, character_id, ids)
+                nodes = [_serialize_event_box_node(dict(r)) for r in node_rows]
+        return {"status": "ok", "box": _serialize_event_box(dict(box)), "nodes": nodes}
+    except Exception as e:
+        return {"status": "error", "error": str(e), "nodes": []}
+
+
 @app.get("/api/memory-palace/nodes/{node_id}")
 async def api_memory_palace_get_node(node_id: str):
     if not MEMORY_ENABLED:

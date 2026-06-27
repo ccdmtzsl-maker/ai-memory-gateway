@@ -1275,58 +1275,131 @@ function clearConvSearch() {
 // 渲染对话列表
 function renderConvList(conversations, isSearch = false) {
     const container = document.getElementById('conv-list-container');
+    container.textContent = '';
     
     if (!conversations || conversations.length === 0) {
-        container.innerHTML = '<div style="text-align: center; color: var(--text-muted); padding: 40px 0;">暂无对话记录</div>';
+        const empty = document.createElement('div');
+        empty.style.cssText = 'text-align:center;color:var(--text-muted);padding:40px 0;';
+        empty.textContent = '暂无对话记录';
+        container.appendChild(empty);
         return;
     }
     
-    // 多选控制栏
-    let html = `<div id="conv-batch-bar" style="display: flex; gap: 8px; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--border); margin-bottom: 4px;">
-        <label style="display: flex; align-items: center; gap: 4px; cursor: pointer; font-size: 13px;">
-            <input type="checkbox" id="conv-select-all" onchange="toggleConvSelectAll(this.checked)"> 全选
-        </label>
-        <button class="btn btn-sm" onclick="batchDeleteConversations()" id="conv-batch-delete-btn" style="display: none; font-size: 12px;">${ICONS.trash(13)} 批量删除</button>
-        <button class="btn btn-sm" onclick="batchMergeSessions()" id="conv-batch-merge-btn" style="display: none; font-size: 12px;">${ICONS.gitMerge(13)} 合并到...</button>
-        <button class="btn btn-sm btn-primary" onclick="previewMemoryPalaceFromSelectedConversations()" id="conv-batch-mp-btn" style="display: none; font-size: 12px;">🧠 提取记忆</button>
-        <span id="conv-selected-count" style="color: var(--text-muted); font-size: 12px; display: none;"></span>
-    </div>`;
-    
+    const bar = document.createElement('div');
+    bar.id = 'conv-batch-bar';
+    bar.style.cssText = 'display:flex;gap:8px;align-items:center;padding:8px 0;border-bottom:1px solid var(--border);margin-bottom:4px;';
+
+    const label = document.createElement('label');
+    label.style.cssText = 'display:flex;align-items:center;gap:4px;cursor:pointer;font-size:13px;';
+    const selectAll = document.createElement('input');
+    selectAll.type = 'checkbox';
+    selectAll.id = 'conv-select-all';
+    selectAll.addEventListener('change', () => toggleConvSelectAll(selectAll.checked));
+    label.appendChild(selectAll);
+    label.appendChild(document.createTextNode(' 全选'));
+    bar.appendChild(label);
+
+    const batchDeleteBtn = document.createElement('button');
+    batchDeleteBtn.className = 'btn btn-sm';
+    batchDeleteBtn.id = 'conv-batch-delete-btn';
+    batchDeleteBtn.style.cssText = 'display:none;font-size:12px;';
+    batchDeleteBtn.innerHTML = ICONS.trash(13) + ' 批量删除';
+    batchDeleteBtn.addEventListener('click', batchDeleteConversations);
+    bar.appendChild(batchDeleteBtn);
+
+    const batchMergeBtn = document.createElement('button');
+    batchMergeBtn.className = 'btn btn-sm';
+    batchMergeBtn.id = 'conv-batch-merge-btn';
+    batchMergeBtn.style.cssText = 'display:none;font-size:12px;';
+    batchMergeBtn.innerHTML = ICONS.gitMerge(13) + ' 合并到...';
+    batchMergeBtn.addEventListener('click', batchMergeSessions);
+    bar.appendChild(batchMergeBtn);
+
+    const mpBtn = document.createElement('button');
+    mpBtn.className = 'btn btn-sm btn-primary';
+    mpBtn.id = 'conv-batch-mp-btn';
+    mpBtn.style.cssText = 'display:none;font-size:12px;';
+    mpBtn.textContent = '🧠 提取记忆';
+    mpBtn.addEventListener('click', previewMemoryPalaceFromSelectedConversations);
+    bar.appendChild(mpBtn);
+
+    const selectedCount = document.createElement('span');
+    selectedCount.id = 'conv-selected-count';
+    selectedCount.style.cssText = 'color:var(--text-muted);font-size:12px;display:none;';
+    bar.appendChild(selectedCount);
+    container.appendChild(bar);
     
     for (const conv of conversations) {
-        const sid = conv.session_id || conv.id;
-        const title = escapeHtml(sid);
-        const preview = escapeHtml(conv.title || conv.preview || '');
-        const msgCount = conv.message_count || '';
-        const totalTokens = conv.total_tokens || 0;
-        const tokenStr = totalTokens > 0 ? (totalTokens >= 1000000 ? (totalTokens / 1000000).toFixed(1) + 'M' : totalTokens >= 1000 ? (totalTokens / 1000).toFixed(1) + 'K' : totalTokens) : '';
-        const lastTime = conv.last_time || conv.updated_at || '';
-        const timeStr = lastTime ? formatConvTime(lastTime) : '';
-        
-        html += `
-        <div class="conv-item" style="display: flex; align-items: flex-start; padding: 12px; border-bottom: 1px solid var(--border); transition: background 0.15s;"
-             onmouseover="this.style.background='var(--bg-hover, rgba(0,0,0,0.03))'" 
-             onmouseout="this.style.background=''">
-            <input type="checkbox" class="conv-checkbox" value="${escapeHtml(sid)}" 
-                   onchange="updateConvSelectionCount()" 
-                   style="margin-right: 10px; margin-top: 4px; cursor: pointer; flex-shrink: 0;">
-            <div style="flex: 1; min-width: 0; cursor: pointer;" onclick="openConvDetail('${escapeHtml(sid)}')">
-                <div style="display: flex; justify-content: space-between; align-items: flex-start;">
-                    <div style="flex: 1; min-width: 0;">
-                        <div style="font-weight: 500; margin-bottom: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${title}</div>
-                        <div style="color: var(--text-muted); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${preview}</div>
-                    </div>
-                    <div style="text-align: right; flex-shrink: 0; margin-left: 12px;">
-                        <div style="color: var(--text-muted); font-size: 12px;">${timeStr}</div>
-                        ${msgCount ? `<div style="color: var(--text-muted); font-size: 12px; margin-top: 2px;">${msgCount} 条</div>` : ''}
-                        ${tokenStr ? `<div style="color: var(--text-muted); font-size: 11px; margin-top: 2px;">${tokenStr}</div>` : ''}
-                    </div>
-                </div>
-            </div>
-        </div>`;
+        container.appendChild(createConvListItem(conv));
     }
-    
-    container.innerHTML = html;
+}
+
+function createConvListItem(conv) {
+    const sid = conv.session_id || conv.id || '';
+    const title = sid;
+    const preview = conv.title || conv.preview || '';
+    const msgCount = conv.message_count || '';
+    const totalTokens = conv.total_tokens || 0;
+    const tokenStr = totalTokens > 0 ? (totalTokens >= 1000000 ? (totalTokens / 1000000).toFixed(1) + 'M' : totalTokens >= 1000 ? (totalTokens / 1000).toFixed(1) + 'K' : String(totalTokens)) : '';
+    const lastTime = conv.last_time || conv.updated_at || '';
+    const timeStr = lastTime ? formatConvTime(lastTime) : '';
+
+    const item = document.createElement('div');
+    item.className = 'conv-item';
+    item.style.cssText = 'display:flex;align-items:flex-start;padding:12px;border-bottom:1px solid var(--border);transition:background 0.15s;';
+    item.addEventListener('mouseover', () => { item.style.background = 'var(--bg-hover, rgba(0,0,0,0.03))'; });
+    item.addEventListener('mouseout', () => { item.style.background = ''; });
+
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.className = 'conv-checkbox';
+    cb.value = sid;
+    cb.style.cssText = 'margin-right:10px;margin-top:4px;cursor:pointer;flex-shrink:0;';
+    cb.addEventListener('change', updateConvSelectionCount);
+    item.appendChild(cb);
+
+    const clickable = document.createElement('div');
+    clickable.style.cssText = 'flex:1;min-width:0;cursor:pointer;';
+    clickable.addEventListener('click', () => openConvDetail(sid));
+
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;justify-content:space-between;align-items:flex-start;';
+
+    const left = document.createElement('div');
+    left.style.cssText = 'flex:1;min-width:0;';
+    const titleEl = document.createElement('div');
+    titleEl.style.cssText = 'font-weight:500;margin-bottom:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
+    titleEl.textContent = title;
+    left.appendChild(titleEl);
+    const previewEl = document.createElement('div');
+    previewEl.style.cssText = 'color:var(--text-muted);font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
+    previewEl.textContent = preview;
+    left.appendChild(previewEl);
+    row.appendChild(left);
+
+    const right = document.createElement('div');
+    right.style.cssText = 'text-align:right;flex-shrink:0;margin-left:12px;';
+    const timeEl = document.createElement('div');
+    timeEl.style.cssText = 'color:var(--text-muted);font-size:12px;';
+    timeEl.textContent = timeStr;
+    right.appendChild(timeEl);
+    if (msgCount) {
+        const countEl = document.createElement('div');
+        countEl.style.cssText = 'color:var(--text-muted);font-size:12px;margin-top:2px;';
+        countEl.textContent = msgCount + ' 条';
+        right.appendChild(countEl);
+    }
+    if (tokenStr) {
+        const tokenEl = document.createElement('div');
+        tokenEl.style.cssText = 'color:var(--text-muted);font-size:11px;margin-top:2px;';
+        tokenEl.textContent = tokenStr;
+        right.appendChild(tokenEl);
+    }
+    row.appendChild(right);
+    clickable.appendChild(row);
+    item.appendChild(clickable);
+
+    return item;
 }
 
 // 渲染分页

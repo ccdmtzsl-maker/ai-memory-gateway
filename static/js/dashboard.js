@@ -1381,86 +1381,143 @@ async function loadConvMessages(sessionId, append = false) {
         const data = await resp.json();
         
         if (data.error) {
-            messagesEl.innerHTML = '<div style="color: var(--error);">' + data.error + '</div>';
+            messagesEl.textContent = data.error;
+            messagesEl.style.color = 'var(--error)';
             return;
         }
+        messagesEl.style.color = '';
         
         const messages = data.messages || [];
         const total = data.total || messages.length;
         
         if (!append) {
             convDetailLoadedCount = 0;
+            messagesEl.textContent = '';
+            const bar = document.createElement('div');
+            bar.style.cssText = 'margin-bottom:12px;display:flex;gap:8px;justify-content:flex-end;';
+            const delBtn = document.createElement('button');
+            delBtn.className = 'btn btn-sm';
+            delBtn.innerHTML = ICONS.trash(13) + ' 删除对话';
+            delBtn.addEventListener('click', () => deleteConversation(sessionId));
+            bar.appendChild(delBtn);
+            messagesEl.appendChild(bar);
+        } else {
+            const oldLoadMore = messagesEl.querySelector('.conv-load-more');
+            if (oldLoadMore) oldLoadMore.remove();
         }
         convDetailLoadedCount += messages.length;
         
         titleEl.textContent = `对话详情（${convDetailLoadedCount} / ${total} 条消息）`;
         
-        // 渲染消息
-        let html = '';
-        if (!append) {
-            html += `<div style="margin-bottom: 12px; display: flex; gap: 8px; justify-content: flex-end;">
-                <button class="btn btn-sm" onclick="deleteConversation('${escapeHtml(sessionId)}')">${ICONS.trash(13)} 删除对话</button>
-            </div>`;
-        }
-        
         for (const msg of messages) {
-            const isUser = msg.role === 'user';
-            const isTool = msg.role === 'tool';
-            const roleLabel = isUser ? '👤 用户' : (isTool ? '🧰 工具结果' : '🤖 助手');
-            const bgColor = isUser ? 'var(--bg-user, rgba(59,130,246,0.08))' : (isTool ? 'rgba(245,158,11,0.08)' : 'var(--bg-assistant, rgba(0,0,0,0.02))');
-            const timeStr = msg.created_at ? formatConvTime(msg.created_at) : '';
-            const msgId = msg.id || '';
-            const meta = msg.metadata || {};
-            let displayContent = msg.content || '';
-            if (!displayContent && meta.tool_calls && Array.isArray(meta.tool_calls)) {
-                displayContent = ' ';
-            } else if (isTool && meta.tool_call_id) {
-                displayContent = `tool_call_id: ${meta.tool_call_id}\n\n${displayContent}`;
-            }
-            const content = escapeHtml(displayContent);
-            
-            html += `
-            <div style="padding: 12px; margin-bottom: 8px; border-radius: 8px; background: ${bgColor}; position: relative;" id="msg-${msgId}">
-                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
-                    <span style="font-weight: 500; font-size: 13px;">${roleLabel}</span>
-                    <div style="display: flex; align-items: center; gap: 8px;">
-                        <span style="color: var(--text-muted); font-size: 12px;">${timeStr}</span>
-                        ${msgId ? `<button class="btn btn-sm" onclick="toggleEditMessage(${msgId})" style="font-size: 11px; padding: 2px 8px;">编辑</button><button class="btn btn-sm" onclick="deleteSingleMessage(${msgId})" style="font-size: 11px; padding: 2px 8px; color: var(--error);">删除</button>` : ''}
-                    </div>
-                </div>
-                <div class="msg-content" id="msg-content-${msgId}" style="white-space: pre-wrap; word-break: break-word; font-size: 14px; line-height: 1.6;">${content}</div>
-                <div class="msg-edit" id="msg-edit-${msgId}" style="display: none;">
-                    <textarea id="msg-textarea-${msgId}" style="width: 100%; min-height: 100px; padding: 8px; border: 1px solid var(--border); border-radius: 6px; font-size: 14px; line-height: 1.6; resize: vertical; font-family: inherit;">${content}</textarea>
-                    <div style="margin-top: 8px; display: flex; gap: 8px; justify-content: flex-end;">
-                        <button class="btn btn-sm" onclick="toggleEditMessage(${msgId})">取消</button>
-                        <button class="btn btn-sm btn-primary" onclick="saveMessageEdit(${msgId})">保存</button>
-                    </div>
-                </div>
-            </div>`;
+            messagesEl.appendChild(createConvMessageElement(msg));
         }
         
-        // 加载更多按钮
         if (convDetailLoadedCount < total) {
-            html += `<div style="text-align: center; padding: 16px 0;">
-                <button class="btn btn-primary" onclick="loadConvMessages('${escapeHtml(sessionId)}', true)">
-                    加载更多（还有 ${total - convDetailLoadedCount} 条）
-                </button>
-            </div>`;
-        }
-        
-        if (append) {
-            // 追加模式：去掉旧的"加载更多"按钮，加上新内容
-            const oldLoadMore = messagesEl.querySelector('[onclick*="loadConvMessages"]');
-            if (oldLoadMore) oldLoadMore.parentElement.remove();
-            messagesEl.insertAdjacentHTML('beforeend', html);
-        } else {
-            messagesEl.innerHTML = html;
+            const moreWrap = document.createElement('div');
+            moreWrap.className = 'conv-load-more';
+            moreWrap.style.cssText = 'text-align:center;padding:16px 0;';
+            const moreBtn = document.createElement('button');
+            moreBtn.className = 'btn btn-primary';
+            moreBtn.textContent = `加载更多（还有 ${total - convDetailLoadedCount} 条）`;
+            moreBtn.addEventListener('click', () => loadConvMessages(sessionId, true));
+            moreWrap.appendChild(moreBtn);
+            messagesEl.appendChild(moreWrap);
         }
     } catch(e) {
         if (!append) {
-            messagesEl.innerHTML = '<div style="color: var(--error);">加载失败: ' + e.message + '</div>';
+            messagesEl.textContent = '加载失败: ' + e.message;
+            messagesEl.style.color = 'var(--error)';
         }
     }
+}
+
+function createConvMessageElement(msg) {
+    const isUser = msg.role === 'user';
+    const isTool = msg.role === 'tool';
+    const roleLabel = isUser ? '👤 用户' : (isTool ? '🧰 工具结果' : '🤖 助手');
+    const bgColor = isUser ? 'var(--bg-user, rgba(59,130,246,0.08))' : (isTool ? 'rgba(245,158,11,0.08)' : 'var(--bg-assistant, rgba(0,0,0,0.02))');
+    const timeStr = msg.created_at ? formatConvTime(msg.created_at) : '';
+    const msgId = msg.id || '';
+    const meta = msg.metadata || {};
+    let displayContent = msg.content || '';
+    if (!displayContent && meta.tool_calls && Array.isArray(meta.tool_calls)) {
+        displayContent = ' ';
+    } else if (isTool && meta.tool_call_id) {
+        displayContent = `tool_call_id: ${meta.tool_call_id}\n\n${displayContent}`;
+    }
+
+    const wrap = document.createElement('div');
+    wrap.id = msgId ? `msg-${msgId}` : '';
+    wrap.style.cssText = `padding:12px;margin-bottom:8px;border-radius:8px;background:${bgColor};position:relative;`;
+
+    const header = document.createElement('div');
+    header.style.cssText = 'display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;';
+
+    const role = document.createElement('span');
+    role.style.cssText = 'font-weight:500;font-size:13px;';
+    role.textContent = roleLabel;
+    header.appendChild(role);
+
+    const tools = document.createElement('div');
+    tools.style.cssText = 'display:flex;align-items:center;gap:8px;';
+    const time = document.createElement('span');
+    time.style.cssText = 'color:var(--text-muted);font-size:12px;';
+    time.textContent = timeStr;
+    tools.appendChild(time);
+
+    if (msgId) {
+        const editBtn = document.createElement('button');
+        editBtn.className = 'btn btn-sm';
+        editBtn.style.cssText = 'font-size:11px;padding:2px 8px;';
+        editBtn.textContent = '编辑';
+        editBtn.addEventListener('click', () => toggleEditMessage(msgId));
+        tools.appendChild(editBtn);
+
+        const delBtn = document.createElement('button');
+        delBtn.className = 'btn btn-sm';
+        delBtn.style.cssText = 'font-size:11px;padding:2px 8px;color:var(--error);';
+        delBtn.textContent = '删除';
+        delBtn.addEventListener('click', () => deleteSingleMessage(msgId));
+        tools.appendChild(delBtn);
+    }
+    header.appendChild(tools);
+    wrap.appendChild(header);
+
+    const content = document.createElement('div');
+    content.className = 'msg-content';
+    content.id = msgId ? `msg-content-${msgId}` : '';
+    content.style.cssText = 'white-space:pre-wrap;word-break:break-word;font-size:14px;line-height:1.6;';
+    content.textContent = displayContent;
+    wrap.appendChild(content);
+
+    const edit = document.createElement('div');
+    edit.className = 'msg-edit';
+    edit.id = msgId ? `msg-edit-${msgId}` : '';
+    edit.style.display = 'none';
+
+    const textarea = document.createElement('textarea');
+    textarea.id = msgId ? `msg-textarea-${msgId}` : '';
+    textarea.style.cssText = 'width:100%;min-height:100px;padding:8px;border:1px solid var(--border);border-radius:6px;font-size:14px;line-height:1.6;resize:vertical;font-family:inherit;';
+    textarea.value = displayContent;
+    edit.appendChild(textarea);
+
+    const editActions = document.createElement('div');
+    editActions.style.cssText = 'margin-top:8px;display:flex;gap:8px;justify-content:flex-end;';
+    const cancelBtn = document.createElement('button');
+    cancelBtn.className = 'btn btn-sm';
+    cancelBtn.textContent = '取消';
+    cancelBtn.addEventListener('click', () => toggleEditMessage(msgId));
+    editActions.appendChild(cancelBtn);
+    const saveBtn = document.createElement('button');
+    saveBtn.className = 'btn btn-sm btn-primary';
+    saveBtn.textContent = '保存';
+    saveBtn.addEventListener('click', () => saveMessageEdit(msgId));
+    editActions.appendChild(saveBtn);
+    edit.appendChild(editActions);
+    wrap.appendChild(edit);
+
+    return wrap;
 }
 
 function closeConvDetail() {

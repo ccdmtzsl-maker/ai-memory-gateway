@@ -1206,6 +1206,16 @@ async function doConvImport() {
     document.getElementById('convJsonInput').value = '';
 }
 
+
+function setConvPlainMessage(container, text, opts = {}) {
+    if (!container) return;
+    container.textContent = '';
+    const div = document.createElement('div');
+    div.style.cssText = opts.style || 'text-align:center;color:var(--text-muted);padding:20px 0;';
+    div.textContent = text || '';
+    container.appendChild(div);
+}
+
 // 加载对话列表（分页）
 async function loadConversationList(page = 1) {
     convCurrentPage = page;
@@ -1216,20 +1226,20 @@ async function loadConversationList(page = 1) {
     document.getElementById('conv-list-title').textContent = '对话列表';
     
     const container = document.getElementById('conv-list-container');
-    container.innerHTML = '<div style="text-align: center; color: var(--text-muted); padding: 20px 0;">加载中...</div>';
+    setConvPlainMessage(container, '加载中...');
     
     try {
         const resp = await fetch('/api/conversations?page=' + page + '&per_page=20');
         const data = await resp.json();
         if (data.error) {
-            container.innerHTML = '<div style="color: var(--error); padding: 20px 0;">加载失败: ' + data.error + '</div>';
+            setConvPlainMessage(container, '加载失败: ' + data.error, {style:'color:var(--error);padding:20px 0;'});
             return;
         }
         renderConvList(data.conversations);
         renderConvPagination(data.page, data.total_pages, data.total);
         document.getElementById('conv-list-count').textContent = `共 ${data.total} 个对话`;
     } catch(e) {
-        container.innerHTML = '<div style="color: var(--error); padding: 20px 0;">请求失败: ' + e.message + '</div>';
+        setConvPlainMessage(container, '请求失败: ' + e.message, {style:'color:var(--error);padding:20px 0;'});
     }
 }
 
@@ -1243,26 +1253,30 @@ async function searchConversations() {
     
     const container = document.getElementById('conv-list-container');
     const statusEl = document.getElementById('conv-search-status');
-    container.innerHTML = '<div style="text-align: center; color: var(--text-muted); padding: 20px 0;">搜索中...</div>';
+    setConvPlainMessage(container, '搜索中...');
     
     try {
         const resp = await fetch('/api/chat/search?q=' + encodeURIComponent(query) + '&limit=20&offset=0');
-        if (resp.status === 404) { statusEl.textContent = '搜索功能暂未启用'; container.innerHTML = ''; return; }
+        if (resp.status === 404) { statusEl.textContent = '搜索功能暂未启用'; container.textContent = ''; return; }
         const data = await resp.json();
         if (data.error) {
-            container.innerHTML = '<div style="color: var(--error); padding: 20px 0;">' + data.error + '</div>';
+            setConvPlainMessage(container, data.error, {style:'color:var(--error);padding:20px 0;'});
             return;
         }
         statusEl.textContent = `搜索"${query}"找到 ${data.total} 个对话`;
         document.getElementById('conv-list-title').textContent = '搜索结果';
         document.getElementById('conv-list-count').textContent = `${data.total} 个结果`;
         renderConvList(data.results, true);
-        // 搜索结果的简易分页
-        document.getElementById('conv-pagination').innerHTML = data.total > 20 
-            ? `<span style="color: var(--text-muted); font-size: 13px;">显示前 20 条结果，共 ${data.total} 条</span>` 
-            : '';
+        const pg = document.getElementById('conv-pagination');
+        pg.textContent = '';
+        if (data.total > 20) {
+            const span = document.createElement('span');
+            span.style.cssText = 'color:var(--text-muted);font-size:13px;';
+            span.textContent = `显示前 20 条结果，共 ${data.total} 条`;
+            pg.appendChild(span);
+        }
     } catch(e) {
-        container.innerHTML = '<div style="color: var(--error); padding: 20px 0;">搜索失败: ' + e.message + '</div>';
+        setConvPlainMessage(container, '搜索失败: ' + e.message, {style:'color:var(--error);padding:20px 0;'});
     }
 }
 
@@ -1405,24 +1419,39 @@ function createConvListItem(conv) {
 // 渲染分页
 function renderConvPagination(currentPage, totalPages, total) {
     const container = document.getElementById('conv-pagination');
-    if (totalPages <= 1) { container.innerHTML = ''; return; }
+    container.textContent = '';
+    if (totalPages <= 1) return;
     
-    let html = '';
-    html += `<button class="btn btn-sm" onclick="loadConversationList(${currentPage - 1})" ${currentPage <= 1 ? 'disabled' : ''}>上一页</button>`;
+    const prev = document.createElement('button');
+    prev.className = 'btn btn-sm';
+    prev.textContent = '上一页';
+    prev.disabled = currentPage <= 1;
+    prev.addEventListener('click', () => loadConversationList(currentPage - 1));
+    container.appendChild(prev);
     
-    // 页码按钮（最多显示5个）
     let startPage = Math.max(1, currentPage - 2);
     let endPage = Math.min(totalPages, startPage + 4);
     if (endPage - startPage < 4) startPage = Math.max(1, endPage - 4);
     
     for (let i = startPage; i <= endPage; i++) {
-        html += `<button class="btn btn-sm${i === currentPage ? ' btn-primary' : ''}" onclick="loadConversationList(${i})">${i}</button>`;
+        const btn = document.createElement('button');
+        btn.className = 'btn btn-sm' + (i === currentPage ? ' btn-primary' : '');
+        btn.textContent = String(i);
+        btn.addEventListener('click', () => loadConversationList(i));
+        container.appendChild(btn);
     }
     
-    html += `<button class="btn btn-sm" onclick="loadConversationList(${currentPage + 1})" ${currentPage >= totalPages ? 'disabled' : ''}>下一页</button>`;
-    html += `<span style="color: var(--text-muted); font-size: 12px; margin-left: 8px;">${currentPage}/${totalPages}</span>`;
+    const next = document.createElement('button');
+    next.className = 'btn btn-sm';
+    next.textContent = '下一页';
+    next.disabled = currentPage >= totalPages;
+    next.addEventListener('click', () => loadConversationList(currentPage + 1));
+    container.appendChild(next);
     
-    container.innerHTML = html;
+    const info = document.createElement('span');
+    info.style.cssText = 'color:var(--text-muted);font-size:12px;margin-left:8px;';
+    info.textContent = `${currentPage}/${totalPages}`;
+    container.appendChild(info);
 }
 
 // 打开对话详情
@@ -1438,7 +1467,7 @@ async function openConvDetail(sessionId) {
     convDetailLoadedCount = 0;
     panel.style.display = 'block';
     titleEl.textContent = '加载中...';
-    messagesEl.innerHTML = '<div style="text-align: center; color: var(--text-muted); padding: 20px 0;">加载中...</div>';
+    setConvPlainMessage(messagesEl, '加载中...');
     panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
     
     await loadConvMessages(sessionId, false);
@@ -1784,8 +1813,153 @@ async function batchMergeSessions() {
 
 let _convMemoryPalacePreviewItems = [];
 function convMpPanel(){let p=document.getElementById('conv-memory-preview-panel');if(!p){const c=document.getElementById('conv-list-container');p=document.createElement('div');p.id='conv-memory-preview-panel';p.className='card';p.style.marginTop='12px';p.style.display='none';c.parentNode.insertBefore(p,c);}return p;}
-async function previewMemoryPalaceFromSelectedConversations(){const checked=document.querySelectorAll('.conv-checkbox:checked');if(!checked.length){return;}const btn=document.getElementById('conv-batch-mp-btn');const oldText=btn?btn.innerHTML:'';if(btn){btn.disabled=true;btn.innerHTML='🧠 提取中...';}const sessionIds=Array.from(checked).map(cb=>cb.value);const p=convMpPanel();p.style.display='';p.innerHTML='<div style="padding:14px;color:var(--text-muted);line-height:1.7;">🧠 正在逐个对话线提取记忆预览...<br><span style="font-size:12px;">已发送请求，模型提取可能需要几十秒。你可以稍等一下。</span></div>';try{p.scrollIntoView({behavior:'smooth',block:'start'});}catch(_e){}try{const r=await fetch('/api/memory-palace/extract-preview-sessions',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({session_ids:sessionIds,character_id:'default',limit:300})});const d=await r.json();if(d.error||d.status==='error'){p.innerHTML='<div style="color:var(--error);padding:12px;">提取失败：'+escapeHtml(d.error||'未知错误')+'</div>';return;}renderConvMemoryPalacePreview(d.groups||[]);}catch(e){p.innerHTML='<div style="color:var(--error);padding:12px;">请求失败：'+escapeHtml(e.message)+'</div>';}finally{if(btn){btn.disabled=false;btn.innerHTML=oldText||'🧠 提取记忆';}}}
-function renderConvMemoryPalacePreview(groups){const p=convMpPanel();_convMemoryPalacePreviewItems=[];let html='<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;"><div><h4 style="margin:0;">记忆宫殿提取预览</h4><div style="font-size:12px;color:var(--text-muted);">逐个对话线处理；勾选后才会真正导入。</div></div><button class="btn btn-sm" onclick="closeConvMemoryPreview()">关闭</button></div>';let idx=0;for(const g of groups){html+='<div style="border-top:1px solid var(--border);padding-top:10px;margin-top:10px;"><b>【对话线：'+escapeHtml(g.session_id||'')+'】</b> ';if(g.status!=='ok'){html+='<span style="color:var(--error);font-size:13px;">'+escapeHtml(g.error||g.message||'没有结果')+'</span></div>';continue;}html+='<span style="font-size:12px;color:var(--text-muted);">'+(g.message_count||0)+' 条消息，'+(g.memory_count||0)+' 条记忆</span>';const items=g.items||[];if(!items.length){html+='<div style="color:var(--text-muted);font-size:13px;margin-top:8px;">没有提取出候选记忆。</div></div>';continue;}for(const item of items){const cur=idx++;_convMemoryPalacePreviewItems.push(item);if(item.type==='unpin'){html+='<label style="display:block;margin:8px 0;padding:10px;border:1px solid var(--border);border-radius:8px;background:rgba(250,204,21,.08);"><input type="checkbox" class="conv-mp-preview-check" value="'+cur+'" checked> <b>📌 摘除便利贴</b><div style="margin-top:6px;font-size:13px;">'+escapeHtml(item.content||'')+'</div></label>';}else{let meta='房间:'+(item.room||'')+'｜重要性:'+(item.importance||5)+'｜情绪:'+(item.mood||'neutral')+'｜日期:'+(item.date||'');if(item.pinned_until)meta+='｜📌便利贴';html+='<label style="display:block;margin:8px 0;padding:10px;border:1px solid var(--border);border-radius:8px;"><input type="checkbox" class="conv-mp-preview-check" value="'+cur+'" checked> <span style="color:var(--text-muted);font-size:12px;">'+escapeHtml(meta)+'</span><div style="margin-top:6px;white-space:pre-wrap;">'+escapeHtml(item.content||'')+'</div></label>';}}html+='</div>';}html+='<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px;"><button class="btn btn-sm" onclick="toggleConvMemoryPreviewChecks(false)">全不选</button><button class="btn btn-sm" onclick="toggleConvMemoryPreviewChecks(true)">全选</button><button class="btn btn-primary btn-sm" onclick="importSelectedConvMemoryPreview()">导入选中</button></div>';p.innerHTML=html;}
+async function previewMemoryPalaceFromSelectedConversations() {
+    const checked = document.querySelectorAll('.conv-checkbox:checked');
+    if (!checked.length) return;
+    const btn = document.getElementById('conv-batch-mp-btn');
+    const oldText = btn ? btn.textContent : '';
+    if (btn) { btn.disabled = true; btn.textContent = '🧠 提取中...'; }
+    const sessionIds = Array.from(checked).map(cb => cb.value);
+    const p = convMpPanel();
+    p.style.display = '';
+    p.textContent = '';
+    const loading = document.createElement('div');
+    loading.style.cssText = 'padding:14px;color:var(--text-muted);line-height:1.7;';
+    loading.textContent = '🧠 正在逐个对话线提取记忆预览... 已发送请求，模型提取可能需要几十秒。你可以稍等一下。';
+    p.appendChild(loading);
+    try { p.scrollIntoView({behavior:'smooth',block:'start'}); } catch(_e) {}
+    try {
+        const r = await fetch('/api/memory-palace/extract-preview-sessions', {
+            method:'POST', headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({session_ids:sessionIds, character_id:'default', limit:300})
+        });
+        const d = await r.json();
+        if (d.error || d.status === 'error') {
+            setConvPlainMessage(p, '提取失败：' + (d.error || '未知错误'), {style:'color:var(--error);padding:12px;'});
+            return;
+        }
+        renderConvMemoryPalacePreview(d.groups || []);
+    } catch(e) {
+        setConvPlainMessage(p, '请求失败：' + e.message, {style:'color:var(--error);padding:12px;'});
+    } finally {
+        if (btn) { btn.disabled = false; btn.textContent = oldText || '🧠 提取记忆'; }
+    }
+}
+function renderConvMemoryPalacePreview(groups) {
+    const p = convMpPanel();
+    p.textContent = '';
+    _convMemoryPalacePreviewItems = [];
+
+    const header = document.createElement('div');
+    header.style.cssText = 'display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;';
+    const headLeft = document.createElement('div');
+    const h4 = document.createElement('h4');
+    h4.style.margin = '0';
+    h4.textContent = '记忆宫殿提取预览';
+    headLeft.appendChild(h4);
+    const sub = document.createElement('div');
+    sub.style.cssText = 'font-size:12px;color:var(--text-muted);';
+    sub.textContent = '逐个对话线处理；勾选后才会真正导入。';
+    headLeft.appendChild(sub);
+    header.appendChild(headLeft);
+    const closeBtn = document.createElement('button');
+    closeBtn.className = 'btn btn-sm';
+    closeBtn.textContent = '关闭';
+    closeBtn.addEventListener('click', closeConvMemoryPreview);
+    header.appendChild(closeBtn);
+    p.appendChild(header);
+
+    let idx = 0;
+    for (const g of groups) {
+        const groupEl = document.createElement('div');
+        groupEl.style.cssText = 'border-top:1px solid var(--border);padding-top:10px;margin-top:10px;';
+        const title = document.createElement('b');
+        title.textContent = '【对话线：' + (g.session_id || '') + '】';
+        groupEl.appendChild(title);
+        groupEl.appendChild(document.createTextNode(' '));
+
+        if (g.status !== 'ok') {
+            const err = document.createElement('span');
+            err.style.cssText = 'color:var(--error);font-size:13px;';
+            err.textContent = g.error || g.message || '没有结果';
+            groupEl.appendChild(err);
+            p.appendChild(groupEl);
+            continue;
+        }
+
+        const stat = document.createElement('span');
+        stat.style.cssText = 'font-size:12px;color:var(--text-muted);';
+        stat.textContent = `${g.message_count || 0} 条消息，${g.memory_count || 0} 条记忆`;
+        groupEl.appendChild(stat);
+
+        const items = g.items || [];
+        if (!items.length) {
+            const none = document.createElement('div');
+            none.style.cssText = 'color:var(--text-muted);font-size:13px;margin-top:8px;';
+            none.textContent = '没有提取出候选记忆。';
+            groupEl.appendChild(none);
+            p.appendChild(groupEl);
+            continue;
+        }
+
+        for (const item of items) {
+            const cur = idx++;
+            _convMemoryPalacePreviewItems.push(item);
+            const label = document.createElement('label');
+            label.style.cssText = 'display:block;margin:8px 0;padding:10px;border:1px solid var(--border);border-radius:8px;';
+            if (item.type === 'unpin') label.style.background = 'rgba(250,204,21,.08)';
+            const cb = document.createElement('input');
+            cb.type = 'checkbox';
+            cb.className = 'conv-mp-preview-check';
+            cb.value = String(cur);
+            cb.checked = true;
+            label.appendChild(cb);
+            label.appendChild(document.createTextNode(' '));
+
+            if (item.type === 'unpin') {
+                const b = document.createElement('b');
+                b.textContent = '📌 摘除便利贴';
+                label.appendChild(b);
+                const content = document.createElement('div');
+                content.style.cssText = 'margin-top:6px;font-size:13px;';
+                content.textContent = item.content || '';
+                label.appendChild(content);
+            } else {
+                let meta = '房间:' + (item.room || '') + '｜重要性:' + (item.importance || 5) + '｜情绪:' + (item.mood || 'neutral') + '｜日期:' + (item.date || '');
+                if (item.pinned_until) meta += '｜📌便利贴';
+                const metaEl = document.createElement('span');
+                metaEl.style.cssText = 'color:var(--text-muted);font-size:12px;';
+                metaEl.textContent = meta;
+                label.appendChild(metaEl);
+                const content = document.createElement('div');
+                content.style.cssText = 'margin-top:6px;white-space:pre-wrap;';
+                content.textContent = item.content || '';
+                label.appendChild(content);
+            }
+            groupEl.appendChild(label);
+        }
+        p.appendChild(groupEl);
+    }
+
+    const actions = document.createElement('div');
+    actions.style.cssText = 'display:flex;gap:8px;justify-content:flex-end;margin-top:12px;';
+    const noneBtn = document.createElement('button');
+    noneBtn.className = 'btn btn-sm';
+    noneBtn.textContent = '全不选';
+    noneBtn.addEventListener('click', () => toggleConvMemoryPreviewChecks(false));
+    actions.appendChild(noneBtn);
+    const allBtn = document.createElement('button');
+    allBtn.className = 'btn btn-sm';
+    allBtn.textContent = '全选';
+    allBtn.addEventListener('click', () => toggleConvMemoryPreviewChecks(true));
+    actions.appendChild(allBtn);
+    const importBtn = document.createElement('button');
+    importBtn.className = 'btn btn-primary btn-sm';
+    importBtn.textContent = '导入选中';
+    importBtn.addEventListener('click', importSelectedConvMemoryPreview);
+    actions.appendChild(importBtn);
+    p.appendChild(actions);
+}
 function toggleConvMemoryPreviewChecks(v){document.querySelectorAll('.conv-mp-preview-check').forEach(cb=>cb.checked=v);}
 function closeConvMemoryPreview(){const p=document.getElementById('conv-memory-preview-panel');if(p)p.style.display='none';_convMemoryPalacePreviewItems=[];}
 

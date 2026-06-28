@@ -3996,6 +3996,7 @@ _MEMORY_PALACE_BACKUP_TABLES = [
     "memory_palace_extracted_messages",
     "memory_palace_extraction_cursor",
     "memory_palace_state",
+    "memory_palace_recall_receipts",
 ]
 
 

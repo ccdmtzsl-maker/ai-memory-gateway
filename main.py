@@ -1122,7 +1122,7 @@ async def _call_digest_llm(material: dict, character_id: str = "default") -> lis
 [{{"id": "A0", "action": "resolve", "reflection": "..."}}, {{"id": "U0", "action": "synthesize_user", "category": "...", "reflection": "..."}}]
 
 \u6ca1\u6709\u53d8\u5316\u7684\u53ef\u4ee5\u4e0d\u5199\u3002\u53ea\u5199\u6709\u53d8\u5316\u7684\u3002"""
-    url = base_url.rstrip("/") + "/chat/completions"
+    url = base_url
     headers = {"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"}
     body = {"model": model, "messages": [{"role": "system", "content": system_prompt}, {"role": "user", "content": "\u8bf7\u5f00\u59cb\u5ba1\u89c6\u3002"}], "temperature": 0.6, "max_tokens": 8000, "stream": False}
     async with httpx.AsyncClient(timeout=120) as client:

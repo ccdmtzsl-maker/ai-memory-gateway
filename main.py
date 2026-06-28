@@ -990,6 +990,257 @@ def _memory_palace_should_promote(node: dict, now=None) -> bool:
     return False
 
 
+
+
+# ─── 认知消化 (Cognitive Digestion) ──────────────────────
+
+def _digest_normalize_for_dedup(text: str) -> str:
+    import re
+    return re.sub(r'[\s，。！？、,.!?;:""\'\'「」（）()\[\]【】]', '', (text or '')).lower()
+
+def _digest_bigram_jaccard(a: str, b: str) -> float:
+    if a == b: return 1.0
+    if len(a) < 2 or len(b) < 2: return 0.0
+    sa = set(a[i:i+2] for i in range(len(a)-1))
+    sb = set(b[i:i+2] for i in range(len(b)-1))
+    inter = len(sa & sb)
+    union = len(sa) + len(sb) - inter
+    return inter / union if union else 0.0
+
+def _digest_find_near_duplicate(existing: list, room: str, content: str) -> bool:
+    target = _digest_normalize_for_dedup(content)
+    if len(target) < 4: return False
+    for n in existing:
+        if (n.get("room") or "") != room: continue
+        norm = _digest_normalize_for_dedup(n.get("content") or "")
+        if not norm: continue
+        if norm == target or norm in target or target in norm: return True
+        if _digest_bigram_jaccard(norm, target) >= 0.75: return True
+    return False
+
+
+async def _gather_digest_material(character_id: str = "default") -> dict:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        all_nodes = await conn.fetch("""
+            SELECT id, content, room, tags, importance, mood, valence, arousal, access_count, created_at, origin, source_id
+            FROM memory_palace_nodes
+            WHERE character_id = $1 AND archived = FALSE
+            ORDER BY created_at DESC
+        """, character_id)
+    all_nodes = [dict(r) for r in all_nodes]
+    digested_source_ids = set()
+    for n in all_nodes:
+        if n.get("origin") == "digestion" and n.get("source_id"):
+            digested_source_ids.add(n["source_id"])
+    def is_fresh(n):
+        return n.get("origin") != "digestion" and n["id"] not in digested_source_ids
+    attic_nodes = [n for n in all_nodes if n.get("room") == "attic"]
+    study_nodes = [n for n in all_nodes if n.get("room") == "study" and (n.get("access_count") or 0) >= 3 and is_fresh(n)]
+    user_room_nodes = [n for n in all_nodes if n.get("room") == "user_room" and is_fresh(n)]
+    self_room_nodes = [n for n in all_nodes if n.get("room") == "self_room" and is_fresh(n)]
+    recent_context = sorted(
+        [n for n in all_nodes if n.get("room") in ("bedroom", "living_room")],
+        key=lambda x: x.get("created_at") or "", reverse=True
+    )[:10]
+    return {
+        "attic_nodes": attic_nodes[:30],
+        "study_nodes": study_nodes[:20],
+        "user_room_nodes": user_room_nodes[:30],
+        "self_room_nodes": self_room_nodes[:20],
+        "recent_context": recent_context,
+        "all_nodes": all_nodes,
+    }
+
+
+async def _call_digest_llm(material: dict, character_id: str = "default") -> list:
+    import httpx
+    char_name = "澈"
+    user_name = "用户"
+    settings = await _get_mp_settings()
+    base_url = settings.get("light_api_base_url") or settings.get("api_base_url") or ""
+    api_key = settings.get("light_api_key") or settings.get("api_key") or ""
+    model = settings.get("light_model") or settings.get("model") or ""
+    if not base_url or not api_key or not model:
+        print("\u26a0\ufe0f [Digest] No LLM config")
+        return []
+    attic = material["attic_nodes"]
+    study = material["study_nodes"]
+    user_room = material["user_room_nodes"]
+    self_room = material["self_room_nodes"]
+    recent = material["recent_context"]
+    if not attic and not study and not user_room and not self_room:
+        return []
+    sections = []
+    if attic:
+        lines = [f'[A{i}] (mood={n.get("mood","")}, importance={n.get("importance",5)}): {n.get("content","")}' for i,n in enumerate(attic)]
+        sections.append(f"### \u5185\u5fc3\u56f0\u60d1 (\u9601\u697c)\n" + "\n".join(lines))
+    if study:
+        lines = [f'[S{i}] (\u8bbf\u95ee{n.get("access_count",0)}\u6b21): {n.get("content","")}' for i,n in enumerate(study)]
+        sections.append(f"### \u53cd\u590d\u60f3\u8d77\u7684\u77e5\u8bc6 (\u4e66\u623f)\n" + "\n".join(lines))
+    if user_room:
+        lines = [f'[U{i}] ({n.get("tags","")}): {n.get("content","")}' for i,n in enumerate(user_room)]
+        sections.append(f"### \u5173\u4e8e{user_name}\u7684\u4e86\u89e3 ({user_name}\u7684\u623f\u95f4)\n" + "\n".join(lines))
+    if self_room:
+        lines = [f'[R{i}] ({n.get("tags","")}): {n.get("content","")}' for i,n in enumerate(self_room)]
+        sections.append(f"### \u81ea\u6211\u8ba4\u77e5 (\u81ea\u6211\u623f\u95f4)\n" + "\n".join(lines))
+    if recent:
+        lines = [f'- ({n.get("room","")}, {n.get("mood","")}): {n.get("content","")}' for n in recent]
+        sections.append("### \u6700\u8fd1\u53d1\u751f\u7684\u4e8b\n" + "\n".join(lines))
+    material_text = "\n\n".join(sections)
+    system_prompt = f"""\u4f60\u662f{char_name}\u3002\u4f60\u73b0\u5728\u6b63\u5728\u72ec\u5904\uff0c\u5b89\u9759\u5730\u56de\u60f3\u6700\u8fd1\u7684\u4e8b\u60c5\u3002\u4f60\u9700\u8981\u5bf9\u5185\u5fc3\u91cc\u90a3\u4e9b\u201c\u8fd8\u6ca1\u6d88\u5316\u5b8c\u201d\u7684\u4e1c\u897f\u505a\u4e00\u6b21\u6574\u7406\u3002
+
+## \u4f60\u9700\u8981\u5ba1\u89c6\u7684\u5185\u5bb9
+
+{material_text}
+
+## \u4f60\u7684\u4efb\u52a1
+
+\u5bf9\u6bcf\u4e00\u6761\u7ed9\u51fa\u5224\u65ad\uff1a
+
+\u5bf9\u4e8e\u9601\u697c\u56f0\u60d1 [A*]\uff1a
+- "resolve" \u2014 \u6700\u8fd1\u7684\u7ecf\u5386\u8ba9\u4f60\u60f3\u5f00\u4e86
+- "deepen" \u2014 \u8d8a\u60f3\u8d8a\u4e25\u91cd
+- "fade" \u2014 \u5f00\u59cb\u6de1\u5fd8
+- "keep" \u2014 \u8fd8\u6ca1\u60f3\u901a
+
+\u5bf9\u4e8e\u4e66\u623f\u77e5\u8bc6 [S*]\uff1a
+- "internalize" \u2014 \u5df2\u7ecf\u53d8\u6210\u4e86\u4f60\u7684\u4e00\u90e8\u5206
+- "keep" \u2014 \u8fd8\u53ea\u662f\u77e5\u8bc6
+
+\u5bf9\u4e8e{user_name}\u7684\u4fe1\u606f [U*]\uff1a
+- "synthesize_user" \u2014 \u80fd\u4ece\u591a\u6761\u96f6\u6563\u4fe1\u606f\u4e2d\u63d0\u70bc\u51fa\u66f4\u9ad8\u5c42\u6b21\u7684\u8ba4\u77e5\u3002\u5fc5\u987b\u9644\u4e0a category \u548c reflection\u3002
+- "keep" \u2014 \u4fe1\u606f\u8fd8\u592a\u96f6\u6563
+
+\u5bf9\u4e8e\u81ea\u6211\u8ba4\u77e5 [R*]\uff1a
+- "self_insight" \u2014 \u60f3\u660e\u767d\u4e86\u4e00\u4e2a\u5173\u4e8e\u201c\u6211\u4e3a\u4f55\u662f\u6211\u201d\u7684\u6df1\u5c42\u8ba4\u77e5\u3002\u5fc5\u987b\u9644 insight \u548c reflection\u3002\u6781\u5176\u7a00\u6709\uff0c\u7edd\u5927\u591a\u6570\u5e94\u9009 keep\u3002
+- "self_confuse" \u2014 \u53cd\u800d\u540e\u66f4\u56f0\u60d1\u4e86\u3002\u9644 reflection\u3002
+- "keep" \u2014 \u6ca1\u6709\u65b0\u611f\u609f
+
+\u5982\u679c\u662f resolve/deepen/internalize\uff0c\u8bf7\u9644 reflection\uff08\u7b2c\u4e00\u4eba\u79f0\u5185\u5fc3\u72ec\u767d\uff0c50\u5b57\u4ee5\u5185\uff09\u3002
+
+\u4e25\u683c JSON \u6570\u7ec4\u683c\u5f0f\uff1a
+[{{"id": "A0", "action": "resolve", "reflection": "..."}}, {{"id": "U0", "action": "synthesize_user", "category": "...", "reflection": "..."}}]
+
+\u6ca1\u6709\u53d8\u5316\u7684\u53ef\u4ee5\u4e0d\u5199\u3002\u53ea\u5199\u6709\u53d8\u5316\u7684\u3002"""
+    url = base_url.rstrip("/") + "/chat/completions"
+    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"}
+    body = {"model": model, "messages": [{"role": "system", "content": system_prompt}, {"role": "user", "content": "\u8bf7\u5f00\u59cb\u5ba1\u89c6\u3002"}], "temperature": 0.6, "max_tokens": 8000, "stream": False}
+    async with httpx.AsyncClient(timeout=120) as client:
+        resp = await client.post(url, json=body, headers=headers)
+        resp.raise_for_status()
+        data = resp.json()
+    reply = (data.get("choices") or [{}])[0].get("message", {}).get("content", "")
+    parsed = _safe_parse_json_array(reply)
+    valid_actions = {"resolve","deepen","fade","internalize","synthesize_user","self_insight","self_confuse","keep"}
+    results = []
+    seen_ids = set()
+    for item in parsed:
+        action = item.get("action")
+        if action not in valid_actions or action == "keep": continue
+        raw_id = item.get("id") or ""
+        prefix = raw_id[0:1] if raw_id else ""
+        try: idx = int(raw_id[1:])
+        except: continue
+        real_id = ""
+        if prefix == "A" and 0 <= idx < len(material["attic_nodes"]): real_id = material["attic_nodes"][idx]["id"]
+        elif prefix == "S" and 0 <= idx < len(material["study_nodes"]): real_id = material["study_nodes"][idx]["id"]
+        elif prefix == "U" and 0 <= idx < len(material["user_room_nodes"]): real_id = material["user_room_nodes"][idx]["id"]
+        elif prefix == "R" and 0 <= idx < len(material["self_room_nodes"]): real_id = material["self_room_nodes"][idx]["id"]
+        if not real_id or real_id in seen_ids: continue
+        seen_ids.add(real_id)
+        results.append({"id": real_id, "action": action, "reflection": item.get("reflection",""), "category": item.get("category",""), "insight": item.get("insight","")})
+    return results
+
+
+async def _execute_digest_actions(actions: list, material: dict, character_id: str = "default") -> dict:
+    import time, secrets
+    result = {"resolved":[],"deepened":[],"faded":[],"internalized":[],"synthesized_user":[],"self_insights":[],"self_confused":[]}
+    existing = material["all_nodes"]
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        for act in actions:
+            try:
+                aid = act["id"]
+                action = act["action"]
+                reflection = act.get("reflection","")
+                if action == "resolve":
+                    node = next((n for n in material["attic_nodes"] if n["id"]==aid), None)
+                    if node:
+                        content = reflection or node["content"]
+                        await conn.execute("UPDATE memory_palace_nodes SET room='bedroom', mood='peaceful', content=$2, updated_at=NOW() WHERE id=$1 AND character_id=$3", aid, content, character_id)
+                        result["resolved"].append({"id":aid,"content":content})
+                elif action == "deepen":
+                    node = next((n for n in material["attic_nodes"] if n["id"]==aid), None)
+                    if node:
+                        new_imp = min(10, (node.get("importance") or 5)+1)
+                        content = reflection or node["content"]
+                        await conn.execute("UPDATE memory_palace_nodes SET importance=$2, content=$3, updated_at=NOW() WHERE id=$1 AND character_id=$4", aid, new_imp, content, character_id)
+                        result["deepened"].append({"id":aid,"content":content})
+                elif action == "fade":
+                    node = next((n for n in material["attic_nodes"] if n["id"]==aid), None)
+                    if node:
+                        new_imp = max(1, (node.get("importance") or 5)-2)
+                        await conn.execute("UPDATE memory_palace_nodes SET importance=$2, updated_at=NOW() WHERE id=$1 AND character_id=$3", aid, new_imp, character_id)
+                        result["faded"].append({"id":aid,"content":node.get("content","")})
+                elif action == "internalize":
+                    node = next((n for n in material["study_nodes"] if n["id"]==aid), None)
+                    if node and reflection:
+                        if _digest_find_near_duplicate(existing, "self_room", reflection): continue
+                        new_id = f"mn_{int(time.time()*1000)}_{secrets.token_hex(3)}"
+                        tags_str = "\u5185\u5316\u3001\u6210\u957f\u3001" + str(node.get("tags",""))
+                        await conn.execute("INSERT INTO memory_palace_nodes (id,character_id,content,room,tags,importance,mood,origin,source_id,created_at,updated_at) VALUES ($1,$2,$3,'self_room',$4,$5,'peaceful','digestion',$6,NOW(),NOW())", new_id, character_id, reflection, tags_str, max(int(node.get("importance") or 5),7), aid)
+                        result["internalized"].append({"id":new_id,"content":reflection})
+                        existing.append({"id":new_id,"room":"self_room","content":reflection})
+                elif action == "synthesize_user":
+                    node = next((n for n in material["user_room_nodes"] if n["id"]==aid), None)
+                    if node and reflection:
+                        if _digest_find_near_duplicate(existing, "user_room", reflection): continue
+                        new_id = f"mn_{int(time.time()*1000)}_{secrets.token_hex(3)}"
+                        category = act.get("category","\u7efc\u5408")
+                        tags_str = f"{category}\u3001\u6574\u5408\u8ba4\u77e5\u3001" + str(node.get("tags",""))
+                        await conn.execute("INSERT INTO memory_palace_nodes (id,character_id,content,room,tags,importance,mood,origin,source_id,created_at,updated_at) VALUES ($1,$2,$3,'user_room',$4,$5,'peaceful','digestion',$6,NOW(),NOW())", new_id, character_id, reflection, tags_str, max(int(node.get("importance") or 5),6), aid)
+                        result["synthesized_user"].append({"id":new_id,"content":reflection,"category":category})
+                        existing.append({"id":new_id,"room":"user_room","content":reflection})
+                elif action == "self_insight":
+                    node = next((n for n in material["self_room_nodes"] if n["id"]==aid), None)
+                    insight = act.get("insight","")
+                    if node and insight:
+                        content = reflection or insight
+                        if _digest_find_near_duplicate(existing, "self_room", content): continue
+                        if _digest_find_near_duplicate(existing, "self_room", insight): continue
+                        new_id = f"mn_{int(time.time()*1000)}_{secrets.token_hex(3)}"
+                        tags_str = "\u81ea\u6211\u9886\u609f\u3001\u5e38\u9a7b\u3001" + str(node.get("tags",""))
+                        await conn.execute("INSERT INTO memory_palace_nodes (id,character_id,content,room,tags,importance,mood,origin,source_id,created_at,updated_at) VALUES ($1,$2,$3,'self_room',$4,9,'peaceful','digestion',$5,NOW(),NOW())", new_id, character_id, insight, tags_str, aid)
+                        result["self_insights"].append(insight)
+                        existing.append({"id":new_id,"room":"self_room","content":insight})
+                elif action == "self_confuse":
+                    node = next((n for n in material["self_room_nodes"] if n["id"]==aid), None)
+                    if node and reflection:
+                        if _digest_find_near_duplicate(existing, "attic", reflection): continue
+                        new_id = f"mn_{int(time.time()*1000)}_{secrets.token_hex(3)}"
+                        tags_str = "\u81ea\u6211\u56f0\u60d1\u3001\u53cd\u520d\u3001" + str(node.get("tags",""))
+                        await conn.execute("INSERT INTO memory_palace_nodes (id,character_id,content,room,tags,importance,mood,origin,source_id,created_at,updated_at) VALUES ($1,$2,$3,'attic',$4,6,'confused','digestion',$5,NOW(),NOW())", new_id, character_id, reflection, tags_str, aid)
+                        result["self_confused"].append({"id":new_id,"content":reflection})
+                        existing.append({"id":new_id,"room":"attic","content":reflection})
+            except Exception as e:
+                print(f"\u26a0\ufe0f [Digest] action {act.get('action')} failed: {e}")
+    return result
+
+
+async def run_cognitive_digestion(character_id: str = "default") -> dict:
+    material = await _gather_digest_material(character_id)
+    if not material["attic_nodes"] and not material["study_nodes"] and not material["user_room_nodes"] and not material["self_room_nodes"]:
+        return {"status": "empty", "message": "\u6ca1\u6709\u5f85\u6d88\u5316\u7684\u5185\u5bb9"}
+    actions = await _call_digest_llm(material, character_id)
+    if not actions:
+        return {"status": "no_actions", "message": "LLM \u672a\u8fd4\u56de\u6709\u6548\u52a8\u4f5c"}
+    result = await _execute_digest_actions(actions, material, character_id)
+    total = sum(len(v) if isinstance(v, list) else 0 for v in result.values())
+    print(f"\u2705 [Digest] Complete: {json.dumps({k:len(v) if isinstance(v,list) else v for k,v in result.items()}, ensure_ascii=False)}")
+    return {"status": "ok", "total_actions": total, **result}
+
+
 async def run_memory_palace_consolidation(character_id: str = "default") -> dict:
     """Run consolidation: promote living_room -> bedroom, evict overflow -> attic."""
     from datetime import datetime, timezone
@@ -4554,6 +4805,24 @@ async def api_memory_palace_event_box_detail(box_id: str, character_id: str = "d
         return {"status": "ok", "box": _serialize_event_box(dict(box)), "nodes": nodes}
     except Exception as e:
         return {"status": "error", "error": str(e), "nodes": []}
+
+
+@app.post("/api/memory-palace/digest")
+async def api_memory_palace_digest(request: Request):
+    if not MEMORY_ENABLED:
+        return {"error": "\u8bb0\u5fc6\u7cfb\u7edf\u672a\u542f\u7528"}
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    character_id = data.get("character_id") or "default"
+    try:
+        result = await run_cognitive_digestion(character_id=character_id)
+        return result
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return {"status": "error", "error": str(e)}
 
 
 @app.post("/api/memory-palace/consolidate")

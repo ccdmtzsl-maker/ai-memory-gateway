@@ -6253,6 +6253,44 @@ async def import_text_memories(request: Request):
         return {"error": str(e)}
 
 
+@app.post("/import/daily-impressions")
+async def import_daily_impressions(request: Request):
+    """从 JSON 导入日印象（用于恢复备份）"""
+    if not MEMORY_ENABLED:
+        return {"error": "记忆系统未启用"}
+    try:
+        data = await request.json()
+        impressions = data if isinstance(data, list) else data.get("impressions", data.get("memories", []))
+        if not impressions or not isinstance(impressions, list):
+            return {"error": "没有找到日印象数据"}
+        imported = 0
+        skipped = 0
+        for item in impressions:
+            date_str = str(item.get("date") or "").strip()
+            summary = str(item.get("summary") or "").strip()
+            if not date_str or not summary:
+                skipped += 1
+                continue
+            try:
+                impression_date = datetime.strptime(date_str[:10], "%Y-%m-%d").date()
+            except Exception:
+                skipped += 1
+                continue
+            tags = str(item.get("tags") or "").strip()
+            mood = str(item.get("mood") or "").strip()
+            await upsert_daily_impression(
+                impression_date,
+                summary,
+                tags=tags,
+                mood=mood,
+                source_fragment_ids=item.get("source_fragment_ids"),
+            )
+            imported += 1
+        return {"status": "ok", "imported": imported, "skipped": skipped}
+    except Exception as e:
+        return {"error": str(e)}
+
+
 @app.post("/import/memories")
 async def import_memories(request: Request):
     """从 JSON 导入记忆（用于迁移或恢复备份）"""

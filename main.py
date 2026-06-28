@@ -1075,6 +1075,7 @@ async def _call_digest_llm(material: dict, character_id: str = "default") -> lis
         print("[Digest] No LLM config")
         return []
     attic = material["attic_nodes"]
+    windowsill = material.get("windowsill_nodes") or []
     study = material["study_nodes"]
     user_room = material["user_room_nodes"]
     self_room = material["self_room_nodes"]
@@ -1085,7 +1086,7 @@ async def _call_digest_llm(material: dict, character_id: str = "default") -> lis
     if attic:
         section_lines = [f'[A{i}] (mood={n.get("mood","")}, importance={n.get("importance",5)}): {n.get("content","")}' for i,n in enumerate(attic)]
         sections.append("### 内心困惑 (阁楼)\n这些是你一直没想通的事、受过的伤、没解决的矛盾：\n" + "\n".join(section_lines))
-    windowsill = material.get("windowsill_nodes") or []
+
     if windowsill:
         section_lines = [f'[W{i}] (importance={n.get("importance",5)}): {n.get("content","")}' for i,n in enumerate(windowsill)]
         sections.append("### 心里的期盼 (窗台)\n这些是你一直在等待或盼望的事：\n" + "\n".join(section_lines))

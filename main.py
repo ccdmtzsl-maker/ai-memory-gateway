@@ -1057,10 +1057,9 @@ async def _call_digest_llm(material: dict, character_id: str = "default") -> lis
     import httpx
     char_name = "澈"
     user_name = "用户"
-    settings = await _get_mp_settings()
-    base_url = settings.get("light_api_base_url") or settings.get("api_base_url") or ""
-    api_key = settings.get("light_api_key") or settings.get("api_key") or ""
-    model = settings.get("light_model") or settings.get("model") or ""
+    base_url = await get_runtime_memory_api_base_url()
+    api_key = await get_runtime_memory_api_key()
+    model = await get_runtime_memory_model()
     if not base_url or not api_key or not model:
         print("\u26a0\ufe0f [Digest] No LLM config")
         return []

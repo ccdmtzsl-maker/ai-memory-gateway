@@ -930,6 +930,109 @@ async def build_memory_palace_links_for_node(node: dict):
         return len(links)
 
 
+_MEMORY_PALACE_LIVING_ROOM_CAPACITY = 200
+
+
+def _memory_palace_effective_importance(node: dict, now=None) -> float:
+    """Calculate effective importance with decay + floor."""
+    from datetime import datetime, timezone
+    if now is None:
+        now = datetime.now(timezone.utc)
+    room = node.get("room") or "living_room"
+    decay_rate = _MEMORY_PALACE_ROOM_DECAY.get(room)
+    if decay_rate is None:
+        return float(node.get("importance") or 5)
+    created = node.get("created_at")
+    if not created:
+        return float(node.get("importance") or 5)
+    if isinstance(created, str):
+        try:
+            created = datetime.fromisoformat(created.replace("Z", "+00:00"))
+        except Exception:
+            return float(node.get("importance") or 5)
+    if created.tzinfo is None:
+        created = created.replace(tzinfo=timezone.utc)
+    hours = max(0, (now - created).total_seconds() / 3600)
+    importance = float(node.get("importance") or 5)
+    decayed = importance * (decay_rate ** hours)
+    floor_ratio = _MEMORY_PALACE_IMPORTANCE_FLOOR.get(room, 0.8)
+    return max(decayed, importance * floor_ratio)
+
+
+def _memory_palace_should_promote(node: dict, now=None) -> bool:
+    """Check if a living_room node should promote to bedroom."""
+    from datetime import datetime, timezone
+    if (node.get("room") or "") != "living_room":
+        return False
+    if node.get("archived"):
+        return False
+    importance = int(node.get("importance") or 5)
+    if importance >= 8:
+        return True
+    if now is None:
+        now = datetime.now(timezone.utc)
+    created = node.get("created_at")
+    if created:
+        if isinstance(created, str):
+            try:
+                created = datetime.fromisoformat(created.replace("Z", "+00:00"))
+            except Exception:
+                created = None
+        if created:
+            if created.tzinfo is None:
+                created = created.replace(tzinfo=timezone.utc)
+            age_hours = (now - created).total_seconds() / 3600
+            if importance >= 6 and age_hours >= 24:
+                return True
+    access_count = int(node.get("access_count") or 0)
+    if access_count >= 3:
+        return True
+    return False
+
+
+async def run_memory_palace_consolidation(character_id: str = "default") -> dict:
+    """Run consolidation: promote living_room -> bedroom, evict overflow -> attic."""
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc)
+    pool = await get_pool()
+    promoted = []
+    evicted = []
+    async with pool.acquire() as conn:
+        living = await conn.fetch("""
+            SELECT id, content, room, importance, access_count, created_at, archived
+            FROM memory_palace_nodes
+            WHERE character_id = $1 AND room = 'living_room' AND archived = FALSE
+            ORDER BY created_at DESC
+        """, character_id)
+        for row in living:
+            node = dict(row)
+            if _memory_palace_should_promote(node, now):
+                await conn.execute(
+                    "UPDATE memory_palace_nodes SET room = 'bedroom', updated_at = NOW() WHERE id = $1 AND character_id = $2",
+                    node["id"], character_id
+                )
+                promoted.append(node["id"])
+        if len(living) - len(promoted) > _MEMORY_PALACE_LIVING_ROOM_CAPACITY:
+            remaining = await conn.fetch("""
+                SELECT id, content, room, importance, access_count, created_at
+                FROM memory_palace_nodes
+                WHERE character_id = $1 AND room = 'living_room' AND archived = FALSE
+                ORDER BY created_at DESC
+            """, character_id)
+            scored = [(dict(r), _memory_palace_effective_importance(dict(r), now)) for r in remaining]
+            scored.sort(key=lambda x: x[1])
+            overflow = len(remaining) - _MEMORY_PALACE_LIVING_ROOM_CAPACITY
+            for node, _eff in scored[:overflow]:
+                await conn.execute(
+                    "UPDATE memory_palace_nodes SET room = 'attic', updated_at = NOW() WHERE id = $1 AND character_id = $2",
+                    node["id"], character_id
+                )
+                evicted.append(node["id"])
+    if promoted or evicted:
+        print(f"\u2705 [Consolidation] {len(promoted)} promoted to bedroom, {len(evicted)} evicted to attic")
+    return {"promoted": len(promoted), "evicted": len(evicted), "promoted_ids": promoted, "evicted_ids": evicted}
+
+
 async def _memory_palace_spread_activation(selected, rows, character_id: str = "default", max_expand: int = 3):
     if not selected:
         return selected
@@ -4451,6 +4554,22 @@ async def api_memory_palace_event_box_detail(box_id: str, character_id: str = "d
         return {"status": "ok", "box": _serialize_event_box(dict(box)), "nodes": nodes}
     except Exception as e:
         return {"status": "error", "error": str(e), "nodes": []}
+
+
+@app.post("/api/memory-palace/consolidate")
+async def api_memory_palace_consolidate(request: Request):
+    if not MEMORY_ENABLED:
+        return {"error": "\u8bb0\u5fc6\u7cfb\u7edf\u672a\u542f\u7528"}
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    character_id = data.get("character_id") or "default"
+    try:
+        result = await run_memory_palace_consolidation(character_id=character_id)
+        return {"status": "ok", **result}
+    except Exception as e:
+        return {"status": "error", "error": str(e), "promoted": 0, "evicted": 0}
 
 
 @app.post("/api/memory-palace/event-boxes/compress")

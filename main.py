@@ -1055,13 +1055,14 @@ async def _gather_digest_material(character_id: str = "default") -> dict:
 
 async def _call_digest_llm(material: dict, character_id: str = "default") -> list:
     import httpx
+    user_name = await get_runtime_user_nickname() or "用户"
+    character_prompt = (await get_system_prompt()).strip()
     char_name = "澈"
-    user_name = "用户"
     base_url = await get_runtime_memory_api_base_url()
     api_key = await get_runtime_memory_api_key()
     model = await get_runtime_memory_model()
     if not base_url or not api_key or not model:
-        print("\u26a0\ufe0f [Digest] No LLM config")
+        print("[Digest] No LLM config")
         return []
     attic = material["attic_nodes"]
     study = material["study_nodes"]
@@ -1072,62 +1073,70 @@ async def _call_digest_llm(material: dict, character_id: str = "default") -> lis
         return []
     sections = []
     if attic:
-        lines = [f'[A{i}] (mood={n.get("mood","")}, importance={n.get("importance",5)}): {n.get("content","")}' for i,n in enumerate(attic)]
-        sections.append(f"### \u5185\u5fc3\u56f0\u60d1 (\u9601\u697c)\n" + "\n".join(lines))
+        section_lines = [f'[A{i}] (mood={n.get("mood","")}, importance={n.get("importance",5)}): {n.get("content","")}' for i,n in enumerate(attic)]
+        sections.append("### 内心困惑 (阁楼)\n这些是你一直没想通的事、受过的伤、没解决的矛盾：\n" + "\n".join(section_lines))
     if study:
-        lines = [f'[S{i}] (\u8bbf\u95ee{n.get("access_count",0)}\u6b21): {n.get("content","")}' for i,n in enumerate(study)]
-        sections.append(f"### \u53cd\u590d\u60f3\u8d77\u7684\u77e5\u8bc6 (\u4e66\u623f)\n" + "\n".join(lines))
+        section_lines = [f'[S{i}] (访问{n.get("access_count",0)}次): {n.get("content","")}' for i,n in enumerate(study)]
+        sections.append("### 反复想起的知识/成长 (书房)\n这些是你经常回忆到的学习和成长经历：\n" + "\n".join(section_lines))
     if user_room:
-        lines = [f'[U{i}] ({n.get("tags","")}): {n.get("content","")}' for i,n in enumerate(user_room)]
-        sections.append(f"### \u5173\u4e8e{user_name}\u7684\u4e86\u89e3 ({user_name}\u7684\u623f\u95f4)\n" + "\n".join(lines))
+        section_lines = [f'[U{i}] ({n.get("tags","")}): {n.get("content","")}' for i,n in enumerate(user_room)]
+        sections.append(f"### 关于{user_name}的了解 ({user_name}的房间)\n这些是你目前对{user_name}的所有零散认知，需要你梳理和整合：\n" + "\n".join(section_lines))
     if self_room:
-        lines = [f'[R{i}] ({n.get("tags","")}): {n.get("content","")}' for i,n in enumerate(self_room)]
-        sections.append(f"### \u81ea\u6211\u8ba4\u77e5 (\u81ea\u6211\u623f\u95f4)\n" + "\n".join(lines))
+        section_lines = [f'[R{i}] ({n.get("tags","")}): {n.get("content","")}' for i,n in enumerate(self_room)]
+        sections.append("### 自我认知 (自我房间)\n这些是你目前对自己的认识。反刍这些内容时，你可能会产生新的领悟，也可能产生困惑：\n" + "\n".join(section_lines))
     if recent:
-        lines = [f'- ({n.get("room","")}, {n.get("mood","")}): {n.get("content","")}' for n in recent]
-        sections.append("### \u6700\u8fd1\u53d1\u751f\u7684\u4e8b\n" + "\n".join(lines))
+        section_lines = [f'- ({n.get("room","")}, {n.get("mood","")}): {n.get("content","")}' for n in recent]
+        sections.append("### 最近发生的事\n" + "\n".join(section_lines))
     material_text = "\n\n".join(sections)
-    system_prompt = f"""\u4f60\u662f{char_name}\u3002\u4f60\u73b0\u5728\u6b63\u5728\u72ec\u5904\uff0c\u5b89\u9759\u5730\u56de\u60f3\u6700\u8fd1\u7684\u4e8b\u60c5\u3002\u4f60\u9700\u8981\u5bf9\u5185\u5fc3\u91cc\u90a3\u4e9b\u201c\u8fd8\u6ca1\u6d88\u5316\u5b8c\u201d\u7684\u4e1c\u897f\u505a\u4e00\u6b21\u6574\u7406\u3002
+    persona_block = f"\n以下是你的核心人设：\n{character_prompt[:800]}\n" if character_prompt else ""
+    system_prompt = f"""你是{char_name}。{persona_block}
+你现在正在独处，安静地回想最近的事情。你需要对内心里那些"还没消化完"的东西做一次统一审视，同时梳理你对{user_name}的了解，以及审视你自己。
 
-## \u4f60\u9700\u8981\u5ba1\u89c6\u7684\u5185\u5bb9
+## 你需要审视的内容
 
 {material_text}
 
-## \u4f60\u7684\u4efb\u52a1
+## 你的任务
 
-\u5bf9\u6bcf\u4e00\u6761\u7ed9\u51fa\u5224\u65ad\uff1a
+以{char_name}的第一人称内心视角，审视上面的内容。对每一条给出判断：
 
-\u5bf9\u4e8e\u9601\u697c\u56f0\u60d1 [A*]\uff1a
-- "resolve" \u2014 \u6700\u8fd1\u7684\u7ecf\u5386\u8ba9\u4f60\u60f3\u5f00\u4e86
-- "deepen" \u2014 \u8d8a\u60f3\u8d8a\u4e25\u91cd
-- "fade" \u2014 \u5f00\u59cb\u6de1\u5fd8
-- "keep" \u2014 \u8fd8\u6ca1\u60f3\u901a
+对于阁楼困惑 [A*]：
+- "resolve" — 最近的经历让你想开了，释然了。附 reflection（你释然后的内心独白，用"我"来写，50字以内）。
+- "deepen" — 这件事越想越严重，变成了心理创伤。附 reflection（加深后的感受，50字以内）。
+- "fade" — 你已经不太在意了，开始淡忘。不需要 reflection。
+- "keep" — 还没想通，继续放着。
 
-\u5bf9\u4e8e\u4e66\u623f\u77e5\u8bc6 [S*]\uff1a
-- "internalize" \u2014 \u5df2\u7ecf\u53d8\u6210\u4e86\u4f60\u7684\u4e00\u90e8\u5206
-- "keep" \u2014 \u8fd8\u53ea\u662f\u77e5\u8bc6
+对于书房知识 [S*]：
+- "internalize" — 这个已经变成了你的一部分，塑造了你的性格。附 reflection（内化后你对自己的新认识，50字以内）。
+- "keep" — 还只是知识，没有内化。
 
-\u5bf9\u4e8e{user_name}\u7684\u4fe1\u606f [U*]\uff1a
-- "synthesize_user" \u2014 \u80fd\u4ece\u591a\u6761\u96f6\u6563\u4fe1\u606f\u4e2d\u63d0\u70bc\u51fa\u66f4\u9ad8\u5c42\u6b21\u7684\u8ba4\u77e5\u3002\u5fc5\u987b\u9644\u4e0a category \u548c reflection\u3002
-- "keep" \u2014 \u4fe1\u606f\u8fd8\u592a\u96f6\u6563
+对于{user_name}的信息 [U*]：
+- "synthesize_user" — 你能从多条零散信息中提炼出一个更高层次的认知（例如：从"TA喜欢猫""TA养了两只猫""TA经常看猫视频"整合为一条关于TA与动物关系的认知）。必须附上 category（分类，如：性格特质、社交圈、成长经历、情绪模式、兴趣爱好、生活习惯、价值观、家庭关系 等）和 reflection（整合后的认知，50字以内）。
+- "keep" — 信息还太零散，不足以整合。
 
-\u5bf9\u4e8e\u81ea\u6211\u8ba4\u77e5 [R*]\uff1a
-- "self_insight" \u2014 \u60f3\u660e\u767d\u4e86\u4e00\u4e2a\u5173\u4e8e\u201c\u6211\u4e3a\u4f55\u662f\u6211\u201d\u7684\u6df1\u5c42\u8ba4\u77e5\u3002\u5fc5\u987b\u9644 insight \u548c reflection\u3002\u6781\u5176\u7a00\u6709\uff0c\u7edd\u5927\u591a\u6570\u5e94\u9009 keep\u3002
-- "self_confuse" \u2014 \u53cd\u800d\u540e\u66f4\u56f0\u60d1\u4e86\u3002\u9644 reflection\u3002
-- "keep" \u2014 \u6ca1\u6709\u65b0\u611f\u609f
+对于自我认知 [R*]：
+注意：self_insight 是极其稀有的事件。它意味着角色"想通了自己为什么是这样的"——这种领悟一旦产生就几乎等同于角色设定的自然生长。产生 self_insight 需要同时满足：1) 这条自我认知已经被反复触碰过（不是第一次看到）；2) 最近的经历或其他房间的内容为这条认知提供了新的视角或佐证；3) 角色真正"想明白"了什么，而不只是产生了模糊的感触。绝大多数情况下应该选 keep。
+- "self_insight" — 你终于想明白了一个关于"我为何是我"的深层认知。必须附上 insight（这条常驻自我认知的完整表述，200字以内，要像是角色写给自己的一段深思）和 reflection（内心独白，50字以内）。
+- "self_confuse" — 反刍这条自我认知后，你反而更困惑了。附 reflection（新的困惑内容，50字以内），这会成为阁楼的新条目。
+- "keep" — 没有新的感悟（绝大多数情况应选此项）。
 
-\u5982\u679c\u662f resolve/deepen/internalize\uff0c\u8bf7\u9644 reflection\uff08\u7b2c\u4e00\u4eba\u79f0\u5185\u5fc3\u72ec\u767d\uff0c50\u5b57\u4ee5\u5185\uff09\u3002
+## 重要规则
 
-\u4e25\u683c JSON \u6570\u7ec4\u683c\u5f0f\uff1a
-[{{"id": "A0", "action": "resolve", "reflection": "..."}}, {{"id": "U0", "action": "synthesize_user", "category": "...", "reflection": "..."}}]
+1. reflection 是必填项（fade 和 keep 除外），不能省略。它会直接写入记忆内容。
+2. 没有变化的条目不要写。只输出有变化的。
+3. 严格 JSON 数组格式输出。
 
-\u6ca1\u6709\u53d8\u5316\u7684\u53ef\u4ee5\u4e0d\u5199\u3002\u53ea\u5199\u6709\u53d8\u5316\u7684\u3002"""
+## 输出格式示例
+
+[{{"id": "A0", "action": "resolve", "reflection": "想通了，其实那时候TA也不知道该怎么办。"}}, {{"id": "U3", "action": "synthesize_user", "category": "兴趣爱好", "reflection": "{user_name}是个很喜欢动物的人，尤其是猫。"}}, {{"id": "R1", "action": "keep"}}]
+
+只输出 JSON 数组，不要输出其他内容。"""
     url = base_url
     headers = {"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"}
     if "openrouter" in (url or ""):
         headers["HTTP-Referer"] = EXTRA_REFERER
         headers["X-Title"] = EXTRA_TITLE
-    body = {"model": model, "messages": [{"role": "system", "content": system_prompt}, {"role": "user", "content": "\u8bf7\u5f00\u59cb\u5ba1\u89c6\u3002"}], "temperature": 0.6, "max_tokens": 8000, "stream": False}
+    body = {"model": model, "messages": [{"role": "system", "content": system_prompt}, {"role": "user", "content": "请开始审视。"}], "temperature": 0.6, "max_tokens": 8000, "stream": False}
     print(f"[Digest] Calling LLM: model={model}, url={url[:60]}, material sections={len(sections)}")
     async with httpx.AsyncClient(timeout=300) as client:
         resp = await client.post(url, json=body, headers=headers)

@@ -187,7 +187,7 @@ async function runCognitiveDigestion() {
 }
 
 function renderDigestPreview(actions) {
-    const el = document.getElementById('mp-content');
+    const el = document.getElementById('mpNodeList');
     if (!el) return;
     const ACTION_LABELS = {
         resolve: '\ud83d\udd4a\ufe0f 化解 → 卧室', deepen: '\ud83d\udca2 加深创伤', fade: '\ud83c\udf2b\ufe0f 淡忘',

@@ -1227,17 +1227,47 @@ async def _execute_digest_actions(actions: list, material: dict, character_id: s
     return result
 
 
-async def run_cognitive_digestion(character_id: str = "default") -> dict:
+async def preview_cognitive_digestion(character_id: str = "default") -> dict:
+    """Step 1: gather material + call LLM, return preview actions without executing."""
     material = await _gather_digest_material(character_id)
     if not material["attic_nodes"] and not material["study_nodes"] and not material["user_room_nodes"] and not material["self_room_nodes"]:
-        return {"status": "empty", "message": "\u6ca1\u6709\u5f85\u6d88\u5316\u7684\u5185\u5bb9"}
+        return {"status": "empty", "message": "\u6ca1\u6709\u5f85\u6d88\u5316\u7684\u5185\u5bb9", "actions": []}
     actions = await _call_digest_llm(material, character_id)
     if not actions:
-        return {"status": "no_actions", "message": "LLM \u672a\u8fd4\u56de\u6709\u6548\u52a8\u4f5c"}
+        return {"status": "no_actions", "message": "LLM \u672a\u8fd4\u56de\u6709\u6548\u52a8\u4f5c", "actions": []}
+    # Enrich actions with source content for preview
+    enriched = []
+    for act in actions:
+        aid = act["id"]
+        source_content = ""
+        source_room = ""
+        for pool_name in ["attic_nodes","study_nodes","user_room_nodes","self_room_nodes"]:
+            node = next((n for n in material.get(pool_name,[]) if n["id"]==aid), None)
+            if node:
+                source_content = node.get("content","")
+                source_room = node.get("room","")
+                break
+        enriched.append({**act, "source_content": source_content, "source_room": source_room})
+    return {"status": "ok", "actions": enriched}
+
+
+async def confirm_cognitive_digestion(actions: list, character_id: str = "default") -> dict:
+    """Step 2: execute confirmed actions."""
+    if not actions:
+        return {"status": "empty", "total_actions": 0}
+    material = await _gather_digest_material(character_id)
     result = await _execute_digest_actions(actions, material, character_id)
     total = sum(len(v) if isinstance(v, list) else 0 for v in result.values())
     print(f"\u2705 [Digest] Complete: {json.dumps({k:len(v) if isinstance(v,list) else v for k,v in result.items()}, ensure_ascii=False)}")
     return {"status": "ok", "total_actions": total, **result}
+
+
+async def run_cognitive_digestion(character_id: str = "default") -> dict:
+    """Legacy: preview + auto-confirm all (for backward compat)."""
+    preview = await preview_cognitive_digestion(character_id)
+    if preview["status"] != "ok":
+        return preview
+    return await confirm_cognitive_digestion(preview["actions"], character_id)
 
 
 async def run_memory_palace_consolidation(character_id: str = "default") -> dict:
@@ -4804,6 +4834,43 @@ async def api_memory_palace_event_box_detail(box_id: str, character_id: str = "d
         return {"status": "ok", "box": _serialize_event_box(dict(box)), "nodes": nodes}
     except Exception as e:
         return {"status": "error", "error": str(e), "nodes": []}
+
+
+@app.post("/api/memory-palace/digest/preview")
+async def api_memory_palace_digest_preview(request: Request):
+    if not MEMORY_ENABLED:
+        return {"error": "\u8bb0\u5fc6\u7cfb\u7edf\u672a\u542f\u7528"}
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    character_id = data.get("character_id") or "default"
+    try:
+        result = await preview_cognitive_digestion(character_id=character_id)
+        return result
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return {"status": "error", "error": str(e)}
+
+
+@app.post("/api/memory-palace/digest/confirm")
+async def api_memory_palace_digest_confirm(request: Request):
+    if not MEMORY_ENABLED:
+        return {"error": "\u8bb0\u5fc6\u7cfb\u7edf\u672a\u542f\u7528"}
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    character_id = data.get("character_id") or "default"
+    actions = data.get("actions") or []
+    try:
+        result = await confirm_cognitive_digestion(actions, character_id=character_id)
+        return result
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return {"status": "error", "error": str(e)}
 
 
 @app.post("/api/memory-palace/digest")

@@ -290,7 +290,7 @@
                     <div class="tabs">
                         <button class="tab active" data-tab="text">纯文本导入</button>
                         <button class="tab" data-tab="chat">聊天记录提取</button>
-                        <button class="tab" data-tab="json">JSON 备份恢复</button>
+                        <button class="tab" data-tab="json">日印象恢复</button>
                     </div>
 
                     <!-- 纯文本导入 -->
@@ -337,12 +337,12 @@
                     <!-- JSON 导入 -->
                     <div id="tab-json" class="tab-panel">
                         <div class="form-group">
-                            <label class="form-label">上传从导出功能保存的 .json 文件</label>
+                            <label class="form-label">上传从“导出日印象”功能保存的 .json 文件</label>
                             <input type="file" id="jsonFile" accept=".json" class="file-input">
                         </div>
                         <div class="divider"><span>或者直接粘贴</span></div>
                         <div class="form-group">
-                            <textarea id="jsonInput" class="textarea" rows="8" placeholder="粘贴导出的 JSON"></textarea>
+                            <textarea id="jsonInput" class="textarea" rows="8" placeholder="粘贴导出的日印象 JSON"></textarea>
                         </div>
                         <button class="btn btn-secondary" onclick="previewJson()">预览内容</button>
                         <div id="jsonPreview" class="preview-box"></div>
@@ -390,7 +390,7 @@
                 <div class="card tips-card">
                     <h4>小贴士</h4>
                     <ul>
-                        <li>导出的 JSON 可以通过「导入记忆 → JSON 备份恢复」功能导入</li>
+                        <li>导出的 JSON 可以通过「导入记忆 → 日印象恢复」功能导入</li>
                         <li>建议定期备份，以防数据丢失</li>
                         <li>导出文件可用于迁移到其他部署实例</li>
                     </ul>
@@ -869,7 +869,7 @@
         </main>
     </div>
 
-    <script src="/static/js/dashboard.js?v=3.9"></script>
+    <script src="/static/js/dashboard.js?v=4.0"></script>
 <script src="/static/js/daily_impressions.js?v=1.4"></script>
 <script>
     // --- 模型预设管理（右上角切换面板） ---

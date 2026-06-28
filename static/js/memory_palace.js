@@ -190,9 +190,10 @@ function renderDigestPreview(actions) {
     const el = document.getElementById('mpNodeList');
     if (!el) return;
     const ACTION_LABELS = {
-        resolve: '\ud83d\udd4a\ufe0f 化解 → 卧室', deepen: '\ud83d\udca2 加深创伤', fade: '\ud83c\udf2b\ufe0f 淡忘',
-        internalize: '\ud83e\ude9e 内化 → 自我房间', synthesize_user: '\ud83d\udc64 整合用户认知',
-        self_insight: '\ud83d\udca1 自我领悟', self_confuse: '\ud83c\udf00 新困惑 → 阁楼'
+        resolve: '化解 -> 卧室', deepen: '加深创伤', fade: '淡忘',
+        fulfill: '期盼实现 -> 卧室', disappoint: '期盼落空 -> 阁楼',
+        internalize: '内化 -> 自我房间', synthesize_user: '整合用户认知',
+        self_insight: '自我领悟', self_confuse: '新困惑 -> 阁楼'
     };
     var html = '<div style="padding:16px;"><h3 style="margin:0 0 12px;">认知消化预览</h3>';
     html += '<p style="color:var(--text-muted);font-size:13px;margin-bottom:16px;">以下是角色审视后的判断，勾选要执行的动作：</p>';
@@ -245,6 +246,8 @@ async function confirmDigest() {
         if (data.resolved && data.resolved.length) parts.push('化解' + data.resolved.length + '条');
         if (data.deepened && data.deepened.length) parts.push('加深' + data.deepened.length + '条');
         if (data.faded && data.faded.length) parts.push('淡忘' + data.faded.length + '条');
+        if (data.fulfilled && data.fulfilled.length) parts.push('期盼实现' + data.fulfilled.length + '条');
+        if (data.disappointed && data.disappointed.length) parts.push('期盼落空' + data.disappointed.length + '条');
         if (data.internalized && data.internalized.length) parts.push('内化' + data.internalized.length + '条');
         if (data.synthesized_user && data.synthesized_user.length) parts.push('整合用户认知' + data.synthesized_user.length + '条');
         if (data.self_insights && data.self_insights.length) parts.push('自我领悟' + data.self_insights.length + '条');

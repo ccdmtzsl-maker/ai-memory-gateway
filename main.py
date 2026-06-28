@@ -1079,12 +1079,16 @@ async def _call_digest_llm(material: dict, character_id: str = "default") -> lis
     user_room = material["user_room_nodes"]
     self_room = material["self_room_nodes"]
     recent = material["recent_context"]
-    if not attic and not study and not user_room and not self_room:
+    if not attic and not windowsill and not study and not user_room and not self_room:
         return []
     sections = []
     if attic:
         section_lines = [f'[A{i}] (mood={n.get("mood","")}, importance={n.get("importance",5)}): {n.get("content","")}' for i,n in enumerate(attic)]
         sections.append("### 内心困惑 (阁楼)\n这些是你一直没想通的事、受过的伤、没解决的矛盾：\n" + "\n".join(section_lines))
+    windowsill = material.get("windowsill_nodes") or []
+    if windowsill:
+        section_lines = [f'[W{i}] (importance={n.get("importance",5)}): {n.get("content","")}' for i,n in enumerate(windowsill)]
+        sections.append("### 心里的期盼 (窗台)\n这些是你一直在等待或盼望的事：\n" + "\n".join(section_lines))
     if study:
         section_lines = [f'[S{i}] (访问{n.get("access_count",0)}次): {n.get("content","")}' for i,n in enumerate(study)]
         sections.append("### 反复想起的知识/成长 (书房)\n这些是你经常回忆到的学习和成长经历：\n" + "\n".join(section_lines))
@@ -1115,6 +1119,11 @@ async def _call_digest_llm(material: dict, character_id: str = "default") -> lis
 - "deepen" — 这件事越想越严重，变成了心理创伤。附 reflection（加深后的感受，50字以内）。
 - "fade" — 你已经不太在意了，开始淡忘。不需要 reflection。
 - "keep" — 还没想通，继续放着。
+
+对于窗台期盼 [W*]：
+- "fulfill" — 这个期盼已经实现了！附 reflection（实现后的喜悦，50字以内）。实现后会变成卧室的温暖记忆。
+- "disappoint" — 这个期盼已经不可能了。附 reflection（落空后的感受，50字以内）。落空后会变成阁楼的心结。
+- "keep" — 还在等待中。
 
 对于书房知识 [S*]：
 - "internalize" — 这个已经变成了你的一部分，塑造了你的性格。附 reflection（内化后你对自己的新认识，50字以内）。
@@ -1156,7 +1165,7 @@ async def _call_digest_llm(material: dict, character_id: str = "default") -> lis
     print(f"[Digest] LLM reply length={len(reply)}, first 200 chars: {reply[:200]}")
     parsed = safe_parse_memory_palace_json_array(reply)
     print(f"[Digest] Parsed {len(parsed)} items from LLM reply")
-    valid_actions = {"resolve","deepen","fade","internalize","synthesize_user","self_insight","self_confuse","keep"}
+    valid_actions = {"resolve","deepen","fade","fulfill","disappoint","internalize","synthesize_user","self_insight","self_confuse","keep"}
     results = []
     seen_ids = set()
     for item in parsed:
@@ -1168,6 +1177,7 @@ async def _call_digest_llm(material: dict, character_id: str = "default") -> lis
         except: continue
         real_id = ""
         if prefix == "A" and 0 <= idx < len(material["attic_nodes"]): real_id = material["attic_nodes"][idx]["id"]
+        elif prefix == "W" and 0 <= idx < len(material.get("windowsill_nodes") or []): real_id = material["windowsill_nodes"][idx]["id"]
         elif prefix == "S" and 0 <= idx < len(material["study_nodes"]): real_id = material["study_nodes"][idx]["id"]
         elif prefix == "U" and 0 <= idx < len(material["user_room_nodes"]): real_id = material["user_room_nodes"][idx]["id"]
         elif prefix == "R" and 0 <= idx < len(material["self_room_nodes"]): real_id = material["self_room_nodes"][idx]["id"]
@@ -1207,6 +1217,18 @@ async def _execute_digest_actions(actions: list, material: dict, character_id: s
                         new_imp = max(1, (node.get("importance") or 5)-2)
                         await conn.execute("UPDATE memory_palace_nodes SET importance=$2, updated_at=NOW() WHERE id=$1 AND character_id=$3", aid, new_imp, character_id)
                         result["faded"].append({"id":aid,"content":node.get("content","")})
+                elif action == "fulfill":
+                    node = next((n for n in material.get("windowsill_nodes",[]) if n["id"]==aid), None)
+                    if node:
+                        content = reflection or node.get("content","")
+                        await conn.execute("UPDATE memory_palace_nodes SET room='bedroom', mood='happy', content=$2, updated_at=NOW() WHERE id=$1 AND character_id=$3", aid, content, character_id)
+                        result.setdefault("fulfilled",[]).append({"id":aid,"content":content})
+                elif action == "disappoint":
+                    node = next((n for n in material.get("windowsill_nodes",[]) if n["id"]==aid), None)
+                    if node:
+                        content = reflection or node.get("content","")
+                        await conn.execute("UPDATE memory_palace_nodes SET room='attic', mood='sad', content=$2, updated_at=NOW() WHERE id=$1 AND character_id=$3", aid, content, character_id)
+                        result.setdefault("disappointed",[]).append({"id":aid,"content":content})
                 elif action == "internalize":
                     node = next((n for n in material["study_nodes"] if n["id"]==aid), None)
                     if node and reflection:
@@ -1255,7 +1277,7 @@ async def _execute_digest_actions(actions: list, material: dict, character_id: s
 async def preview_cognitive_digestion(character_id: str = "default") -> dict:
     """Step 1: gather material + call LLM, return preview actions without executing."""
     material = await _gather_digest_material(character_id)
-    if not material["attic_nodes"] and not material["study_nodes"] and not material["user_room_nodes"] and not material["self_room_nodes"]:
+    if not material["attic_nodes"] and not material.get("windowsill_nodes") and not material["study_nodes"] and not material["user_room_nodes"] and not material["self_room_nodes"]:
         return {"status": "empty", "message": "\u6ca1\u6709\u5f85\u6d88\u5316\u7684\u5185\u5bb9", "actions": []}
     actions = await _call_digest_llm(material, character_id)
     if not actions:
@@ -1266,7 +1288,7 @@ async def preview_cognitive_digestion(character_id: str = "default") -> dict:
         aid = act["id"]
         source_content = ""
         source_room = ""
-        for pool_name in ["attic_nodes","study_nodes","user_room_nodes","self_room_nodes"]:
+        for pool_name in ["attic_nodes","windowsill_nodes","study_nodes","user_room_nodes","self_room_nodes"]:
             node = next((n for n in material.get(pool_name,[]) if n["id"]==aid), None)
             if node:
                 source_content = node.get("content","")

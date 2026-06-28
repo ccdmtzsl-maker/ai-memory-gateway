@@ -361,16 +361,16 @@
 
                 <div class="card export-card">
                     <div class="export-info">
-                        <div class="export-icon" style="font-size: 36px; color: var(--primary); display: flex; align-items: center;"><svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg></div>
+                        <div class="export-icon" style="font-size: 36px; color: var(--primary); display: flex; align-items: center;"><svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg></div>
                         <div class="export-text">
-                            <h3>导出全部记忆</h3>
-                            <p>将所有记忆导出为 JSON 格式，包含完整的元数据（权重、来源、时间等）</p>
+                            <h3>导出日印象</h3>
+                            <p>将所有日印象导出为 JSON 文件，包含日期、正文、标签、情绪等完整数据</p>
                         </div>
                     </div>
                     <div class="export-stats" id="export-stats">
                         正在统计...
                     </div>
-                    <button class="btn btn-primary btn-lg" onclick="doExport()">下载 JSON 备份</button>
+                    <button class="btn btn-primary btn-lg" onclick="exportDailyImpressions()">下载日印象备份</button>
                 </div>
 
                 <div class="card export-card">
@@ -869,7 +869,7 @@
         </main>
     </div>
 
-    <script src="/static/js/dashboard.js?v=3.8"></script>
+    <script src="/static/js/dashboard.js?v=3.9"></script>
 <script src="/static/js/daily_impressions.js?v=1.4"></script>
 <script>
     // --- 模型预设管理（右上角切换面板） ---

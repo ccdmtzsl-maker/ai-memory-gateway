@@ -877,6 +877,23 @@ async def search_memory_palace_for_prompt(query: str = "", limit: int = 5, room:
     return _memory_palace_score_rows(rows, query=query, query_embedding=query_embedding)[:limit]
 
 
+def _memory_palace_person_link_strength(a: dict, b: dict) -> float:
+    """If two nodes share person-related tags, create a person link."""
+    sep = "、"
+    tags_a = set(t.strip() for t in str(a.get("tags") or "").replace(",", sep).split(sep) if t.strip())
+    tags_b = set(t.strip() for t in str(b.get("tags") or "").replace(",", sep).split(sep) if t.strip())
+    if not tags_a or not tags_b:
+        return 0.0
+    shared = tags_a & tags_b
+    if not shared:
+        return 0.0
+    room_a = a.get("room") or ""
+    room_b = b.get("room") or ""
+    if room_a == "user_room" or room_b == "user_room":
+        return min(0.6, 0.2 * len(shared))
+    return min(0.4, 0.15 * len(shared))
+
+
 async def build_memory_palace_links_for_node(node: dict):
     if not node or not node.get("id"):
         return 0
@@ -899,6 +916,9 @@ async def build_memory_palace_links_for_node(node: dict):
             strength = _memory_palace_emotional_link_strength(node, other)
             if strength > 0:
                 links.append((f"ml_{int(datetime.now(timezone.utc).timestamp() * 1000)}_{uuid.uuid4().hex[:6]}", character_id, node_id, other["id"], "emotional", strength))
+            person_strength = _memory_palace_person_link_strength(node, other)
+            if person_strength > 0:
+                links.append((f"ml_{int(datetime.now(timezone.utc).timestamp() * 1000)}_{uuid.uuid4().hex[:6]}", character_id, node_id, other["id"], "person", person_strength))
         if not links:
             return 0
         await conn.executemany("""
@@ -1118,6 +1138,10 @@ async def retrieve_memory_palace_rows_for_prompt(query: str = "", limit: int = 5
                         merged[item["id"]] = item
                     break
     selected = sorted(merged.values(), key=lambda x: x["score"], reverse=True)[:limit]
+    try:
+        selected = await _memory_palace_spread_activation(selected, rows, character_id=character_id, max_expand=3)
+    except Exception as e:
+        print(f"⚠️ Memory Palace spread activation failed: {e}")
     now = datetime.now(timezone.utc)
     pinned = []
     selected_ids = {x["id"] for x in selected}

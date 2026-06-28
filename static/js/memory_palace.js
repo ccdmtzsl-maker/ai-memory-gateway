@@ -171,6 +171,28 @@ function renderMemoryPalaceNodes() {
 }
 
 
+async function runCognitiveDigestion() {
+    if (!confirm('将执行认知消化：角色回想阁楼困惑、书房知识、用户信息和自我认知，可能产生新的领悟或转化。继续吗？')) return;
+    try {
+        mpMsg('认知消化中（需要调用 LLM，可能较慢）...');
+        const resp = await fetch('/api/memory-palace/digest', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({})});
+        const data = await resp.json();
+        if (data.status === 'error') throw new Error(data.error || '消化失败');
+        if (data.status === 'empty') { mpMsg('没有待消化的内容'); return; }
+        if (data.status === 'no_actions') { mpMsg('LLM 审视后认为无需变化'); return; }
+        var parts = [];
+        if (data.resolved && data.resolved.length) parts.push('化解' + data.resolved.length + '条');
+        if (data.deepened && data.deepened.length) parts.push('加深' + data.deepened.length + '条');
+        if (data.faded && data.faded.length) parts.push('淡忘' + data.faded.length + '条');
+        if (data.internalized && data.internalized.length) parts.push('内化' + data.internalized.length + '条');
+        if (data.synthesized_user && data.synthesized_user.length) parts.push('整合用户认知' + data.synthesized_user.length + '条');
+        if (data.self_insights && data.self_insights.length) parts.push('自我领悟' + data.self_insights.length + '条');
+        if (data.self_confused && data.self_confused.length) parts.push('新困惑' + data.self_confused.length + '条');
+        mpMsg('认知消化完成：' + (parts.length ? parts.join('，') : '无变化'));
+        await loadMemoryPalace();
+    } catch (e) { mpMsg('认知消化失败：' + e.message, 'error'); }
+}
+
 async function runMemoryPalaceConsolidation() {
     if (!confirm('将执行记忆巩固：客厅高重要性记忆晋升卧室，客厅超容量记忆移入阁楼。继续吗？')) return;
     try {

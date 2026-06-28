@@ -1024,7 +1024,7 @@ async def _gather_digest_material(character_id: str = "default") -> dict:
     pool = await get_pool()
     async with pool.acquire() as conn:
         all_nodes = await conn.fetch("""
-            SELECT id, content, room, tags, importance, mood, valence, arousal, access_count, created_at, origin, source_id
+            SELECT id, content, room, tags, importance, mood, valence, arousal, access_count, created_at, origin, source_id, pinned_until
             FROM memory_palace_nodes
             WHERE character_id = $1 AND archived = FALSE
             ORDER BY created_at DESC

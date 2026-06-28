@@ -967,21 +967,21 @@ async function previewJson() {
     
     try {
         const parsed = JSON.parse(jsonStr);
-        const mems = parsed.memories || [];
-        if (mems.length === 0) {
-            showImportResult('error', '❌ 没有找到 memories 字段，请确认这是从导出功能导出的文件');
+        const items = Array.isArray(parsed) ? parsed : (parsed.impressions || parsed.memories || []);
+        if (items.length === 0) {
+            showImportResult('error', '❌ 没有找到日印象数据，请确认这是从导出功能导出的文件');
             preview.innerHTML = '';
             return;
         }
         
-        pendingJsonData = parsed;
-        let html = '<p><b>预览：共 ' + mems.length + ' 条记忆</b></p>';
-        const show = mems.slice(0, 10);
+        pendingJsonData = items;
+        let html = '<p><b>预览：共 ' + items.length + ' 条日印象</b></p>';
+        const show = items.slice(0, 10);
         show.forEach(m => {
-            html += '<div class="preview-item">权重 ' + (m.importance || '?') + ' | ' + (m.content || '').substring(0, 80) + '</div>';
+            html += '<div class="preview-item">' + (m.date || '?') + ' | ' + (m.summary || '').substring(0, 80) + '</div>';
         });
-        if (mems.length > 10) {
-            html += '<div class="preview-item" style="color:#999;">...还有 ' + (mems.length - 10) + ' 条</div>';
+        if (items.length > 10) {
+            html += '<div class="preview-item" style="color:#999;">...还有 ' + (items.length - 10) + ' 条</div>';
         }
         html += '<br><button class="btn btn-primary" onclick="confirmJsonImport()">确认导入</button>';
         preview.innerHTML = html;
@@ -1001,7 +1001,7 @@ async function confirmJsonImport() {
     showImportResult('info', '导入中...');
     
     try {
-        const resp = await fetch('/import/memories', {
+        const resp = await fetch('/import/daily-impressions', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify(pendingJsonData)
@@ -1010,8 +1010,7 @@ async function confirmJsonImport() {
         if (data.error) {
             showImportResult('error', '❌ ' + data.error);
         } else {
-            showImportResult('success', '✅ 导入完成！新增 ' + data.imported + ' 条，跳过 ' + data.skipped + ' 条（已存在），总计 ' + data.total + ' 条');
-            loadMemories();
+            showImportResult('success', '✅ 导入完成！导入 ' + data.imported + ' 条，跳过 ' + data.skipped + ' 条');
         }
         document.getElementById('jsonPreview').innerHTML = '';
         pendingJsonData = null;

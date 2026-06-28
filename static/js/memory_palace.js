@@ -183,7 +183,7 @@ async function runCognitiveDigestion() {
         if (data.status === 'no_actions') { mpMsg('LLM 审视后认为无需变化'); return; }
         _digestPreviewActions = data.actions || [];
         mpMsg('');
-        if (_digestPreviewActions.length === 0) { mpMsg('LLM 审视后认为全部维持现状，无需变化'); return; }
+        if (_digestPreviewActions.length === 0) { mpMsg('LLM 未返回有效动作'); return; }
         renderDigestPreview(_digestPreviewActions);
     } catch (e) { mpMsg('认知消化预览失败：' + e.message, 'error'); }
 }

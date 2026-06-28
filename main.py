@@ -1130,7 +1130,7 @@ async def _call_digest_llm(material: dict, character_id: str = "default") -> lis
         resp.raise_for_status()
         data = resp.json()
     reply = (data.get("choices") or [{}])[0].get("message", {}).get("content", "")
-    parsed = _safe_parse_json_array(reply)
+    parsed = safe_parse_memory_palace_json_array(reply)
     valid_actions = {"resolve","deepen","fade","internalize","synthesize_user","self_insight","self_confuse","keep"}
     results = []
     seen_ids = set()

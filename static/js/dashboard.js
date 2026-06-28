@@ -1037,10 +1037,10 @@ async function loadExportStats() {
     const el = document.getElementById('export-stats');
     const mpEl = document.getElementById('mp-export-stats');
     try {
-        const resp = await fetch('/api/memories');
+        const resp = await fetch('/api/daily-impressions?limit=9999');
         const data = await resp.json();
-        const count = (data.memories || []).length;
-        if (el) el.textContent = '当前共有 ' + count + ' 条记忆';
+        const count = (data.impressions || []).length;
+        if (el) el.textContent = '当前共有 ' + count + ' 条日印象';
     } catch(e) {
         if (el) el.textContent = '无法加载统计';
     }
@@ -1056,9 +1056,32 @@ async function loadExportStats() {
     }
 }
 
-function doExport() {
-    // 直接跳转到导出接口，浏览器会下载文件
-    window.location.href = '/export/memories';
+async function exportDailyImpressions() {
+    try {
+        const resp = await fetch('/api/daily-impressions?limit=9999');
+        const data = await resp.json();
+        if (data.error) throw new Error(data.error);
+        const impressions = data.impressions || [];
+        if (!impressions.length) { alert('暂无日印象数据'); return; }
+        const blob = new Blob([JSON.stringify(impressions, null, 2)], {type: 'application/json'});
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        const now = new Date();
+        const ts = now.getFullYear() +
+            String(now.getMonth() + 1).padStart(2, '0') +
+            String(now.getDate()).padStart(2, '0') + '_' +
+            String(now.getHours()).padStart(2, '0') +
+            String(now.getMinutes()).padStart(2, '0') +
+            String(now.getSeconds()).padStart(2, '0');
+        a.href = url;
+        a.download = 'daily_impressions_backup_' + ts + '.json';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+    } catch (e) {
+        alert('导出日印象失败: ' + e.message);
+    }
 }
 
 async function exportMemoryPalace() {

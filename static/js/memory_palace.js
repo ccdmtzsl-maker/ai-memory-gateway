@@ -171,15 +171,76 @@ function renderMemoryPalaceNodes() {
 }
 
 
+let _digestPreviewActions = [];
+
 async function runCognitiveDigestion() {
-    if (!confirm('将执行认知消化：角色回想阁楼困惑、书房知识、用户信息和自我认知，可能产生新的领悟或转化。继续吗？')) return;
     try {
-        mpMsg('认知消化中（需要调用 LLM，可能较慢）...');
-        const resp = await fetch('/api/memory-palace/digest', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({})});
+        mpMsg('认知消化预览中（需要调用 LLM，可能较慢）...');
+        const resp = await fetch('/api/memory-palace/digest/preview', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({})});
         const data = await resp.json();
         if (data.status === 'error') throw new Error(data.error || '消化失败');
         if (data.status === 'empty') { mpMsg('没有待消化的内容'); return; }
         if (data.status === 'no_actions') { mpMsg('LLM 审视后认为无需变化'); return; }
+        _digestPreviewActions = data.actions || [];
+        renderDigestPreview(_digestPreviewActions);
+    } catch (e) { mpMsg('认知消化预览失败：' + e.message, 'error'); }
+}
+
+function renderDigestPreview(actions) {
+    const el = document.getElementById('mp-content');
+    if (!el) return;
+    const ACTION_LABELS = {
+        resolve: '\ud83d\udd4a\ufe0f 化解 → 卧室', deepen: '\ud83d\udca2 加深创伤', fade: '\ud83c\udf2b\ufe0f 淡忘',
+        internalize: '\ud83e\ude9e 内化 → 自我房间', synthesize_user: '\ud83d\udc64 整合用户认知',
+        self_insight: '\ud83d\udca1 自我领悟', self_confuse: '\ud83c\udf00 新困惑 → 阁楼'
+    };
+    var html = '<div style="padding:16px;"><h3 style="margin:0 0 12px;">认知消化预览</h3>';
+    html += '<p style="color:var(--text-muted);font-size:13px;margin-bottom:16px;">以下是角色审视后的判断，勾选要执行的动作：</p>';
+    for (var i = 0; i < actions.length; i++) {
+        var a = actions[i];
+        var label = ACTION_LABELS[a.action] || a.action;
+        var room = a.source_room || '';
+        html += '<label style="display:block;margin:8px 0;padding:12px;border:1px solid var(--border);border-radius:8px;cursor:pointer;">';
+        html += '<input type="checkbox" class="digest-preview-check" value="' + i + '" checked> ';
+        html += '<b>' + label + '</b>';
+        if (room) html += ' <span style="color:var(--text-muted);font-size:12px;">[' + room + ']</span>';
+        html += '<div style="margin-top:6px;font-size:13px;color:var(--text-muted);">原文：' + ((a.source_content || '').substring(0, 100) || '?') + '</div>';
+        if (a.reflection) html += '<div style="margin-top:4px;font-size:13px;">→ ' + a.reflection + '</div>';
+        if (a.insight) html += '<div style="margin-top:4px;font-size:13px;color:var(--primary);">💡 ' + a.insight.substring(0, 150) + '</div>';
+        if (a.category) html += '<div style="margin-top:4px;font-size:12px;color:var(--text-muted);">分类：' + a.category + '</div>';
+        html += '</label>';
+    }
+    html += '<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px;">';
+    html += '<button class="btn btn-sm" onclick="toggleDigestChecks(false)">全不选</button>';
+    html += '<button class="btn btn-sm" onclick="toggleDigestChecks(true)">全选</button>';
+    html += '<button class="btn btn-sm" onclick="cancelDigestPreview()">取消</button>';
+    html += '<button class="btn btn-primary btn-sm" onclick="confirmDigest()">确认执行</button>';
+    html += '</div></div>';
+    el.innerHTML = html;
+}
+
+function toggleDigestChecks(checked) {
+    document.querySelectorAll('.digest-preview-check').forEach(function(cb) { cb.checked = checked; });
+}
+
+function cancelDigestPreview() {
+    _digestPreviewActions = [];
+    loadMemoryPalace();
+}
+
+async function confirmDigest() {
+    var checks = document.querySelectorAll('.digest-preview-check:checked');
+    var selected = [];
+    checks.forEach(function(cb) {
+        var idx = parseInt(cb.value);
+        if (_digestPreviewActions[idx]) selected.push(_digestPreviewActions[idx]);
+    });
+    if (!selected.length) { mpMsg('没有选中任何动作'); return; }
+    try {
+        mpMsg('正在执行 ' + selected.length + ' 个消化动作...');
+        var resp = await fetch('/api/memory-palace/digest/confirm', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({actions: selected})});
+        var data = await resp.json();
+        if (data.status === 'error') throw new Error(data.error || '执行失败');
         var parts = [];
         if (data.resolved && data.resolved.length) parts.push('化解' + data.resolved.length + '条');
         if (data.deepened && data.deepened.length) parts.push('加深' + data.deepened.length + '条');
@@ -189,8 +250,9 @@ async function runCognitiveDigestion() {
         if (data.self_insights && data.self_insights.length) parts.push('自我领悟' + data.self_insights.length + '条');
         if (data.self_confused && data.self_confused.length) parts.push('新困惑' + data.self_confused.length + '条');
         mpMsg('认知消化完成：' + (parts.length ? parts.join('，') : '无变化'));
+        _digestPreviewActions = [];
         await loadMemoryPalace();
-    } catch (e) { mpMsg('认知消化失败：' + e.message, 'error'); }
+    } catch (e) { mpMsg('认知消化执行失败：' + e.message, 'error'); }
 }
 
 async function runMemoryPalaceConsolidation() {

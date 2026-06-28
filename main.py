@@ -1020,6 +1020,7 @@ def _digest_find_near_duplicate(existing: list, room: str, content: str) -> bool
 
 
 async def _gather_digest_material(character_id: str = "default") -> dict:
+    """Gather material for cognitive digestion - no truncation, matches SullyOS."""
     pool = await get_pool()
     async with pool.acquire() as conn:
         all_nodes = await conn.fetch("""
@@ -1029,25 +1030,34 @@ async def _gather_digest_material(character_id: str = "default") -> dict:
             ORDER BY created_at DESC
         """, character_id)
     all_nodes = [dict(r) for r in all_nodes]
+    # Build set of source IDs that have already produced digestion derivatives
     digested_source_ids = set()
     for n in all_nodes:
         if n.get("origin") == "digestion" and n.get("source_id"):
             digested_source_ids.add(n["source_id"])
     def is_fresh(n):
         return n.get("origin") != "digestion" and n["id"] not in digested_source_ids
+    # Attic: all (resolve/deepen/fade modify in-place, no derivatives)
     attic_nodes = [n for n in all_nodes if n.get("room") == "attic"]
+    # Windowsill: all (fulfill/disappoint)
+    windowsill_nodes = [n for n in all_nodes if n.get("room") == "windowsill"]
+    # Study: accessCount >= 3 and fresh
     study_nodes = [n for n in all_nodes if n.get("room") == "study" and (n.get("access_count") or 0) >= 3 and is_fresh(n)]
+    # User room: all fresh
     user_room_nodes = [n for n in all_nodes if n.get("room") == "user_room" and is_fresh(n)]
+    # Self room: all fresh
     self_room_nodes = [n for n in all_nodes if n.get("room") == "self_room" and is_fresh(n)]
+    # Recent context: bedroom + living_room top 10
     recent_context = sorted(
         [n for n in all_nodes if n.get("room") in ("bedroom", "living_room")],
         key=lambda x: x.get("created_at") or "", reverse=True
     )[:10]
     return {
-        "attic_nodes": attic_nodes[:30],
-        "study_nodes": study_nodes[:20],
-        "user_room_nodes": user_room_nodes[:30],
-        "self_room_nodes": self_room_nodes[:20],
+        "attic_nodes": attic_nodes,
+        "windowsill_nodes": windowsill_nodes,
+        "study_nodes": study_nodes,
+        "user_room_nodes": user_room_nodes,
+        "self_room_nodes": self_room_nodes,
         "recent_context": recent_context,
         "all_nodes": all_nodes,
     }

@@ -1113,7 +1113,9 @@ async def _call_digest_llm(material: dict, character_id: str = "default") -> lis
 
 ## 你的任务
 
-以{char_name}的第一人称内心视角，审视上面的内容。对每一条给出判断：
+以{char_name}的第一人称内心视角，审视上面的内容。
+
+重要：绝大多数条目应该维持现状（keep）。你只需要输出真正发生了变化的少数几条。没有变化的不要输出。一次消化通常只有 0-5 条真正的变化。
 
 对于阁楼困惑 [A*]：
 - "resolve" — 最近的经历让你想开了，释然了。附 reflection（你释然后的内心独白，用"我"来写，50字以内）。
@@ -1142,9 +1144,10 @@ async def _call_digest_llm(material: dict, character_id: str = "default") -> lis
 
 ## 重要规则
 
-1. reflection 是必填项（fade 和 keep 除外），不能省略。它会直接写入记忆内容。
-2. 没有变化的条目不要写。只输出有变化的。
-3. 严格 JSON 数组格式输出。
+1. reflection 是必填项（fade 除外），不能省略。它会直接写入记忆内容。
+2. 只输出有变化的条目。keep 的不要写，也不要输出 "action": "keep"。
+3. 如果审视后认为全部维持现状，输出空数组 []。
+4. 严格 JSON 数组格式输出。
 
 ## 输出格式示例
 

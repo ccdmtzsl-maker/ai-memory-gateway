@@ -1037,16 +1037,27 @@ async def _gather_digest_material(character_id: str = "default") -> dict:
             digested_source_ids.add(n["source_id"])
     def is_fresh(n):
         return n.get("origin") != "digestion" and n["id"] not in digested_source_ids
-    # Attic: all (resolve/deepen/fade modify in-place, no derivatives)
-    attic_nodes = [n for n in all_nodes if n.get("room") == "attic"]
-    # Windowsill: all (fulfill/disappoint)
-    windowsill_nodes = [n for n in all_nodes if n.get("room") == "windowsill"]
-    # Study: accessCount >= 3 and fresh
-    study_nodes = [n for n in all_nodes if n.get("room") == "study" and (n.get("access_count") or 0) >= 3 and is_fresh(n)]
-    # User room: all fresh
-    user_room_nodes = [n for n in all_nodes if n.get("room") == "user_room" and is_fresh(n)]
-    # Self room: all fresh
-    self_room_nodes = [n for n in all_nodes if n.get("room") == "self_room" and is_fresh(n)]
+    # Attic: all except pinned and importance==10 (those are intentionally preserved)
+    from datetime import datetime, timezone
+    now_utc = datetime.now(timezone.utc)
+    def _is_pinned(n):
+        pu = n.get("pinned_until")
+        if not pu: return False
+        if isinstance(pu, str):
+            try: pu = datetime.fromisoformat(pu.replace("Z", "+00:00"))
+            except: return False
+        if hasattr(pu, 'tzinfo') and pu.tzinfo is None:
+            pu = pu.replace(tzinfo=timezone.utc)
+        return pu > now_utc
+    attic_nodes = [n for n in all_nodes if n.get("room") == "attic" and int(n.get("importance") or 5) < 10 and not _is_pinned(n)]
+    # Windowsill: all except pinned
+    windowsill_nodes = [n for n in all_nodes if n.get("room") == "windowsill" and not _is_pinned(n)]
+    # Study: accessCount >= 3 and fresh, exclude pinned
+    study_nodes = [n for n in all_nodes if n.get("room") == "study" and (n.get("access_count") or 0) >= 3 and is_fresh(n) and not _is_pinned(n)]
+    # User room: all fresh, exclude pinned
+    user_room_nodes = [n for n in all_nodes if n.get("room") == "user_room" and is_fresh(n) and not _is_pinned(n)]
+    # Self room: all fresh, exclude pinned
+    self_room_nodes = [n for n in all_nodes if n.get("room") == "self_room" and is_fresh(n) and not _is_pinned(n)]
     # Recent context: bedroom + living_room top 10
     recent_context = sorted(
         [n for n in all_nodes if n.get("room") in ("bedroom", "living_room")],

@@ -1124,13 +1124,19 @@ async def _call_digest_llm(material: dict, character_id: str = "default") -> lis
 \u6ca1\u6709\u53d8\u5316\u7684\u53ef\u4ee5\u4e0d\u5199\u3002\u53ea\u5199\u6709\u53d8\u5316\u7684\u3002"""
     url = base_url
     headers = {"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"}
+    if "openrouter" in (url or ""):
+        headers["HTTP-Referer"] = EXTRA_REFERER
+        headers["X-Title"] = EXTRA_TITLE
     body = {"model": model, "messages": [{"role": "system", "content": system_prompt}, {"role": "user", "content": "\u8bf7\u5f00\u59cb\u5ba1\u89c6\u3002"}], "temperature": 0.6, "max_tokens": 8000, "stream": False}
-    async with httpx.AsyncClient(timeout=120) as client:
+    print(f"\ud83e\udde0 [Digest] Calling LLM: model={model}, url={url[:60]}, material sections={len(sections)}")
+    async with httpx.AsyncClient(timeout=300) as client:
         resp = await client.post(url, json=body, headers=headers)
         resp.raise_for_status()
         data = resp.json()
     reply = (data.get("choices") or [{}])[0].get("message", {}).get("content", "")
+    print(f"\ud83e\udde0 [Digest] LLM reply length={len(reply)}, first 200 chars: {reply[:200]}")
     parsed = safe_parse_memory_palace_json_array(reply)
+    print(f"\ud83e\udde0 [Digest] Parsed {len(parsed)} items from LLM reply")
     valid_actions = {"resolve","deepen","fade","internalize","synthesize_user","self_insight","self_confuse","keep"}
     results = []
     seen_ids = set()

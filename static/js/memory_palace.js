@@ -171,6 +171,18 @@ function renderMemoryPalaceNodes() {
 }
 
 
+async function runMemoryPalaceConsolidation() {
+    if (!confirm('将执行记忆巩固：客厅高重要性记忆晋升卧室，客厅超容量记忆移入阁楼。继续吗？')) return;
+    try {
+        mpMsg('巩固中...');
+        const resp = await fetch('/api/memory-palace/consolidate', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({})});
+        const data = await resp.json();
+        if (data.error || data.status === 'error') throw new Error(data.error || '巩固失败');
+        mpMsg('巩固完成：晋升 ' + Number(data.promoted || 0) + ' 条，淘汰 ' + Number(data.evicted || 0) + ' 条');
+        await loadMemoryPalace();
+    } catch (e) { mpMsg('巩固失败：' + e.message, 'error'); }
+}
+
 async function clearMemoryPalacePins() {
     if (!confirm('将清除所有当前便利贴，只取消置顶，不删除任何记忆。继续吗？')) return;
     const btn = document.getElementById('mpClearPinsBtn');

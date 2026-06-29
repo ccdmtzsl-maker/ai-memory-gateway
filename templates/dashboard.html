@@ -574,7 +574,7 @@
             <section id="section-threads" class="section">
                 <div class="section-header">
                     <h1>对话线管理</h1>
-                    <p class="section-desc">管理分区缓存的对话线、查看编辑摘要</p>
+                    <p class="section-desc">管理分区缓存的对话线</p>
                 </div>
                 <div class="card" id="thread-status-card">
                     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
@@ -590,12 +590,6 @@
                             <label class="form-label" style="font-size: 13px;">对话线ID</label>
                             <input type="text" id="new-thread-id" class="search-input" placeholder="例如: my-thread">
                         </div>
-                        <div style="flex: 1; min-width: 200px;">
-                            <label class="form-label" style="font-size: 13px;">继承摘要自（可选）</label>
-                            <select id="new-thread-copy-from" class="select-input">
-                                <option value="">不继承，从零开始</option>
-                            </select>
-                        </div>
                         <button class="btn btn-primary" onclick="createThread()">创建</button>
                     </div>
                     <div id="thread-create-msg" class="msg-container" style="margin-top: 8px;"></div>
@@ -608,16 +602,14 @@
                 </div>
                 <div id="summaryModal" class="modal" style="display:none;">
                     <div class="modal-content" style="max-width: 700px;">
-                        <h3 id="summary-modal-title">编辑摘要 — <span id="summary-modal-sid"></span></h3>
+                        <h3 id="summary-modal-title">对话线记忆</h3>
                         <div class="form-group">
                             <textarea id="summary-editor" class="textarea" rows="16" style="font-size: 14px; line-height: 1.6;"></textarea>
                         </div>
                         <div style="display: flex; justify-content: space-between; align-items: center;">
                             <span id="summary-char-count" style="color: var(--text-muted); font-size: 13px;"></span>
                             <div class="modal-actions" style="display: flex; gap: 8px;">
-                                <button id="summary-clear-btn" class="btn btn-danger" onclick="clearSummary()">清空摘要</button>
                                 <button id="summary-close-btn" class="btn btn-secondary" onclick="closeSummaryModal()">关闭</button>
-                                <button id="summary-save-btn" class="btn btn-primary" onclick="saveSummary()">保存</button>
                             </div>
                         </div>
                     </div>

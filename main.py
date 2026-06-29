@@ -7872,7 +7872,19 @@ async def save_settings(request: Request):
 
             # --- modelPresets 特殊处理 ---
             if key == "modelPresets":
-                presets_json = json.dumps(value) if isinstance(value, list) else str(value)
+                presets_value = value
+                if isinstance(presets_value, list):
+                    cleaned_presets = []
+                    for p in presets_value:
+                        if not isinstance(p, dict):
+                            continue
+                        cp = dict(p)
+                        if _is_masked(str(cp.get("apiKey", ""))):
+                            cp.pop("apiKey", None)
+                        cleaned_presets.append(cp)
+                    presets_json = json.dumps(cleaned_presets, ensure_ascii=False)
+                else:
+                    presets_json = str(presets_value)
                 await set_gateway_config("modelPresets", presets_json)
                 updated.append("modelPresets")
                 continue

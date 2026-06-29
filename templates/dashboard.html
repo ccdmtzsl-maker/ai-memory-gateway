@@ -929,25 +929,46 @@
       }).join('');
     }
 
+    function presetKeyLooksMasked(v) {
+      v = String(v || '').trim();
+      return !v || v.includes('***') || v.includes('•••') || v.includes('****');
+    }
+
+    function activePresetStorageKey(preset) {
+      return 'mgw_api_key_' + encodeURIComponent((preset.apiBaseUrl || '') + '|' + (preset.model || ''));
+    }
+
     function activatePreset(idx) {
       const preset = _modelPresets[idx];
       if (!preset) return;
-      // 填充设置页字段
+      // 填充设置页字段。Key 优先级：预设真实 key > localStorage 记忆 > 当前输入框。
       const modelEl = document.getElementById('set-DEFAULT_MODEL');
       if (modelEl) modelEl.value = preset.model;
       const urlEl = document.getElementById('set-API_BASE_URL');
       if (urlEl && preset.apiBaseUrl) urlEl.value = preset.apiBaseUrl;
       const keyEl = document.getElementById('set-API_KEY');
-      if (keyEl && preset.apiKey) keyEl.value = preset.apiKey;
+      const currentKey = keyEl ? String(keyEl.value || '').trim() : '';
+      const storedKey = localStorage.getItem(activePresetStorageKey(preset)) || '';
+      const realPresetKey = presetKeyLooksMasked(preset.apiKey) ? '' : String(preset.apiKey || '').trim();
+      const realCurrentKey = presetKeyLooksMasked(currentKey) ? '' : currentKey;
+      const effectiveKey = realPresetKey || storedKey || realCurrentKey;
+      if (keyEl && effectiveKey) keyEl.value = effectiveKey;
+      if (effectiveKey) {
+        preset.apiKey = effectiveKey;
+        localStorage.setItem(activePresetStorageKey(preset), effectiveKey);
+      }
 
-      // 立即激活
+      // 立即激活；没有真实 key 时不发送 activatePresetKey，避免空值覆盖/触发重填。
+      const body = {activatePreset: preset.model, activatePresetUrl: preset.apiBaseUrl || ''};
+      if (effectiveKey) body.activatePresetKey = effectiveKey;
       fetch('/api/settings', {
         method: 'PUT',
         headers: {'Content-Type':'application/json'},
-        body: JSON.stringify({activatePreset: preset.model, activatePresetUrl: preset.apiBaseUrl || '', activatePresetKey: preset.apiKey || ''})
+        body: JSON.stringify(body)
       }).then(r => r.json()).then(d => {
         if (typeof showToast === 'function') showToast('已切换: ' + preset.name);
         document.getElementById('preset-current-name').textContent = preset.name;
+        if (effectiveKey) savePresetsToServer();
         renderPresetPanel();
       });
       // 关闭面板
@@ -964,7 +985,10 @@
       const apiKey = (document.getElementById('set-API_KEY') || {}).value || '';
       const preset = {name, model};
       if (apiBaseUrl) preset.apiBaseUrl = apiBaseUrl;
-      if (apiKey) preset.apiKey = apiKey;
+      if (apiKey && !presetKeyLooksMasked(apiKey)) {
+        preset.apiKey = apiKey;
+        localStorage.setItem(activePresetStorageKey(preset), apiKey);
+      }
       _modelPresets.push(preset);
       nameInput.value = '';
       savePresetsToServer();

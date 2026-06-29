@@ -2117,7 +2117,6 @@ async function loadThreads() {
         
         renderThreadStatus(status);
         renderThreadList(data.threads);
-        updateCopyFromSelect(data.threads);
     } catch(e) {
         document.getElementById('thread-status').textContent = '加载失败: ' + e.message;
     }
@@ -2134,7 +2133,6 @@ function renderThreadStatus(status) {
         <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px;">
             <div><strong>活跃对话线</strong><br><span style="font-size: 18px; color: var(--primary);">${status.active_session_id || '未设置'}</span></div>
             <div><strong>轮转周期</strong><br>每 ${status.partition_x} 轮</div>
-            <div><strong>摘要长度</strong><br>${status.summary_length} 字</div>
             <div><strong>A区起始轮</strong><br>第 ${status.a_start_round} 轮</div>
         </div>
     `;
@@ -2151,7 +2149,6 @@ function renderThreadList(threads) {
     for (const t of threads) {
         const isActive = t.is_active;
         const tokens = t.chat_tokens > 0 ? (t.chat_tokens >= 1000 ? (t.chat_tokens / 1000).toFixed(1) + 'K' : t.chat_tokens) : '0';
-        const summaryPreview = t.summary ? (t.summary.substring(0, 80) + (t.summary.length > 80 ? '...' : '')) : '（暂无分区摘要）';
         const updatedStr = t.updated_at ? formatConvTime(t.updated_at) : '';
         
         html += `
@@ -2169,11 +2166,9 @@ function renderThreadList(threads) {
                 </div>
             </div>
             <div style="color: var(--text-muted); font-size: 13px; line-height: 1.5;">
-                <div>${summaryPreview}</div>
-                <div style="margin-top: 6px; display: flex; gap: 16px;">
+                <div style="display: flex; gap: 16px;">
                     <span>${t.message_count} 条消息</span>
                     <span>${tokens}</span>
-                    <span>分区摘要 ${t.summary_length} 字</span>
                     ${updatedStr ? `<span>更新于 ${updatedStr}</span>` : ''}
                 </div>
             </div>
@@ -2183,20 +2178,8 @@ function renderThreadList(threads) {
     el.innerHTML = html;
 }
 
-function updateCopyFromSelect(threads) {
-    const sel = document.getElementById('new-thread-copy-from');
-    // 保留第一个option
-    sel.innerHTML = '<option value="">不继承，从零开始</option>';
-    for (const t of threads) {
-        if (t.summary_length > 0) {
-            sel.innerHTML += `<option value="${t.session_id}">${t.session_id} (${t.summary_length}字)</option>`;
-        }
-    }
-}
-
 async function createThread() {
     const newId = document.getElementById('new-thread-id').value.trim();
-    const copyFrom = document.getElementById('new-thread-copy-from').value;
     const msgEl = document.getElementById('thread-create-msg');
     
     if (!newId) {
@@ -2208,7 +2191,7 @@ async function createThread() {
         const resp = await fetch('/api/partition/thread', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ session_id: newId, copy_summary_from: copyFrom })
+            body: JSON.stringify({ session_id: newId })
         });
         const data = await resp.json();
         if (data.error) {
@@ -2216,7 +2199,7 @@ async function createThread() {
             return;
         }
         
-        msgEl.innerHTML = `<div style="color: var(--success);">✅ 创建成功${data.summary_length > 0 ? '（继承了' + data.summary_length + '字摘要）' : ''}</div>`;
+        msgEl.innerHTML = `<div style="color: var(--success);">创建成功</div>`;
         document.getElementById('new-thread-id').value = '';
         loadThreads();
     } catch(e) {
@@ -2292,7 +2275,7 @@ async function openSummaryModal(sessionId) {
     const editor = document.getElementById('summary-editor');
     const saveBtn = document.getElementById('summary-save-btn');
     const clearBtn = document.getElementById('summary-clear-btn');
-    if (titleEl) titleEl.innerHTML = '编辑摘要 — <span id="summary-modal-sid"></span>';
+    if (titleEl) titleEl.textContent = '对话线记忆';
     const sidEl = document.getElementById('summary-modal-sid');
     if (sidEl) sidEl.textContent = sessionId;
     if (editor) editor.readOnly = false;
@@ -2379,7 +2362,7 @@ function closeSummaryModal() {
     const titleEl = document.getElementById('summary-modal-title');
     const saveBtn = document.getElementById('summary-save-btn');
     const clearBtn = document.getElementById('summary-clear-btn');
-    if (titleEl) titleEl.innerHTML = '编辑摘要 — <span id="summary-modal-sid"></span>';
+    if (titleEl) titleEl.textContent = '对话线记忆';
     if (saveBtn) saveBtn.style.display = '';
     if (clearBtn) clearBtn.style.display = '';
     _summaryEditSid = '';

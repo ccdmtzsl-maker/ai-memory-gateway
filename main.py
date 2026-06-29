@@ -1208,6 +1208,26 @@ async def _execute_digest_actions(actions: list, material: dict, character_id: s
     existing = material["all_nodes"]
     pool = await get_pool()
     async with pool.acquire() as conn:
+        async def _lock_digest_action(source_id: str, action: str):
+            await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"mp_digest:{character_id}:{source_id}:{action}")
+
+        async def _already_digested(source_id: str) -> bool:
+            row = await conn.fetchrow("""
+                SELECT id FROM memory_palace_nodes
+                WHERE character_id = $1 AND origin = 'digestion' AND source_id = $2 AND archived = FALSE
+                LIMIT 1
+            """, character_id, source_id)
+            return bool(row)
+
+        async def _db_near_duplicate(room: str, content: str) -> bool:
+            rows = await conn.fetch("""
+                SELECT id, room, content FROM memory_palace_nodes
+                WHERE character_id = $1 AND room = $2 AND archived = FALSE
+                ORDER BY created_at DESC
+                LIMIT 500
+            """, character_id, room)
+            return _digest_find_near_duplicate([dict(r) for r in rows], room, content)
+
         for act in actions:
             try:
                 aid = act["id"]
@@ -1247,7 +1267,10 @@ async def _execute_digest_actions(actions: list, material: dict, character_id: s
                 elif action == "internalize":
                     node = next((n for n in material["study_nodes"] if n["id"]==aid), None)
                     if node and reflection:
+                        await _lock_digest_action(aid, action)
+                        if await _already_digested(aid): continue
                         if _digest_find_near_duplicate(existing, "self_room", reflection): continue
+                        if await _db_near_duplicate("self_room", reflection): continue
                         new_id = f"mn_{int(time.time()*1000)}_{secrets.token_hex(3)}"
                         tags_str = "\u5185\u5316\u3001\u6210\u957f\u3001" + str(node.get("tags",""))
                         await conn.execute("INSERT INTO memory_palace_nodes (id,character_id,content,room,tags,importance,mood,origin,source_id,created_at,updated_at) VALUES ($1,$2,$3,'self_room',$4,$5,'peaceful','digestion',$6,NOW(),NOW())", new_id, character_id, reflection, tags_str, max(int(node.get("importance") or 5),7), aid)
@@ -1256,7 +1279,10 @@ async def _execute_digest_actions(actions: list, material: dict, character_id: s
                 elif action == "synthesize_user":
                     node = next((n for n in material["user_room_nodes"] if n["id"]==aid), None)
                     if node and reflection:
+                        await _lock_digest_action(aid, action)
+                        if await _already_digested(aid): continue
                         if _digest_find_near_duplicate(existing, "user_room", reflection): continue
+                        if await _db_near_duplicate("user_room", reflection): continue
                         new_id = f"mn_{int(time.time()*1000)}_{secrets.token_hex(3)}"
                         category = act.get("category","\u7efc\u5408")
                         tags_str = f"{category}\u3001\u6574\u5408\u8ba4\u77e5\u3001" + str(node.get("tags",""))
@@ -1267,9 +1293,13 @@ async def _execute_digest_actions(actions: list, material: dict, character_id: s
                     node = next((n for n in material["self_room_nodes"] if n["id"]==aid), None)
                     insight = act.get("insight","")
                     if node and insight:
+                        await _lock_digest_action(aid, action)
+                        if await _already_digested(aid): continue
                         content = reflection or insight
                         if _digest_find_near_duplicate(existing, "self_room", content): continue
                         if _digest_find_near_duplicate(existing, "self_room", insight): continue
+                        if await _db_near_duplicate("self_room", content): continue
+                        if insight != content and await _db_near_duplicate("self_room", insight): continue
                         new_id = f"mn_{int(time.time()*1000)}_{secrets.token_hex(3)}"
                         tags_str = "\u81ea\u6211\u9886\u609f\u3001\u5e38\u9a7b\u3001" + str(node.get("tags",""))
                         await conn.execute("INSERT INTO memory_palace_nodes (id,character_id,content,room,tags,importance,mood,origin,source_id,created_at,updated_at) VALUES ($1,$2,$3,'self_room',$4,9,'peaceful','digestion',$5,NOW(),NOW())", new_id, character_id, insight, tags_str, aid)
@@ -1278,7 +1308,10 @@ async def _execute_digest_actions(actions: list, material: dict, character_id: s
                 elif action == "self_confuse":
                     node = next((n for n in material["self_room_nodes"] if n["id"]==aid), None)
                     if node and reflection:
+                        await _lock_digest_action(aid, action)
+                        if await _already_digested(aid): continue
                         if _digest_find_near_duplicate(existing, "attic", reflection): continue
+                        if await _db_near_duplicate("attic", reflection): continue
                         new_id = f"mn_{int(time.time()*1000)}_{secrets.token_hex(3)}"
                         tags_str = "\u81ea\u6211\u56f0\u60d1\u3001\u53cd\u520d\u3001" + str(node.get("tags",""))
                         await conn.execute("INSERT INTO memory_palace_nodes (id,character_id,content,room,tags,importance,mood,origin,source_id,created_at,updated_at) VALUES ($1,$2,$3,'attic',$4,6,'confused','digestion',$5,NOW(),NOW())", new_id, character_id, reflection, tags_str, aid)

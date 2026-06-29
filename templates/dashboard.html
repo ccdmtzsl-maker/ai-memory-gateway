@@ -940,7 +940,7 @@
     }
 
     function activePresetStorageKey(preset) {
-      return 'mgw_api_key_' + encodeURIComponent((preset.apiBaseUrl || '') + '|' + (preset.model || ''));
+      return 'mgw_api_key_v2_' + encodeURIComponent((preset.name || '') + '|' + (preset.apiBaseUrl || '') + '|' + (preset.model || ''));
     }
 
     function sanitizeModelPresets(presets) {
@@ -959,7 +959,7 @@
     function activatePreset(idx) {
       const preset = _modelPresets[idx];
       if (!preset) return;
-      // 填充设置页字段。Key 优先级：预设真实 key > localStorage 记忆 > 当前输入框。
+      // 填充设置页字段。Key 只来自当前预设自身，避免把上一个预设的 key 串到新预设。
       const modelEl = document.getElementById('set-DEFAULT_MODEL');
       if (modelEl) modelEl.value = preset.model;
       const urlEl = document.getElementById('set-API_BASE_URL');
@@ -970,8 +970,9 @@
       if (storedRaw && !storedKey) localStorage.removeItem(activePresetStorageKey(preset));
       const realPresetKey = presetKeyIsUsable(preset.apiKey) ? String(preset.apiKey || '').trim() : '';
       const effectiveKey = realPresetKey || storedKey;
+      const shouldPersistStoredKey = !!effectiveKey && !preset.apiKey;
       if (keyEl && effectiveKey) keyEl.value = effectiveKey;
-      if (effectiveKey && !preset.apiKey) {
+      if (shouldPersistStoredKey) {
         preset.apiKey = effectiveKey;
       }
       _activePresetIndex = idx;
@@ -986,7 +987,7 @@
       }).then(r => r.json()).then(d => {
         if (typeof showToast === 'function') showToast('已切换: ' + preset.name);
         document.getElementById('preset-current-name').textContent = preset.name;
-        if (effectiveKey && !preset.apiKey) savePresetsToServer();
+        if (shouldPersistStoredKey) savePresetsToServer();
         renderPresetPanel();
       });
       // 关闭面板

@@ -167,6 +167,7 @@ function renderMemoryPalaceNodes() {
             '<div style=\"white-space:pre-wrap;line-height:1.65;font-size:14px;\">' + mpEsc(node.content || '') + '</div>' +
             (tags.length ? '<div style=\"margin-top:12px;display:flex;gap:6px;flex-wrap:wrap;\">' + tags.map(t => '<span style=\"font-size:12px;padding:3px 8px;border-radius:999px;background:' + color + '18;color:' + color + ';\">#' + mpEsc(t) + '</span>').join('') + '</div>' : '') +
             '<div style=\"margin-top:10px;font-size:12px;color:var(--text-muted);\">记忆日期：' + mpEsc(node.date || (node.created_at || '').slice(0, 10)) + ' · 入库：' + mpEsc((node.created_at || '').slice(0, 19).replace('T', ' ')) + (node.access_count ? ' · 访问 ' + node.access_count : '') + '</div>' +
+            '<div class=\"mp-inline-editor\" data-id=\"' + mpEsc(node.id) + '\" style=\"display:none;margin-top:14px;padding-top:14px;border-top:1px dashed var(--border-color);\"></div>' +
         '</div>';
     }).join('');
 }

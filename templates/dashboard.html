@@ -886,6 +886,7 @@
     // --- 模型预设管理（右上角切换面板） ---
     let _modelPresets = [];
     let _presetPanelOpen = false;
+    let _activePresetIndex = -1;
 
     function togglePresetPanel() {
       _presetPanelOpen = !_presetPanelOpen;
@@ -909,9 +910,8 @@
         list.innerHTML = '<div style="padding:12px;text-align:center;color:#9ca3af;font-size:13px;">还没有预设，在下方输入名称点 + 新建</div>';
         return;
       }
-      const currentModel = (document.getElementById('set-DEFAULT_MODEL') || {}).value || '';
       list.innerHTML = _modelPresets.map((p, i) => {
-        const isActive = p.model === currentModel;
+        const isActive = i === _activePresetIndex;
         const sub = p.apiBaseUrl ? '<div style="font-size:11px;opacity:0.6;margin-top:2px;">' + p.apiBaseUrl + '</div>' : '';
         return '<div onclick="activatePreset(' + i + ')" style="'
           + 'padding:10px 12px;cursor:pointer;border-radius:8px;margin-bottom:4px;'
@@ -965,18 +965,16 @@
       const urlEl = document.getElementById('set-API_BASE_URL');
       if (urlEl && preset.apiBaseUrl) urlEl.value = preset.apiBaseUrl;
       const keyEl = document.getElementById('set-API_KEY');
-      const currentKey = keyEl ? String(keyEl.value || '').trim() : '';
       const storedRaw = localStorage.getItem(activePresetStorageKey(preset)) || '';
       const storedKey = presetKeyIsUsable(storedRaw) ? storedRaw : '';
       if (storedRaw && !storedKey) localStorage.removeItem(activePresetStorageKey(preset));
       const realPresetKey = presetKeyIsUsable(preset.apiKey) ? String(preset.apiKey || '').trim() : '';
-      const realCurrentKey = presetKeyIsUsable(currentKey) ? currentKey : '';
-      const effectiveKey = realPresetKey || storedKey || realCurrentKey;
+      const effectiveKey = realPresetKey || storedKey;
       if (keyEl && effectiveKey) keyEl.value = effectiveKey;
-      if (effectiveKey) {
+      if (effectiveKey && !preset.apiKey) {
         preset.apiKey = effectiveKey;
-        localStorage.setItem(activePresetStorageKey(preset), effectiveKey);
       }
+      _activePresetIndex = idx;
 
       // 立即激活；没有真实 key 时不发送 activatePresetKey，避免空值覆盖/触发重填。
       const body = {activatePreset: preset.model, activatePresetUrl: preset.apiBaseUrl || ''};
@@ -988,7 +986,7 @@
       }).then(r => r.json()).then(d => {
         if (typeof showToast === 'function') showToast('已切换: ' + preset.name);
         document.getElementById('preset-current-name').textContent = preset.name;
-        if (effectiveKey) savePresetsToServer();
+        if (effectiveKey && !preset.apiKey) savePresetsToServer();
         renderPresetPanel();
       });
       // 关闭面板
@@ -1039,10 +1037,12 @@
             const sanitized = sanitizeModelPresets(presets);
             _modelPresets = sanitized.presets;
             if (sanitized.changed) savePresetsToServer();
-            // 显示当前激活的预设名
+            // 显示当前激活的预设名：模型 + API_BASE_URL 同时匹配，避免同模型多预设一起高亮。
             const currentModel = (document.getElementById('set-DEFAULT_MODEL') || {}).value || '';
-            const active = _modelPresets.find(p => p.model === currentModel);
-            if (active) document.getElementById('preset-current-name').textContent = active.name;
+            const currentUrl = (document.getElementById('set-API_BASE_URL') || {}).value || '';
+            _activePresetIndex = _modelPresets.findIndex(p => p.model === currentModel && (p.apiBaseUrl || '') === currentUrl);
+            if (_activePresetIndex < 0) _activePresetIndex = _modelPresets.findIndex(p => p.model === currentModel);
+            if (_activePresetIndex >= 0) document.getElementById('preset-current-name').textContent = _modelPresets[_activePresetIndex].name;
           }
         });
       }, 600);

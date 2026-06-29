@@ -110,6 +110,7 @@ function switchSection(name) {
     }
     if (name === 'conversations') {
         loadConversationList(1);
+        loadConvStats();
     }
     if (name === 'threads') {
         loadThreads();
@@ -1127,6 +1128,7 @@ let convSearchQuery = '';
 
 async function loadConvStats() {
     const el = document.getElementById('conv-export-stats');
+    if (!el) return;
     try {
         const resp = await fetch('/api/conversations?page=1&per_page=1');
         const data = await resp.json();

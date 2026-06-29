@@ -2148,7 +2148,7 @@ function renderThreadList(threads) {
     let html = '';
     for (const t of threads) {
         const isActive = t.is_active;
-        const tokens = t.chat_tokens > 0 ? (t.chat_tokens >= 1000 ? (t.chat_tokens / 1000).toFixed(1) + 'K' : t.chat_tokens) : '0';
+        const tokens = t.chat_tokens > 0 ? (t.chat_tokens >= 1000 ? (t.chat_tokens / 1000).toFixed(1) + 'K' : t.chat_tokens) : '';
         const updatedStr = t.updated_at ? formatConvTime(t.updated_at) : '';
         
         html += `
@@ -2168,7 +2168,7 @@ function renderThreadList(threads) {
             <div style="color: var(--text-muted); font-size: 13px; line-height: 1.5;">
                 <div style="display: flex; gap: 16px;">
                     <span>${t.message_count} 条消息</span>
-                    <span>${tokens}</span>
+                    ${tokens ? `<span>上下文 tokens ${tokens}</span>` : ''}
                     ${updatedStr ? `<span>更新于 ${updatedStr}</span>` : ''}
                 </div>
             </div>

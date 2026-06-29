@@ -55,6 +55,7 @@ async function loadMemoryPalace() {
 
     try {
         mpMsg('');
+        clearDigestPreviewArea();
         const resp = await fetch('/api/memory-palace/rooms');
         const data = await resp.json();
         if (data.error) throw new Error(data.error);
@@ -192,9 +193,15 @@ async function runCognitiveDigestion() {
     } catch (e) { mpMsg('认知消化预览失败：' + e.message, 'error'); } finally { _digestRunning = false; }
 }
 
+function clearDigestPreviewArea() {
+    const preview = document.getElementById('mpDigestPreview');
+    if (preview) { preview.style.display = 'none'; preview.innerHTML = ''; }
+}
+
 function renderDigestPreview(actions) {
-    const el = document.getElementById('mpNodeList');
+    const el = document.getElementById('mpDigestPreview') || document.getElementById('mpNodeList');
     if (!el) return;
+    el.style.display = 'block';
     const ACTION_LABELS = {
         resolve: '化解 -> 卧室', deepen: '加深创伤', fade: '淡忘',
         fulfill: '期盼实现 -> 卧室', disappoint: '期盼落空 -> 阁楼',
@@ -232,7 +239,7 @@ function toggleDigestChecks(checked) {
 
 function cancelDigestPreview() {
     _digestPreviewActions = [];
-    loadMemoryPalace();
+    clearDigestPreviewArea();
 }
 
 async function confirmDigest() {

@@ -1084,7 +1084,7 @@ async def _call_digest_llm(material: dict, character_id: str = "default") -> lis
     model = await get_runtime_memory_model()
     if not base_url or not api_key or not model:
         print("[Digest] No LLM config")
-        return []
+        return {"actions": [], "raw_reply": "", "parsed_count": 0}
     attic = material["attic_nodes"]
     windowsill = material.get("windowsill_nodes") or []
     study = material["study_nodes"]
@@ -1092,7 +1092,7 @@ async def _call_digest_llm(material: dict, character_id: str = "default") -> lis
     self_room = material["self_room_nodes"]
     recent = material["recent_context"]
     if not attic and not windowsill and not study and not user_room and not self_room:
-        return []
+        return {"actions": [], "raw_reply": "", "parsed_count": 0}
     sections = []
     if attic:
         section_lines = [f'[A{i}] (mood={n.get("mood","")}, importance={n.get("importance",5)}): {n.get("content","")}' for i,n in enumerate(attic)]
@@ -1178,7 +1178,7 @@ async def _call_digest_llm(material: dict, character_id: str = "default") -> lis
         data = resp.json()
     reply = (data.get("choices") or [{}])[0].get("message", {}).get("content", "")
     print(f"[Digest] LLM reply length={len(reply)}, first 200 chars: {reply[:200]}")
-    parsed = safe_parse_memory_palace_json_array(reply)
+    parsed = safe_parse_digest_actions_json(reply)
     print(f"[Digest] Parsed {len(parsed)} items from LLM reply")
     valid_actions = {"resolve","deepen","fade","fulfill","disappoint","internalize","synthesize_user","self_insight","self_confuse","keep"}
     results = []
@@ -1199,7 +1199,7 @@ async def _call_digest_llm(material: dict, character_id: str = "default") -> lis
         if not real_id or real_id in seen_ids: continue
         seen_ids.add(real_id)
         results.append({"id": real_id, "action": action, "reflection": item.get("reflection",""), "category": item.get("category",""), "insight": item.get("insight","")})
-    return results
+    return {"actions": results, "raw_reply": reply, "parsed_count": len(parsed)}
 
 
 async def _execute_digest_actions(actions: list, material: dict, character_id: str = "default") -> dict:
@@ -1294,9 +1294,14 @@ async def preview_cognitive_digestion(character_id: str = "default") -> dict:
     material = await _gather_digest_material(character_id)
     if not material["attic_nodes"] and not material.get("windowsill_nodes") and not material["study_nodes"] and not material["user_room_nodes"] and not material["self_room_nodes"]:
         return {"status": "empty", "message": "\u6ca1\u6709\u5f85\u6d88\u5316\u7684\u5185\u5bb9", "actions": []}
-    actions = await _call_digest_llm(material, character_id)
+    llm_result = await _call_digest_llm(material, character_id)
+    actions = llm_result.get("actions") or []
+    raw_reply = llm_result.get("raw_reply") or ""
+    parsed_count = llm_result.get("parsed_count") or 0
     if not actions:
-        return {"status": "no_actions", "message": "LLM \u672a\u8fd4\u56de\u6709\u6548\u52a8\u4f5c", "actions": []}
+        if raw_reply.strip() and parsed_count == 0:
+            return {"status": "parse_empty", "message": "LLM 返回了内容，但没有解析出有效动作", "actions": [], "raw_preview": raw_reply[:800]}
+        return {"status": "no_actions", "message": "LLM 未返回需要执行的动作", "actions": []}
     # Enrich actions with source content for preview
     enriched = []
     for act in actions:
@@ -5412,6 +5417,54 @@ def safe_parse_memory_palace_json_array(text: str) -> list:
         print(f"⚠️ 记忆宫殿提取 JSON 解析失败: {e}; raw={raw[:500]}")
         return []
     return data if isinstance(data, list) else []
+
+
+def safe_parse_digest_actions_json(text: str) -> list:
+    """Loosely parse cognitive digestion output.
+
+    Accepts JSON array, {"actions":[...]}, single action object, and fenced JSON.
+    Returns [] on failure.
+    """
+    if not text:
+        return []
+    raw = str(text).strip()
+    raw = re.sub(r"^```(?:json)?\s*", "", raw, flags=re.I)
+    raw = re.sub(r"\s*```$", "", raw)
+
+    def _normalize(obj):
+        if isinstance(obj, list):
+            return obj
+        if isinstance(obj, dict):
+            for key in ("actions", "items", "results", "data"):
+                val = obj.get(key)
+                if isinstance(val, list):
+                    return val
+            if obj.get("id") and obj.get("action"):
+                return [obj]
+        return []
+
+    candidates = [raw]
+    a0, a1 = raw.find("["), raw.rfind("]")
+    if a0 >= 0 and a1 > a0:
+        candidates.append(raw[a0:a1 + 1])
+    o0, o1 = raw.find("{"), raw.rfind("}")
+    if o0 >= 0 and o1 > o0:
+        candidates.append(raw[o0:o1 + 1])
+
+    seen = set()
+    for cand in candidates:
+        cand = cand.strip()
+        if not cand or cand in seen:
+            continue
+        seen.add(cand)
+        try:
+            parsed = json.loads(cand)
+        except Exception:
+            continue
+        normalized = _normalize(parsed)
+        if normalized:
+            return normalized
+    return []
 
 
 def _normalize_memory_palace_item(item: dict) -> dict:

@@ -931,11 +931,29 @@
 
     function presetKeyLooksMasked(v) {
       v = String(v || '').trim();
-      return !v || v.includes('***') || v.includes('•••') || v.includes('****');
+      return !!v && (v.includes('***') || v.includes('•••') || v.includes('****'));
+    }
+
+    function presetKeyIsUsable(v) {
+      v = String(v || '').trim();
+      return !!v && !presetKeyLooksMasked(v);
     }
 
     function activePresetStorageKey(preset) {
       return 'mgw_api_key_' + encodeURIComponent((preset.apiBaseUrl || '') + '|' + (preset.model || ''));
+    }
+
+    function sanitizeModelPresets(presets) {
+      let changed = false;
+      const cleaned = (presets || []).map(p => {
+        const cp = Object.assign({}, p || {});
+        if (presetKeyLooksMasked(cp.apiKey)) {
+          delete cp.apiKey;
+          changed = true;
+        }
+        return cp;
+      });
+      return {presets: cleaned, changed};
     }
 
     function activatePreset(idx) {
@@ -948,9 +966,11 @@
       if (urlEl && preset.apiBaseUrl) urlEl.value = preset.apiBaseUrl;
       const keyEl = document.getElementById('set-API_KEY');
       const currentKey = keyEl ? String(keyEl.value || '').trim() : '';
-      const storedKey = localStorage.getItem(activePresetStorageKey(preset)) || '';
-      const realPresetKey = presetKeyLooksMasked(preset.apiKey) ? '' : String(preset.apiKey || '').trim();
-      const realCurrentKey = presetKeyLooksMasked(currentKey) ? '' : currentKey;
+      const storedRaw = localStorage.getItem(activePresetStorageKey(preset)) || '';
+      const storedKey = presetKeyIsUsable(storedRaw) ? storedRaw : '';
+      if (storedRaw && !storedKey) localStorage.removeItem(activePresetStorageKey(preset));
+      const realPresetKey = presetKeyIsUsable(preset.apiKey) ? String(preset.apiKey || '').trim() : '';
+      const realCurrentKey = presetKeyIsUsable(currentKey) ? currentKey : '';
       const effectiveKey = realPresetKey || storedKey || realCurrentKey;
       if (keyEl && effectiveKey) keyEl.value = effectiveKey;
       if (effectiveKey) {
@@ -985,7 +1005,7 @@
       const apiKey = (document.getElementById('set-API_KEY') || {}).value || '';
       const preset = {name, model};
       if (apiBaseUrl) preset.apiBaseUrl = apiBaseUrl;
-      if (apiKey && !presetKeyLooksMasked(apiKey)) {
+      if (presetKeyIsUsable(apiKey)) {
         preset.apiKey = apiKey;
         localStorage.setItem(activePresetStorageKey(preset), apiKey);
       }
@@ -1016,7 +1036,9 @@
         fetch('/api/settings').then(r=>r.json()).then(data => {
           const presets = (data.settings || data).modelPresets;
           if (presets && presets.length) {
-            _modelPresets = presets;
+            const sanitized = sanitizeModelPresets(presets);
+            _modelPresets = sanitized.presets;
+            if (sanitized.changed) savePresetsToServer();
             // 显示当前激活的预设名
             const currentModel = (document.getElementById('set-DEFAULT_MODEL') || {}).value || '';
             const active = _modelPresets.find(p => p.model === currentModel);

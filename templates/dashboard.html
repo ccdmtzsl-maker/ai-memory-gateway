@@ -291,6 +291,7 @@
                         <button class="tab active" data-tab="text">纯文本导入</button>
                         <button class="tab" data-tab="chat">聊天记录提取</button>
                         <button class="tab" data-tab="json">日印象恢复</button>
+                        <button class="tab" data-tab="mp-import">记忆宫殿恢复</button>
                     </div>
 
                     <!-- 纯文本导入 -->
@@ -346,6 +347,20 @@
                         </div>
                         <button class="btn btn-secondary" onclick="previewJson()">预览内容</button>
                         <div id="jsonPreview" class="preview-box"></div>
+                    </div>
+
+                    <!-- 记忆宫殿备份导入 -->
+                    <div id="tab-mp-import" class="tab-panel">
+                        <div class="form-group">
+                            <label class="form-label">上传从“导出记忆宫殿备份”保存的 .json 文件</label>
+                            <input type="file" id="mpImportFile" accept=".json" class="file-input">
+                        </div>
+                        <div class="divider"><span>或者直接粘贴</span></div>
+                        <div class="form-group">
+                            <textarea id="mpImportInput" class="textarea" rows="8" placeholder="粘贴导出的记忆宫殿备份 JSON"></textarea>
+                        </div>
+                        <button class="btn btn-secondary" onclick="previewMemoryPalaceImport()">预览内容</button>
+                        <div id="mpImportPreview" class="preview-box"></div>
                     </div>
                 </div>
 

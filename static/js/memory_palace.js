@@ -173,7 +173,10 @@ function renderMemoryPalaceNodes() {
 
 let _digestPreviewActions = [];
 
+let _digestRunning = false;
 async function runCognitiveDigestion() {
+    if (_digestRunning) return;
+    _digestRunning = true;
     try {
         mpMsg('认知消化预览中（需要调用 LLM，可能较慢）...');
         const resp = await fetch('/api/memory-palace/digest/preview', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({})});
@@ -185,7 +188,7 @@ async function runCognitiveDigestion() {
         mpMsg('');
         if (_digestPreviewActions.length === 0) { mpMsg('LLM 未返回有效动作'); return; }
         renderDigestPreview(_digestPreviewActions);
-    } catch (e) { mpMsg('认知消化预览失败：' + e.message, 'error'); }
+    } catch (e) { mpMsg('认知消化预览失败：' + e.message, 'error'); } finally { _digestRunning = false; }
 }
 
 function renderDigestPreview(actions) {

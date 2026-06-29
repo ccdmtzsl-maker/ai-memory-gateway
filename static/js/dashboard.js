@@ -2936,3 +2936,81 @@ try {
 } catch (e) {
 
 }
+
+
+// ============================================
+// 记忆宫殿备份导入
+// ============================================
+let _mpImportToken = '';
+
+async function readMemoryPalaceImportText() {
+    const file = document.getElementById('mpImportFile')?.files?.[0];
+    if (file) return await file.text();
+    return document.getElementById('mpImportInput')?.value?.trim() || '';
+}
+
+function mpImportTableLabel(t) {
+    return {
+        memory_palace_nodes: '记忆节点',
+        memory_palace_vectors: '向量',
+        memory_palace_links: '连接',
+        memory_palace_event_boxes: '事件盒',
+        memory_palace_extracted_messages: '已提取消息标记',
+        memory_palace_extraction_cursor: '提取游标',
+        memory_palace_state: '运行状态',
+        memory_palace_recall_receipts: '召回回执'
+    }[t] || t;
+}
+
+async function previewMemoryPalaceImport() {
+    const box = document.getElementById('mpImportPreview');
+    if (!box) return;
+    try {
+        const text = await readMemoryPalaceImportText();
+        if (!text) { box.innerHTML = '<div style="color:var(--danger);">请选择文件或粘贴 JSON</div>'; return; }
+        box.innerHTML = '正在解析...';
+        const resp = await fetch('/api/memory-palace/import/preview', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({json:text})});
+        const data = await resp.json();
+        if (data.status === 'error') throw new Error(data.error || '预览失败');
+        _mpImportToken = data.import_token || '';
+        const counts = data.counts || {};
+        const conflicts = data.conflicts || {};
+        const tables = ['memory_palace_nodes','memory_palace_vectors','memory_palace_event_boxes','memory_palace_links','memory_palace_extracted_messages','memory_palace_extraction_cursor','memory_palace_state','memory_palace_recall_receipts'];
+        let html = '<h3 style="margin:0 0 10px;">记忆宫殿备份预览</h3>';
+        html += '<div style="font-size:13px;color:var(--text-muted);margin-bottom:10px;">schema: ' + escHtml(data.schema || '') + '</div>';
+        html += '<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px;">';
+        tables.forEach(t => { if ((counts[t] || 0) > 0) html += '<span style="padding:4px 8px;border-radius:999px;background:var(--bg-muted);">' + mpImportTableLabel(t) + ' ' + counts[t] + '</span>'; });
+        html += '</div>';
+        html += '<div style="font-size:13px;color:var(--text-muted);margin-bottom:12px;">已存在ID：' + (conflicts.existing_ids || 0) + ' · 完全重复内容：' + (conflicts.exact_duplicates || 0) + ' · 缺失连接引用：' + (conflicts.missing_link_refs || 0) + '</div>';
+        html += '<div style="margin:12px 0;"><label class="form-label">导入策略</label><select id="mpImportStrategy" class="select-input"><option value="merge_skip_duplicates">合并导入，跳过冲突</option><option value="overwrite_ids">覆盖同 ID</option><option value="clear_restore">清空后恢复（危险）</option></select></div>';
+        html += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px;margin:12px 0;">';
+        tables.forEach(t => { const recommended = ['memory_palace_nodes','memory_palace_vectors','memory_palace_links','memory_palace_event_boxes'].includes(t); html += '<label><input type="checkbox" class="mp-import-include" value="' + t + '" ' + (recommended ? 'checked' : '') + '> ' + mpImportTableLabel(t) + '</label>'; });
+        html += '</div>';
+        if (data.sample_nodes && data.sample_nodes.length) {
+            html += '<details style="margin-top:10px;"><summary>预览前 ' + data.sample_nodes.length + ' 条节点</summary><div style="margin-top:8px;max-height:220px;overflow:auto;">';
+            data.sample_nodes.forEach(n => { html += '<div style="padding:6px 0;border-bottom:1px solid var(--border);"><b>' + escHtml(n.room || '') + '</b> ' + escHtml(n.content || '') + '</div>'; });
+            html += '</div></details>';
+        }
+        html += '<div style="margin-top:14px;display:flex;gap:8px;"><button class="btn btn-primary" onclick="confirmMemoryPalaceImport()">确认导入</button></div>';
+        box.innerHTML = html;
+    } catch(e) { box.innerHTML = '<div style="color:var(--danger);">预览失败：' + escHtml(e.message) + '</div>'; }
+}
+
+async function confirmMemoryPalaceImport() {
+    const box = document.getElementById('mpImportPreview');
+    if (!_mpImportToken) { alert('请先预览'); return; }
+    const strategy = document.getElementById('mpImportStrategy')?.value || 'merge_skip_duplicates';
+    if (strategy === 'clear_restore' && !confirm('清空后恢复会删除当前记忆宫殿中所选表的数据。确定继续？')) return;
+    const include = {};
+    document.querySelectorAll('.mp-import-include').forEach(cb => include[cb.value] = cb.checked);
+    try {
+        if (box) box.innerHTML += '<div style="margin-top:10px;color:var(--text-muted);">正在导入...</div>';
+        const resp = await fetch('/api/memory-palace/import/confirm', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({import_token:_mpImportToken, strategy, include})});
+        const data = await resp.json();
+        if (data.status === 'error') throw new Error(data.error || '导入失败');
+        const imported = data.imported || {};
+        let msg = '导入完成：' + (Object.keys(imported).map(k => mpImportTableLabel(k) + ' ' + imported[k]).join('，') || '无新增');
+        if (box) box.innerHTML = '<div style="color:var(--success);">' + escHtml(msg) + '</div>';
+        _mpImportToken = '';
+    } catch(e) { if (box) box.innerHTML += '<div style="color:var(--danger);margin-top:8px;">导入失败：' + escHtml(e.message) + '</div>'; }
+}

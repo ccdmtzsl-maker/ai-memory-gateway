@@ -183,7 +183,8 @@ async function runCognitiveDigestion() {
         const data = await resp.json();
         if (data.status === 'error') throw new Error(data.error || '消化失败');
         if (data.status === 'empty') { mpMsg('没有待消化的内容'); return; }
-        if (data.status === 'no_actions') { mpMsg('LLM 审视后认为无需变化'); return; }
+        if (data.status === 'no_actions') { mpMsg(data.message || 'LLM 未返回需要执行的动作'); return; }
+        if (data.status === 'parse_empty') { mpMsg((data.message || 'LLM 返回了内容，但没有解析出有效动作') + (data.raw_preview ? '：' + data.raw_preview.substring(0, 160) : ''), 'error'); return; }
         _digestPreviewActions = data.actions || [];
         mpMsg('');
         if (_digestPreviewActions.length === 0) { mpMsg('LLM 未返回有效动作'); return; }

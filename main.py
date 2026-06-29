@@ -4128,6 +4128,169 @@ async def export_memory_palace_backup():
         return {"error": str(e)}
 
 
+_MEMORY_PALACE_IMPORT_PREVIEWS = {}
+_MEMORY_PALACE_IMPORT_TABLE_ORDER = [
+    "memory_palace_nodes",
+    "memory_palace_vectors",
+    "memory_palace_event_boxes",
+    "memory_palace_links",
+    "memory_palace_extracted_messages",
+    "memory_palace_extraction_cursor",
+    "memory_palace_state",
+    "memory_palace_recall_receipts",
+]
+_MEMORY_PALACE_IMPORT_DELETE_ORDER = list(reversed(_MEMORY_PALACE_IMPORT_TABLE_ORDER))
+
+
+def _memory_palace_parse_import_payload(raw):
+    if isinstance(raw, dict):
+        return raw
+    if not raw:
+        raise ValueError("导入内容为空")
+    return json.loads(str(raw))
+
+
+async def preview_memory_palace_import(raw_text: str, character_id: str = "default") -> dict:
+    payload = _memory_palace_parse_import_payload(raw_text)
+    if not isinstance(payload, dict) or not isinstance(payload.get("tables"), dict):
+        raise ValueError("不是有效的记忆宫殿备份 JSON：缺少 tables")
+    tables = payload.get("tables") or {}
+    counts = {t: len(tables.get(t) or []) for t in _MEMORY_PALACE_IMPORT_TABLE_ORDER}
+    node_rows = tables.get("memory_palace_nodes") or []
+    node_ids = [str(r.get("id") or "") for r in node_rows if isinstance(r, dict) and r.get("id")]
+    node_contents = [(str(r.get("room") or ""), str(r.get("content") or "").strip()) for r in node_rows if isinstance(r, dict)]
+    existing_ids = 0
+    exact_duplicates = 0
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        if node_ids:
+            existing_ids = await conn.fetchval("SELECT COUNT(*) FROM memory_palace_nodes WHERE character_id=$1 AND id = ANY($2::text[])", character_id, node_ids)
+        if node_contents:
+            rows = await conn.fetch("SELECT room, content FROM memory_palace_nodes WHERE character_id=$1 AND archived=FALSE", character_id)
+            existing_pairs = {(str(r.get("room") or ""), str(r.get("content") or "").strip()) for r in rows}
+            exact_duplicates = sum(1 for p in node_contents if p in existing_pairs)
+    missing_refs = 0
+    node_id_set = set(node_ids)
+    for link in tables.get("memory_palace_links") or []:
+        if not isinstance(link, dict): continue
+        if str(link.get("source_id") or "") not in node_id_set or str(link.get("target_id") or "") not in node_id_set:
+            missing_refs += 1
+    import secrets, time
+    token = f"mpi_{int(time.time()*1000)}_{secrets.token_hex(8)}"
+    _MEMORY_PALACE_IMPORT_PREVIEWS[token] = {"payload": payload, "character_id": character_id, "created_at": time.time()}
+    sample_nodes = []
+    for r in node_rows[:20]:
+        if isinstance(r, dict):
+            sample_nodes.append({"id": r.get("id"), "room": r.get("room"), "content": str(r.get("content") or "")[:120]})
+    return {
+        "status": "ok",
+        "schema": payload.get("schema") or "unknown",
+        "import_token": token,
+        "counts": counts,
+        "conflicts": {"existing_ids": int(existing_ids or 0), "exact_duplicates": exact_duplicates, "missing_link_refs": missing_refs},
+        "sample_nodes": sample_nodes,
+    }
+
+
+async def _mp_import_table_columns(conn, table: str) -> set:
+    rows = await conn.fetch("""
+        SELECT column_name FROM information_schema.columns
+        WHERE table_schema='public' AND table_name=$1
+    """, table)
+    return {r["column_name"] for r in rows}
+
+
+def _mp_import_clean_value(v):
+    if isinstance(v, (dict, list)):
+        return json.dumps(v, ensure_ascii=False)
+    return v
+
+
+async def _mp_import_insert_rows(conn, table: str, rows: list, strategy: str) -> int:
+    if not rows:
+        return 0
+    cols_available = await _mp_import_table_columns(conn, table)
+    inserted = 0
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        clean = {k: _mp_import_clean_value(v) for k, v in row.items() if k in cols_available}
+        if not clean:
+            continue
+        cols = list(clean.keys())
+        values = [clean[c] for c in cols]
+        ph = ",".join(f"${i+1}" for i in range(len(cols)))
+        col_sql = ",".join(cols)
+        if strategy == "overwrite_ids":
+            pk = "memory_id" if table == "memory_palace_vectors" else "character_id" if table == "memory_palace_state" else "id"
+            if pk in clean:
+                await conn.execute(f"DELETE FROM {table} WHERE {pk}=$1", clean[pk])
+        sql = f"INSERT INTO {table} ({col_sql}) VALUES ({ph}) ON CONFLICT DO NOTHING"
+        res = await conn.execute(sql, *values)
+        if res.endswith("1"):
+            inserted += 1
+    return inserted
+
+
+async def confirm_memory_palace_import(import_token: str, strategy: str = "merge_skip_duplicates", include: dict = None, character_id: str = "default") -> dict:
+    item = _MEMORY_PALACE_IMPORT_PREVIEWS.get(import_token)
+    if not item:
+        raise ValueError("导入预览已过期，请重新预览")
+    payload = item["payload"]
+    tables = payload.get("tables") or {}
+    include = include or {}
+    if strategy not in ("merge_skip_duplicates", "overwrite_ids", "clear_restore"):
+        strategy = "merge_skip_duplicates"
+    pool = await get_pool()
+    result = {}
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            if strategy == "clear_restore":
+                for t in _MEMORY_PALACE_IMPORT_DELETE_ORDER:
+                    if include.get(t, False):
+                        await conn.execute(f"DELETE FROM {t} WHERE character_id=$1" if t != "memory_palace_vectors" else f"DELETE FROM {t} WHERE character_id=$1", character_id)
+            for table in _MEMORY_PALACE_IMPORT_TABLE_ORDER:
+                if not include.get(table, False):
+                    continue
+                rows = tables.get(table) or []
+                # 默认不导入引用缺失的链接/向量，避免外键失败。
+                if table == "memory_palace_links":
+                    rows = [r for r in rows if isinstance(r, dict) and r.get("source_id") and r.get("target_id")]
+                inserted = await _mp_import_insert_rows(conn, table, rows, strategy)
+                result[table] = inserted
+    _MEMORY_PALACE_IMPORT_PREVIEWS.pop(import_token, None)
+    return {"status": "ok", "imported": result}
+
+
+@app.post("/api/memory-palace/import/preview")
+async def api_memory_palace_import_preview(request: Request):
+    if not MEMORY_ENABLED:
+        return {"status":"error", "error":"记忆系统未启用"}
+    try:
+        data = await request.json()
+        raw = data.get("json") or data.get("content") or ""
+        character_id = data.get("character_id") or "default"
+        return await preview_memory_palace_import(raw, character_id=character_id)
+    except Exception as e:
+        return {"status":"error", "error": str(e)}
+
+
+@app.post("/api/memory-palace/import/confirm")
+async def api_memory_palace_import_confirm(request: Request):
+    if not MEMORY_ENABLED:
+        return {"status":"error", "error":"记忆系统未启用"}
+    try:
+        data = await request.json()
+        return await confirm_memory_palace_import(
+            data.get("import_token") or "",
+            strategy=data.get("strategy") or "merge_skip_duplicates",
+            include=data.get("include") or {},
+            character_id=data.get("character_id") or "default",
+        )
+    except Exception as e:
+        return {"status":"error", "error": str(e)}
+
+
 @app.get("/dashboard", response_class=HTMLResponse)
 async def dashboard_page(request: Request):
     """Dashboard - 整合的记忆管理界面"""

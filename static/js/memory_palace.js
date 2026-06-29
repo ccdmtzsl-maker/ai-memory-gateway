@@ -151,7 +151,7 @@ function renderMemoryPalaceNodes() {
         const color = room.color || '#64748b';
         const tags = node.tags ? String(node.tags).split(/[、,，\\n]/).map(t => t.trim()).filter(Boolean) : [];
         const pinnedText = mpPinnedText(node.pinned_until);
-        return '<div class=\"card\" style=\"padding:16px;border-top:4px solid ' + color + ';\">' +
+        return '<div class=\"card mp-node-card\" data-id=\"' + mpEsc(node.id) + '\" style=\"padding:16px;border-top:4px solid ' + color + ';\">' +
             '<div style=\"display:flex;justify-content:space-between;gap:10px;margin-bottom:10px;\">' +
                 '<div>' +
                     '<div style=\"font-weight:800;color:' + color + ';\">' + mpEsc(room.label || node.room) + '</div>' +
@@ -311,7 +311,20 @@ async function clearMemoryPalacePins() {
     }
 }
 
+function findMemoryPalaceInlineEditor(id) {
+    const editors = document.querySelectorAll('.mp-inline-editor');
+    for (let i = 0; i < editors.length; i++) {
+        if ((editors[i].dataset.id || '') === id) return editors[i];
+    }
+    return null;
+}
+
+function hideMemoryPalaceInlineEditors() {
+    document.querySelectorAll('.mp-inline-editor').forEach(function(el) { el.style.display = 'none'; el.innerHTML = ''; });
+}
+
 function openMemoryPalaceCreate() {
+    hideMemoryPalaceInlineEditors();
     _mpEditingId = null;
     renderMemoryPalaceEditor(null);
 }
@@ -324,9 +337,12 @@ function editMemoryPalaceNode(id) {
 }
 
 function renderMemoryPalaceEditor(node) {
-    const el = document.getElementById('mpEditor');
-    if (!el) return;
     const isEdit = !!node;
+    hideMemoryPalaceInlineEditors();
+    const globalEditor = document.getElementById('mpEditor');
+    if (globalEditor) { globalEditor.style.display = 'none'; globalEditor.innerHTML = ''; }
+    const el = isEdit ? findMemoryPalaceInlineEditor(node.id) : globalEditor;
+    if (!el) return;
     const roomValue = node ? node.room : (_mpCurrentRoom || 'living_room');
     const roomOptions = _mpRooms.map(r => '<option value=\"' + mpEsc(r.room) + '\" ' + (r.room === roomValue ? 'selected' : '') + '>' + mpEsc(r.label) + '</option>').join('');
     el.style.display = 'block';
@@ -351,7 +367,8 @@ function renderMemoryPalaceEditor(node) {
 
 function closeMemoryPalaceEditor() {
     const el = document.getElementById('mpEditor');
-    if (el) el.style.display = 'none';
+    if (el) { el.style.display = 'none'; el.innerHTML = ''; }
+    hideMemoryPalaceInlineEditors();
     _mpEditingId = null;
 }
 

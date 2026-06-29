@@ -1124,7 +1124,7 @@ async def _call_digest_llm(material: dict, character_id: str = "default") -> lis
 
 ## 你的任务
 
-以{char_name}的第一人称内心视角，审视上面的内容。
+以{char_name}的第一人称内心视角，对每一条内容做出判断。
 
 重要：绝大多数条目应该维持现状（keep）。你只需要输出真正发生了变化的条目。没有变化的不要输出。
 

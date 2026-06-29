@@ -243,14 +243,17 @@ function cancelDigestPreview() {
     clearDigestPreviewArea();
 }
 
+let _digestConfirmRunning = false;
 async function confirmDigest() {
+    if (_digestConfirmRunning) return;
+    _digestConfirmRunning = true;
     var checks = document.querySelectorAll('.digest-preview-check:checked');
     var selected = [];
     checks.forEach(function(cb) {
         var idx = parseInt(cb.value);
         if (_digestPreviewActions[idx]) selected.push(_digestPreviewActions[idx]);
     });
-    if (!selected.length) { mpMsg('没有选中任何动作'); return; }
+    if (!selected.length) { _digestConfirmRunning = false; mpMsg('没有选中任何动作'); return; }
     try {
         mpMsg('正在执行 ' + selected.length + ' 个消化动作...');
         var resp = await fetch('/api/memory-palace/digest/confirm', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({actions: selected})});
@@ -269,7 +272,7 @@ async function confirmDigest() {
         mpMsg('认知消化完成：' + (parts.length ? parts.join('，') : '无变化'));
         _digestPreviewActions = [];
         await loadMemoryPalace();
-    } catch (e) { mpMsg('认知消化执行失败：' + e.message, 'error'); }
+    } catch (e) { mpMsg('认知消化执行失败：' + e.message, 'error'); } finally { _digestConfirmRunning = false; }
 }
 
 async function runMemoryPalaceConsolidation() {

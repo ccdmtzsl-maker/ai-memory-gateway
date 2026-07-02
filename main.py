@@ -2647,15 +2647,20 @@ async def _extract_memory_palace_from_partition_messages_locked(messages: list, 
                 log_memory_palace_auto_extract("error", f"⚠️ 分区自动提取摘除便利贴失败: {e}", session_id=session_id)
         marked_count = 0
         max_message_id = tail_max_id
-        try:
-            marked_count = await mark_memory_palace_messages_extracted(message_ids, session_id, character_id=character_id, source="partition_auto")
-        except Exception as e:
-            log_memory_palace_auto_extract("error", f"⚠️ 分区自动提取标记消息失败: {e}", session_id=session_id)
-        # 提取器成功处理过这批消息后，无论是否生成新记忆，都推进游标；
-        # 否则 0 记忆结果会被后续轮次反复提取。
-        await save_memory_palace_extraction_cursor(session_id, max_message_id, character_id=character_id, last_source="partition_auto")
-        log_memory_palace_auto_extract("success", f"🧠 分区自动提取完成：session={session_id}, 消息{len(rows)}条, 记忆{len(created)}条, unpin={unpinned_count}, 标记{marked_count}条, cursor->{max_message_id}", session_id=session_id)
-        return {"status": "ok", "processed_messages": len(rows), "extracted": len(raw_items), "created": len(created), "embedded": embedded_count, "unpinned": unpinned_count, "marked": marked_count, "cursor": max_message_id}
+        advanced_cursor = last_id
+        if created or unpinned_count:
+            try:
+                marked_count = await mark_memory_palace_messages_extracted(message_ids, session_id, character_id=character_id, source="partition_auto")
+            except Exception as e:
+                log_memory_palace_auto_extract("error", f"⚠️ 分区自动提取标记消息失败: {e}", session_id=session_id)
+            await save_memory_palace_extraction_cursor(session_id, max_message_id, character_id=character_id, last_source="partition_auto")
+            advanced_cursor = max_message_id
+            cursor_note = f"cursor->{max_message_id}"
+        else:
+            # 0 条记忆时不推进游标：当前没有重 roll 设计，保留这批消息供后续再次尝试。
+            cursor_note = f"cursor保持{last_id}"
+        log_memory_palace_auto_extract("success", f"🧠 分区自动提取完成：session={session_id}, 消息{len(rows)}条, 记忆{len(created)}条, unpin={unpinned_count}, 标记{marked_count}条, {cursor_note}", session_id=session_id)
+        return {"status": "ok", "processed_messages": len(rows), "extracted": len(raw_items), "created": len(created), "embedded": embedded_count, "unpinned": unpinned_count, "marked": marked_count, "cursor": advanced_cursor}
     except Exception as e:
         log_memory_palace_auto_extract("error", f"⚠️ 分区自动提取失败：session={session_id}, error={e}", session_id=session_id)
         return {"status": "error", "error": str(e), "created": 0, "marked": 0}

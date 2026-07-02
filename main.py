@@ -6429,15 +6429,23 @@ async def call_memory_palace_extractor(messages_text: str, character_id: str = "
 
 
 async def save_memory_palace_embedding(memory_id: str, content: str) -> bool:
+    """保存/刷新记忆宫殿向量。只在 embedding 成功后 UPSERT，不先删除旧向量。"""
+    content = str(content or "").strip()
+    if not content:
+        return False
     embedding = await _db_module.compute_embedding(content)
     if not embedding:
         return False
     pool = await get_pool()
     async with pool.acquire() as conn:
-        await conn.execute("DELETE FROM memory_palace_vectors WHERE memory_id = $1", memory_id)
         await conn.execute("""
             INSERT INTO memory_palace_vectors (memory_id, embedding_json, dimensions, model, created_at, updated_at)
             VALUES ($1, $2, $3, $4, NOW(), NOW())
+            ON CONFLICT (memory_id) DO UPDATE SET
+                embedding_json = EXCLUDED.embedding_json,
+                dimensions = EXCLUDED.dimensions,
+                model = EXCLUDED.model,
+                updated_at = NOW()
         """, memory_id, json.dumps(embedding), len(embedding), getattr(_db_module, "EMBEDDING_MODEL", ""))
         await conn.execute("UPDATE memory_palace_nodes SET embedded = TRUE, updated_at = NOW() WHERE id = $1", memory_id)
     return True

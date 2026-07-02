@@ -1901,12 +1901,12 @@ async def build_keyword_context_text(user_message: str, max_rules: int = 5) -> s
     if not matched:
         return ""
     matched = matched[:max(1, int(max_rules or 5))]
-    parts = ["【关键词触发上下文】", "以下内容仅因当前用户消息命中关键词而在本轮临时提供参考；不要主动说明触发规则。"]
+    parts = []
     for rule in matched:
-        parts.append("")
-        parts.append("# " + rule["name"])
-        parts.append(rule["content"])
-    return chr(10).join(parts).strip()
+        content = str(rule.get("content", "") or "").strip()
+        if content:
+            parts.append(content)
+    return (chr(10) + chr(10)).join(parts).strip()
 
 
 def insert_keyword_context_system_message(messages: list, text: str) -> bool:

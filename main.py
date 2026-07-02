@@ -28,10 +28,10 @@ from fastapi.responses import StreamingResponse, JSONResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from database import init_tables, close_pool, save_message, search_memories, save_memory, get_all_memories_count, get_recent_memories, get_all_memories, get_pool, get_all_memories_detail, update_memory, delete_memory, delete_memories_batch, get_gateway_config, set_gateway_config, get_all_gateway_config, get_conversation_messages, get_session_cache_state, save_session_cache_state, delete_session_cache_state, save_token_usage, ensure_token_usage_table, get_conversations_paginated, delete_conversation, batch_delete_conversations, merge_sessions_to_target, list_all_session_cache_states, export_all_conversations, import_conversations, get_last_user_content, update_last_assistant_message, db_row_to_message, backfill_memory_embeddings, get_pending_memory_embedding_count, search_conversations, update_message_content, rename_session_id, get_fragments_by_date, get_conversation_messages_by_date, get_fragments_by_date_range, create_event_memory, deactivate_memories, promote_to_core, merge_memories, check_duplicate_memory, update_memory_with_layer, get_layer_statistics, cleanup_old_fragments, revert_merge, upsert_daily_impression, get_daily_impression, list_daily_impressions
+from database import init_tables, close_pool, save_message, get_pool, get_gateway_config, set_gateway_config, get_all_gateway_config, get_conversation_messages, get_session_cache_state, save_session_cache_state, delete_session_cache_state, save_token_usage, ensure_token_usage_table, get_conversations_paginated, delete_conversation, batch_delete_conversations, merge_sessions_to_target, list_all_session_cache_states, export_all_conversations, import_conversations, get_last_user_content, update_last_assistant_message, db_row_to_message, search_conversations, update_message_content, rename_session_id, get_conversation_messages_by_date, upsert_daily_impression, get_daily_impression, list_daily_impressions
 from database import list_memory_palace_rooms, list_memory_palace_nodes, get_memory_palace_node, create_memory_palace_node, update_memory_palace_node, delete_memory_palace_node, clear_expired_memory_palace_pins
 import database as _db_module  # 用于 /api/settings 热更新 database.py 全局变量
-from memory_extractor import score_memories, get_extraction_prompt, set_extraction_prompt, _DEFAULT_EXTRACTION_PROMPT
+from memory_extractor import get_extraction_prompt, set_extraction_prompt, _DEFAULT_EXTRACTION_PROMPT
 
 # ============================================================
 # 配置项 —— 全部从环境变量读取，部署时在云平台面板里设置
@@ -1880,63 +1880,8 @@ async def inject_memory_palace_auto_context(messages: list, query: str = "", cha
     return True
 
 async def build_system_prompt_with_memories(user_message: str) -> str:
-    """
-    构建带记忆的 system prompt
-    1. 用用户消息搜索相关记忆
-    2. 格式化成文本拼接到人设后面
-    """
-    if not MEMORY_ENABLED or not MEMORY_EXTRACT_ENABLED:
-        return SYSTEM_PROMPT
-    
-    if MAX_MEMORIES_INJECT <= 0:
-        return SYSTEM_PROMPT
-    
-    try:
-        memories = await search_memories(user_message, limit=MAX_MEMORIES_INJECT)
-        
-        if not memories:
-            return SYSTEM_PROMPT
-        
-        # 格式化记忆文本（带日期，帮助模型判断新旧）
-        memory_lines = []
-        for mem in memories:
-            date_str = ""
-            if mem.get("created_at"):
-                try:
-                    utc_str = str(mem['created_at'])[:19]
-                    utc_dt = datetime.strptime(utc_str, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
-                    local_dt = utc_dt + timedelta(hours=TIMEZONE_HOURS)
-                    date_str = f"[{local_dt.strftime('%Y-%m-%d')}] "
-                except:
-                    date_str = f"[{str(mem['created_at'])[:10]}] "
-            memory_lines.append(f"- {date_str}{mem['content']}")
-        memory_text = "\n".join(memory_lines)
-        
-        enhanced_prompt = f"""{SYSTEM_PROMPT}
-
-【从过往对话中检索到的相关记忆】
-{memory_text}
-
-# 记忆应用
-- 像朋友般自然运用这些记忆，不刻意展示
-- 仅在相关话题出现时引用，避免主动提及
-- 对重要信息（如健康、日期、约定）保持一致性
-- 新信息与记忆冲突时，以新信息为准
-- 模糊记忆可表达不确定性："记得你似乎说过..."
-
-# 交流方式
-- 自然引用："记得你说过..."或"上次我们聊到..."
-- 避免机械式表达如"根据我的记忆..."或"检索到的信息显示..."
-- 共同经历可温情回忆："上次那个事挺好玩的"
-
-记忆是丰富对话的工具，而非对话焦点。"""
-        
-        print(f"📚 注入了 {len(memories)} 条相关记忆")
-        return enhanced_prompt
-        
-    except Exception as e:
-        print(f"⚠️  记忆检索失败: {e}，使用纯人设")
-        return SYSTEM_PROMPT
+    """旧碎片记忆召回已下线；长期记忆只走 Memory Palace 注入。"""
+    return SYSTEM_PROMPT
 
 
 # ============================================================
@@ -2953,32 +2898,8 @@ async def _build_basic_cached(
 
 
 async def build_memory_text(user_message: str) -> str:
-    """搜索记忆并格式化为注入文本（分区缓存模式用）"""
-    if MAX_MEMORIES_INJECT <= 0:
-        return ""
-    try:
-        memories = await search_memories(user_message, limit=MAX_MEMORIES_INJECT)
-        if not memories:
-            return ""
-        
-        memory_lines = []
-        for mem in memories:
-            date_str = ""
-            if mem.get("created_at"):
-                try:
-                    utc_str = str(mem['created_at'])[:19]
-                    utc_dt = datetime.strptime(utc_str, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
-                    local_dt = utc_dt + timedelta(hours=TIMEZONE_HOURS)
-                    date_str = f"[{local_dt.strftime('%Y-%m-%d')}] "
-                except:
-                    date_str = f"[{str(mem['created_at'])[:10]}] "
-            memory_lines.append(f"- {date_str}{mem['content']}")
-        
-        print(f"📚 注入了 {len(memories)} 条相关记忆")
-        return "【此刻，你脑海中混入一滩噪音】\n" + "\n".join(memory_lines) + "\n\n注:请假装什么都没发生，继续当前对话。"
-    except Exception as e:
-        print(f"⚠️ 记忆检索失败: {e}")
-        return ""
+    """旧碎片记忆召回已下线；分区缓存不再注入 memories 表内容。"""
+    return ""
 
 
 # ============================================================
@@ -3195,20 +3116,12 @@ async def process_memories_background(session_id: str, user_msg: str, assistant_
 @app.get("/")
 async def health_check():
     """健康检查"""
-    memory_count = 0
-    if MEMORY_ENABLED:
-        try:
-            memory_count = await get_all_memories_count()
-        except:
-            pass
-    
     return {
         "status": "running",
         "gateway": "AI Memory Gateway v2.0",
         "system_prompt_loaded": len(SYSTEM_PROMPT) > 0,
         "system_prompt_length": len(SYSTEM_PROMPT),
         "memory_enabled": MEMORY_ENABLED,
-        "memory_count": memory_count,
     }
 
 
@@ -3999,44 +3912,6 @@ async def stream_and_capture(headers: dict, body: dict, session_id: str, user_me
 # ============================================================
 
 
-@app.get("/import/seed-memories")
-async def import_seed_memories():
-    """一次性导入预置记忆（从 seed_memories.py）"""
-    try:
-        from seed_memories import run_seed_import
-        result = await run_seed_import()
-        return result
-    except ImportError:
-        return {"error": "未找到 seed_memories.py，请参考 seed_memories_example.py 创建"}
-    except Exception as e:
-        return {"error": str(e)}
-
-
-@app.get("/export/memories")
-async def export_memories():
-    """
-    导出所有记忆为 JSON（用于备份或迁移）
-    浏览器访问这个地址就会返回所有记忆数据
-    """
-    if not MEMORY_ENABLED:
-        return {"error": "记忆系统未启用（设置 MEMORY_ENABLED=true 开启）"}
-    
-    try:
-        memories = await get_all_memories()
-        # 把 datetime 转成字符串
-        for mem in memories:
-            if mem.get("created_at"):
-                mem["created_at"] = str(mem["created_at"])
-        
-        return {
-            "total": len(memories),
-            "exported_at": str(__import__("datetime").datetime.now()),
-            "memories": memories,
-        }
-    except Exception as e:
-        return {"error": str(e)}
-
-
 _MEMORY_PALACE_BACKUP_TABLES = [
     "memory_palace_nodes",
     "memory_palace_vectors",
@@ -4327,236 +4202,6 @@ async def api_dashboard_last_request():
 async def api_clear_dashboard_logs():
     _dashboard_logs.clear()
     return {"status": "ok"}
-
-
-@app.get("/api/memories")
-async def api_get_memories(layer: int = None, active_only: bool = None):
-    """获取所有记忆（管理页面用）
-    
-    Query params:
-        layer: 筛选层级（1=碎片, 2=事件, 3=核心）
-        active_only: 是否只返回活跃记忆
-    """
-    if not MEMORY_ENABLED:
-        return {"error": "记忆系统未启用"}
-    memories = await get_all_memories_detail(layer=layer, active_only=active_only)
-    tz_offset = timezone(timedelta(hours=TIMEZONE_HOURS))
-    for m in memories:
-        if m.get("created_at"):
-            dt = m["created_at"]
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
-            m["created_at"] = dt.astimezone(tz_offset).strftime("%Y-%m-%d %H:%M:%S")
-    # 获取层级统计
-    try:
-        layer_stats = await get_layer_statistics()
-    except Exception:
-        layer_stats = None
-    
-    result = {"memories": memories}
-    if layer_stats:
-        result["layer_stats"] = layer_stats
-    return result
-
-
-@app.get("/api/memories/search")
-async def api_search_memories(q: str = "", limit: int = 20):
-    """语义搜索记忆（Dashboard用，走后端 search_memories）"""
-    if not MEMORY_ENABLED:
-        return {"error": "记忆系统未启用"}
-    if not q.strip():
-        return {"error": "搜索关键词不能为空", "results": []}
-    try:
-        results = await search_memories(q.strip(), limit)
-        tz_offset = timezone(timedelta(hours=TIMEZONE_HOURS))
-        out = []
-        for r in results:
-            item = dict(r)
-            if item.get("created_at"):
-                dt = item["created_at"]
-                if hasattr(dt, 'tzinfo'):
-                    if dt.tzinfo is None:
-                        dt = dt.replace(tzinfo=timezone.utc)
-                    item["created_at"] = dt.astimezone(tz_offset).strftime("%Y-%m-%d %H:%M:%S")
-            out.append(item)
-        return {"results": out, "total": len(out)}
-    except Exception as e:
-        return {"error": str(e), "results": []}
-
-
-@app.put("/api/memories/{memory_id}")
-async def api_update_memory(memory_id: int, request: Request):
-    """更新单条记忆（支持 content / importance / title / layer）"""
-    if not MEMORY_ENABLED:
-        return {"error": "记忆系统未启用"}
-    data = await request.json()
-    # 解析 event_date（支持 YYYY-MM-DD 字符串）
-    event_date = None
-    if data.get("event_date"):
-        try:
-            event_date = datetime.strptime(data["event_date"], "%Y-%m-%d").date()
-        except (ValueError, TypeError):
-            event_date = None
-    
-    # 解析 created_at（支持 YYYY-MM-DD 或 YYYY-MM-DD HH:MM:SS）
-    created_at = None
-    if data.get("created_at"):
-        try:
-            raw = data["created_at"]
-            if len(raw) <= 10:
-                created_at = datetime.strptime(raw, "%Y-%m-%d")
-            else:
-                created_at = datetime.strptime(raw[:19], "%Y-%m-%d %H:%M:%S")
-        except (ValueError, TypeError):
-            created_at = None
-    
-    await update_memory_with_layer(
-        memory_id,
-        content=data.get("content"),
-        importance=data.get("importance"),
-        title=data.get("title"),
-        layer=data.get("layer"),
-        event_date=event_date,
-        created_at=created_at,
-    )
-    return {"status": "ok", "id": memory_id}
-
-
-@app.delete("/api/memories/{memory_id}")
-async def api_delete_memory(memory_id: int, soft: bool = False):
-    """删除单条记忆
-    
-    Query params:
-        soft: true=归档（is_active=false），false=永久删除
-    """
-    if not MEMORY_ENABLED:
-        return {"error": "记忆系统未启用"}
-    if soft:
-        await update_memory_with_layer(memory_id, is_active=False)
-    else:
-        await delete_memory(memory_id)
-    return {"status": "ok", "id": memory_id}
-
-
-@app.post("/api/memories/batch-update")
-async def api_batch_update(request: Request):
-    """批量更新记忆"""
-    if not MEMORY_ENABLED:
-        return {"error": "记忆系统未启用"}
-    data = await request.json()
-    updates = data.get("updates", [])
-    if not updates:
-        return {"error": "没有要更新的记忆"}
-    for item in updates:
-        event_date = None
-        if item.get("event_date"):
-            try:
-                event_date = datetime.strptime(item["event_date"], "%Y-%m-%d").date()
-            except (ValueError, TypeError):
-                pass
-        created_at = None
-        if item.get("created_at"):
-            try:
-                raw = item["created_at"]
-                created_at = datetime.strptime(raw[:19], "%Y-%m-%d %H:%M:%S") if len(raw) > 10 else datetime.strptime(raw, "%Y-%m-%d")
-            except (ValueError, TypeError):
-                pass
-        await update_memory_with_layer(
-            item["id"],
-            content=item.get("content"),
-            importance=item.get("importance"),
-            title=item.get("title"),
-            layer=item.get("layer"),
-            event_date=event_date,
-            created_at=created_at,
-        )
-    return {"status": "ok", "updated": len(updates)}
-
-
-@app.post("/api/memories/batch-delete")
-async def api_batch_delete(request: Request):
-    """批量删除记忆"""
-    if not MEMORY_ENABLED:
-        return {"error": "记忆系统未启用"}
-    data = await request.json()
-    ids = data.get("ids", [])
-    if not ids:
-        return {"error": "未选择记忆"}
-    await delete_memories_batch(ids)
-    return {"status": "ok", "deleted": len(ids)}
-
-
-# ============================================================
-# 三层记忆架构：整理 / 合并 / 升级 / 统计
-# ============================================================
-
-_DEFAULT_CONSOLIDATION_PROMPT = """
-你是记忆整理助手。请将以下对话碎片整理成完整的事件记录。
-
-要求：
-1. 按主题/事件分组，相关的碎片合并到一起
-2. 每个事件一条记录，不要太细碎也不要太笼统
-3. 每条记录包含：标题（10字内）+ 完整描述
-4. 合并重复内容，保留重要细节
-5. 保留原文中的主观感受、情绪表达和个人化用语，不要改写为客观陈述或第三方总结
-6. content字段中不要使用双引号，用单引号或书名号代替
-
-碎片记忆：
-{fragments}
-
-请用 JSON 格式输出：
-[
-  {{
-    "title": "事件标题（10字内）",
-    "content": "完整的事件描述",
-    "importance": 5,
-    "merged_ids": [1, 2, 3]
-  }}
-]
-
-只输出 JSON，不要其他内容。确保 JSON 语法正确。
-"""
-
-
-# 碎片整理提示词（支持面板热更新）
-_cached_consolidation_prompt = None
-_cached_consolidation_prompt_loaded = False
-
-async def get_consolidation_prompt() -> str:
-    global _cached_consolidation_prompt, _cached_consolidation_prompt_loaded
-    if _cached_consolidation_prompt_loaded:
-        return _cached_consolidation_prompt or _DEFAULT_CONSOLIDATION_PROMPT
-    try:
-        db_prompt = await get_gateway_config("consolidationPrompt", "")
-        if db_prompt:
-            _cached_consolidation_prompt = db_prompt
-        else:
-            _cached_consolidation_prompt = _DEFAULT_CONSOLIDATION_PROMPT
-        _cached_consolidation_prompt_loaded = True
-        return _cached_consolidation_prompt
-    except Exception:
-        _cached_consolidation_prompt = _DEFAULT_CONSOLIDATION_PROMPT
-        _cached_consolidation_prompt_loaded = True
-        return _cached_consolidation_prompt
-
-def set_consolidation_prompt(prompt: str):
-    global _cached_consolidation_prompt, _cached_consolidation_prompt_loaded
-    _cached_consolidation_prompt = prompt
-    _cached_consolidation_prompt_loaded = True
-
-def invalidate_consolidation_prompt_cache():
-    global _cached_consolidation_prompt, _cached_consolidation_prompt_loaded
-    _cached_consolidation_prompt = None
-    _cached_consolidation_prompt_loaded = False
-
-# 整理状态（异步执行，防重入）
-_consolidate_status = {
-    "running": False,
-    "started_at": None,
-    "result": None,
-    "error": None,
-}
-
 
 
 _DEFAULT_DAILY_IMPRESSION_PROMPT = """你是长期陪伴型AI的记忆整理员。请根据某一天的真实对话历史，生成一条“日印象”。
@@ -6976,174 +6621,6 @@ async def api_memory_palace_extract_text(request: Request):
         return {"status": "error", "error": str(e)}
 
 
-@app.post("/api/memories/consolidate")
-async def api_manual_consolidate(request: Request):
-    """手动触发整理（异步，立即返回）
-    
-    Body:
-        start_date: 开始日期（YYYY-MM-DD 格式）
-        end_date: 结束日期（YYYY-MM-DD 格式）
-        或
-        date: 单个日期（兼容旧版）
-    """
-    from datetime import date as date_type
-    
-    if not MEMORY_ENABLED:
-        return {"error": "记忆系统未启用"}
-    
-    if _consolidate_status.get("running"):
-        return {"status": "already_running", "started_at": _consolidate_status.get("started_at")}
-    
-    data = await request.json()
-    
-    # 解析日期参数
-    if "date" in data and "start_date" not in data:
-        start_date = datetime.strptime(data["date"], "%Y-%m-%d").date()
-        end_date = start_date
-    else:
-        start_date_str = data.get("start_date")
-        end_date_str = data.get("end_date")
-        
-        if not start_date_str or not end_date_str:
-            return {"error": "请提供开始和结束日期"}
-        
-        start_date = datetime.strptime(start_date_str, "%Y-%m-%d").date()
-        end_date = datetime.strptime(end_date_str, "%Y-%m-%d").date()
-        
-        if start_date > end_date:
-            return {"error": "开始日期不能晚于结束日期"}
-    
-    async def _run():
-        _consolidate_status.update({"running": True, "started_at": f"{start_date}~{end_date}", "result": None, "error": None})
-        try:
-            result = await consolidate_memories_for_date_range(start_date, end_date)
-            _consolidate_status["result"] = result
-            print(f"[manual/consolidate] 整理 {start_date}~{end_date}: {result}")
-        except Exception as e:
-            _consolidate_status["error"] = str(e)
-            print(f"[manual/consolidate] 整理 {start_date}~{end_date} 失败: {e}")
-        finally:
-            _consolidate_status["running"] = False
-    
-    asyncio.create_task(_run())
-    return {"status": "started", "start_date": str(start_date), "end_date": str(end_date)}
-
-
-@app.get("/api/memories/consolidate/status")
-async def api_consolidate_status():
-    """查询整理任务状态"""
-    return _consolidate_status
-
-
-@app.post("/api/memories/{memory_id}/promote")
-async def api_promote_to_core(memory_id: int, request: Request):
-    """将记忆升级为核心记忆"""
-    if not MEMORY_ENABLED:
-        return {"error": "记忆系统未启用"}
-    
-    data = await request.json()
-    title = data.get("title")
-    
-    await promote_to_core(memory_id, title=title)
-    return {"status": "ok", "memory_id": memory_id, "layer": 3}
-
-
-@app.post("/api/memories/merge")
-async def api_merge_memories(request: Request):
-    """手动合并多条记忆"""
-    if not MEMORY_ENABLED:
-        return {"error": "记忆系统未启用"}
-    
-    data = await request.json()
-    memory_ids = data.get("ids", [])
-    new_title = data.get("title", "")
-    new_content = data.get("content", "")
-    importance = data.get("importance", 5)
-    layer = data.get("layer", 2)
-    
-    if not memory_ids or not new_content:
-        return {"error": "请提供记忆ID列表和合并后内容"}
-    
-    new_id = await merge_memories(memory_ids, new_title, new_content, importance, layer)
-    return {"status": "ok", "new_id": new_id, "merged": len(memory_ids)}
-
-
-@app.post("/api/memories/check-duplicate")
-async def api_check_duplicate(request: Request):
-    """检查记忆是否重复"""
-    if not MEMORY_ENABLED:
-        return {"error": "记忆系统未启用"}
-    
-    data = await request.json()
-    content = data.get("content", "")
-    threshold = data.get("threshold", 0.7)
-    
-    if not content:
-        return {"error": "请提供记忆内容"}
-    
-    result = await check_duplicate_memory(content, threshold)
-    return result
-
-
-@app.post("/api/memories/cleanup-fragments")
-async def api_cleanup_fragments(request: Request):
-    """清理指定天数前的归档碎片
-    
-    Body:
-        days: 清理多少天前的归档碎片（默认30天）
-    """
-    if not MEMORY_ENABLED:
-        return {"error": "记忆系统未启用"}
-    
-    data = await request.json()
-    days = data.get("days", 30)
-    
-    try:
-        deleted = await cleanup_old_fragments(days)
-        return {"status": "ok", "deleted": deleted, "days": days}
-    except Exception as e:
-        return {"error": str(e)}
-
-
-@app.post("/api/memories/{memory_id}/revert-merge")
-async def api_revert_merge(memory_id: int):
-    """撤回合并操作：恢复原始碎片，删除合并后的事件记忆"""
-    if not MEMORY_ENABLED:
-        return {"error": "记忆系统未启用"}
-    
-    try:
-        result = await revert_merge(memory_id)
-        return result
-    except Exception as e:
-        return {"error": str(e)}
-
-
-@app.post("/api/memories/{memory_id}/restore")
-async def api_restore_memory(memory_id: int):
-    """恢复已归档的记忆（将 is_active 设为 TRUE）"""
-    if not MEMORY_ENABLED:
-        return {"error": "记忆系统未启用"}
-    
-    try:
-        await update_memory_with_layer(memory_id, is_active=True)
-        return {"status": "ok", "id": memory_id}
-    except Exception as e:
-        return {"error": str(e)}
-
-
-@app.get("/api/memories/layer-stats")
-async def api_layer_statistics():
-    """获取各层记忆统计数据"""
-    if not MEMORY_ENABLED:
-        return {"error": "记忆系统未启用"}
-    
-    try:
-        stats = await get_layer_statistics()
-        return stats
-    except Exception as e:
-        return {"error": str(e)}
-
-
 @app.post("/import/daily-impressions")
 async def import_daily_impressions(request: Request):
     """从 JSON 导入日印象（用于恢复备份）"""
@@ -7178,55 +6655,6 @@ async def import_daily_impressions(request: Request):
             )
             imported += 1
         return {"status": "ok", "imported": imported, "skipped": skipped}
-    except Exception as e:
-        return {"error": str(e)}
-
-
-@app.post("/import/memories")
-async def import_memories(request: Request):
-    """从 JSON 导入记忆（用于迁移或恢复备份）"""
-    if not MEMORY_ENABLED:
-        return {"error": "记忆系统未启用（设置 MEMORY_ENABLED=true 开启）"}
-    
-    try:
-        data = await request.json()
-        memories = data.get("memories", [])
-        
-        if not memories:
-            return {"error": "没有找到记忆数据，请确认 JSON 格式正确"}
-        
-        imported = 0
-        skipped = 0
-        
-        for mem in memories:
-            content = mem.get("content", "")
-            if not content:
-                continue
-            
-            pool = await get_pool()
-            async with pool.acquire() as conn:
-                existing = await conn.fetchval(
-                    "SELECT COUNT(*) FROM memories WHERE content = $1", content
-                )
-            
-            if existing > 0:
-                skipped += 1
-                continue
-            
-            await save_memory(
-                content=content,
-                importance=mem.get("importance", 5),
-                source_session=mem.get("source_session", "json-import"),
-            )
-            imported += 1
-        
-        total = await get_all_memories_count()
-        return {
-            "status": "done",
-            "imported": imported,
-            "skipped": skipped,
-            "total": total,
-        }
     except Exception as e:
         return {"error": str(e)}
 
@@ -7560,60 +6988,6 @@ async def api_delete_thread(session_id: str):
 # 记忆向量补算（带进度追踪）
 # ============================================================
 
-_backfill_mem_status = {
-    "running": False,
-    "total": 0,
-    "done": 0,
-    "error": None,
-    "finished_at": None,
-}
-
-@app.post("/api/admin/backfill-memory-embeddings")
-async def api_backfill_memory_embeddings():
-    """给已有记忆补算embedding（后台异步执行，前端轮询进度）"""
-    if not MEMORY_ENABLED:
-        return {"error": "记忆系统未启用"}
-    
-    if _backfill_mem_status["running"]:
-        return {"error": "补算任务正在运行中，请等待完成"}
-    
-    try:
-        total = await get_pending_memory_embedding_count()
-    except Exception as e:
-        return {"error": f"查询待处理数量失败: {e}"}
-    
-    if total == 0:
-        return {"status": "done", "message": "所有记忆已有embedding，无需补算", "total": 0, "done": 0}
-    
-    _backfill_mem_status["running"] = True
-    _backfill_mem_status["total"] = total
-    _backfill_mem_status["done"] = 0
-    _backfill_mem_status["error"] = None
-    _backfill_mem_status["finished_at"] = None
-    
-    async def run_backfill():
-        try:
-            while _backfill_mem_status["running"]:
-                updated = await backfill_memory_embeddings(batch_size=20)
-                _backfill_mem_status["done"] += updated
-                
-                if updated == 0:
-                    break
-                
-                await asyncio.sleep(1)
-            
-            _backfill_mem_status["finished_at"] = datetime.now(timezone.utc).isoformat()
-            print(f"✅ 记忆embedding补算完成：{_backfill_mem_status['done']}/{_backfill_mem_status['total']}")
-        except Exception as e:
-            _backfill_mem_status["error"] = str(e)
-            print(f"❌ 记忆embedding补算异常: {e}")
-        finally:
-            _backfill_mem_status["running"] = False
-    
-    asyncio.create_task(run_backfill())
-    return {"status": "started", "total": total}
-
-
 _mp_backfill_status = {"running": False, "total": 0, "done": 0, "inserted": 0, "skipped": 0, "empty": 0, "failed": 0, "error": None, "message": "", "before_stats": None, "after_stats": None, "finished_at": None}
 
 
@@ -7745,18 +7119,6 @@ async def api_mp_backfill_embeddings_status():
         "after_stats": _mp_backfill_status.get("after_stats"),
         "error": _mp_backfill_status["error"],
         "finished_at": _mp_backfill_status["finished_at"],
-    }
-
-
-@app.get("/api/admin/backfill-memory-embeddings/status")
-async def api_backfill_memory_embeddings_status():
-    """查询记忆embedding补算进度"""
-    return {
-        "running": _backfill_mem_status["running"],
-        "total": _backfill_mem_status["total"],
-        "done": _backfill_mem_status["done"],
-        "error": _backfill_mem_status["error"],
-        "finished_at": _backfill_mem_status["finished_at"],
     }
 
 

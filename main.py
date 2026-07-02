@@ -7279,6 +7279,8 @@ async def save_settings(request: Request):
             "REASONING_EFFORT":      str,
             "USER_NICKNAME":         str,
             "MEMORY_PALACE_DEFAULT_LIMIT": int,
+            "KEYWORD_CONTEXT_ENABLED": lambda v: _parse_bool(v),
+            "KEYWORD_CONTEXT_RULES": str,
         }
 
         # database.py 全局变量映射（开源版用 EMBEDDING_API_KEY + EMBEDDING_BASE_URL）

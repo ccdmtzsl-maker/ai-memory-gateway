@@ -2608,6 +2608,14 @@ async def _extract_memory_palace_from_partition_messages_locked(messages: list, 
         if not rows:
             log_memory_palace_auto_extract("info", f"🧠 分区自动提取等待：没有游标后的新消息 session={session_id}, cursor={last_id}", session_id=session_id)
             return {"status": "skipped", "reason": "no_new_after_cursor", "created": 0, "marked": 0}
+        candidate_ids = [int(r["id"]) for r in rows]
+        already_extracted = await get_memory_palace_extracted_message_ids(candidate_ids, character_id=character_id)
+        if already_extracted:
+            rows = [r for r in rows if int(r["id"]) not in already_extracted]
+            if not rows:
+                await save_memory_palace_extraction_cursor(session_id, tail_max_id, character_id=character_id, last_source="partition_auto_seen_marked")
+                log_memory_palace_auto_extract("info", f"🧠 分区自动提取等待：游标后消息均已标记 session={session_id}, cursor={last_id}, tail={tail_max_id}", session_id=session_id)
+                return {"status": "skipped", "reason": "already_marked", "created": 0, "marked": 0, "cursor": tail_max_id}
         message_ids = [int(r["id"]) for r in rows]
         log_memory_palace_auto_extract("run", f"🧠 分区自动提取开始：session={session_id}, cursor={last_id}, 待处理{len(rows)}条", session_id=session_id)
         messages_text = _format_messages_for_memory_palace(rows)
@@ -6244,6 +6252,26 @@ def log_memory_palace_auto_extract(level: str, message: str, session_id: str = N
         add_dashboard_log(level, message, category="mp-auto", session_id=session_id)
     except Exception:
         pass
+
+async def get_memory_palace_extracted_message_ids(message_ids: list, character_id: str = "default") -> set:
+    ids = []
+    for mid in message_ids or []:
+        try:
+            ids.append(int(mid))
+        except Exception:
+            pass
+    ids = list(dict.fromkeys(ids))
+    if not ids:
+        return set()
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("""
+            SELECT message_id
+            FROM memory_palace_extracted_messages
+            WHERE character_id = $1 AND message_id = ANY($2::bigint[])
+        """, character_id, ids)
+    return {int(r["message_id"]) for r in rows}
+
 
 async def mark_memory_palace_messages_extracted(message_ids: list, session_id: str, character_id: str = "default", source: str = "manual_preview") -> int:
     ids = []

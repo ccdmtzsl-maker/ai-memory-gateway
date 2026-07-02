@@ -853,8 +853,9 @@ async function showMemoryPalaceVectorStats() {
         if (data.error) throw new Error(data.error);
         showMemoryPalaceBackfillStatus(
             '📊 当前向量：节点 ' + (data.total_nodes || 0) +
-            ' 条，向量 ' + (data.total_vectors || 0) +
-            ' 条，缺失 ' + (data.missing_vectors || 0) + ' 条'
+            ' 条，有效向量 ' + (data.total_vectors || 0) +
+            ' 条，缺失/空向量 ' + (data.missing_vectors || 0) +
+            ' 条，空向量行 ' + (data.invalid_vector_rows || 0) + ' 条'
         );
     } catch (e) {
         showMemoryPalaceBackfillStatus('❌ 查询向量数量失败：' + e.message, 'error');

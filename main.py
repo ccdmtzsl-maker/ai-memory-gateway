@@ -7144,61 +7144,6 @@ async def api_layer_statistics():
         return {"error": str(e)}
 
 
-@app.post("/import/text")
-async def import_text_memories(request: Request):
-    """从纯文本导入记忆（每行一条），可选自动评分"""
-    if not MEMORY_ENABLED:
-        return {"error": "记忆系统未启用（设置 MEMORY_ENABLED=true 开启）"}
-    
-    try:
-        data = await request.json()
-        lines = data.get("lines", [])
-        skip_scoring = data.get("skip_scoring", False)
-        
-        if not lines:
-            return {"error": "没有找到记忆条目"}
-        
-        if skip_scoring:
-            scored = [{"content": t, "importance": 5} for t in lines]
-        else:
-            scored = await score_memories(lines)
-        
-        imported = 0
-        skipped = 0
-        
-        for mem in scored:
-            content = mem.get("content", "")
-            if not content:
-                continue
-            
-            pool = await get_pool()
-            async with pool.acquire() as conn:
-                existing = await conn.fetchval(
-                    "SELECT COUNT(*) FROM memories WHERE content = $1", content
-                )
-            
-            if existing > 0:
-                skipped += 1
-                continue
-            
-            await save_memory(
-                content=content,
-                importance=mem.get("importance", 5),
-                source_session="text-import",
-            )
-            imported += 1
-        
-        total = await get_all_memories_count()
-        return {
-            "status": "done",
-            "imported": imported,
-            "skipped": skipped,
-            "total": total,
-        }
-    except Exception as e:
-        return {"error": str(e)}
-
-
 @app.post("/import/daily-impressions")
 async def import_daily_impressions(request: Request):
     """从 JSON 导入日印象（用于恢复备份）"""

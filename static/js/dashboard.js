@@ -1634,7 +1634,7 @@ const _SETTINGS_FIELDS = {
     optionalFloat: ['CHAT_TEMPERATURE'],
     bool: ['MEMORY_ENABLED', 'KEYWORD_CONTEXT_ENABLED', 'CACHE_PARTITION_ENABLED', 'FORCE_STREAM', 'RESPONSE_TRANSFORM_ENABLED'],
     range: [],
-    text: ['systemPrompt', 'dailyImpressionPrompt', 'KEYWORD_CONTEXT_RULES', 'RESPONSE_TRANSFORM_RULES'],
+    text: ['systemPrompt', 'dailyImpressionPrompt', 'RESPONSE_TRANSFORM_RULES'],
 };
 
 const _MODEL_COMBOS = ['DEFAULT_MODEL', 'MEMORY_MODEL', 'CACHE_SUMMARY_MODEL'];
@@ -1705,6 +1705,8 @@ async function loadSettings() {
             triggerEl.onchange = () => _togglePartitionWindow(triggerEl.value);
         }
 
+        loadKeywordRulesEditor(s.KEYWORD_CONTEXT_RULES || '[]');
+
         // 加载模型列表（首次）
         if (!_settingsLoaded) loadModelList();
         _settingsLoaded = true;
@@ -1719,6 +1721,7 @@ async function saveSettings() {
     btn.textContent = '保存中...';
 
     const payload = {};
+    syncKeywordRulesToHidden();
 
     // 字符串
     _SETTINGS_FIELDS.str.forEach(k => {
@@ -1898,6 +1901,103 @@ function updatePromptCount() {
     const el = document.getElementById('set-systemPrompt');
     const hint = document.getElementById('prompt-char-count');
     if (el && hint) hint.textContent = el.value.length + ' 字';
+}
+
+// ============================================
+// 关键词触发上下文规则编辑器
+// ============================================
+let _keywordRules = [];
+
+function normalizeKeywordRule(rule) {
+    rule = rule || {};
+    let keywords = rule.keywords || [];
+    if (typeof keywords === 'string') keywords = keywords.split(',');
+    keywords = Array.isArray(keywords) ? keywords.map(k => String(k).trim()).filter(Boolean) : [];
+    return {
+        enabled: rule.enabled !== false,
+        name: String(rule.name || '未命名规则'),
+        keywords,
+        match: rule.match === 'exact' ? 'exact' : 'contains',
+        content: String(rule.content || '')
+    };
+}
+
+function loadKeywordRulesEditor(raw) {
+    let rules = [];
+    try {
+        const parsed = JSON.parse(raw || '[]');
+        rules = Array.isArray(parsed) ? parsed : (Array.isArray(parsed.rules) ? parsed.rules : []);
+    } catch(e) {
+        rules = [];
+        const result = document.getElementById('keyword-rule-test-result');
+        if (result) result.textContent = '规则 JSON 解析失败，已显示为空列表：' + e.message;
+    }
+    _keywordRules = rules.map(normalizeKeywordRule);
+    renderKeywordRulesEditor();
+}
+
+function renderKeywordRulesEditor() {
+    const box = document.getElementById('keyword-rule-editor');
+    if (!box) return;
+    if (!_keywordRules.length) {
+        box.innerHTML = '<div class="form-hint" style="padding:12px;border:1px dashed var(--border);border-radius:8px;">暂无规则，点击“添加规则”开始。</div>';
+        syncKeywordRulesToHidden();
+        return;
+    }
+    box.innerHTML = _keywordRules.map((r, i) => `
+        <div class="card" style="padding:12px;margin:10px 0;border-left:4px solid var(--primary);">
+            <div style="display:flex;gap:8px;align-items:center;justify-content:space-between;flex-wrap:wrap;margin-bottom:8px;">
+                <label class="checkbox-label"><input type="checkbox" ${r.enabled ? 'checked' : ''} onchange="updateKeywordRule(${i}, 'enabled', this.checked)"><span>启用</span></label>
+                <button type="button" class="btn btn-danger btn-sm" onclick="deleteKeywordRule(${i})">删除</button>
+            </div>
+            <div class="settings-field"><label>规则名</label><input class="input" value="${escHtml(r.name)}" oninput="updateKeywordRule(${i}, 'name', this.value)"></div>
+            <div class="settings-field"><label>关键词（用逗号分隔）</label><input class="input" value="${escHtml(r.keywords.join(', '))}" oninput="updateKeywordRule(${i}, 'keywordsText', this.value)"></div>
+            <div class="settings-field"><label>匹配方式</label><select class="input" onchange="updateKeywordRule(${i}, 'match', this.value)"><option value="contains" ${r.match !== 'exact' ? 'selected' : ''}>包含关键词</option><option value="exact" ${r.match === 'exact' ? 'selected' : ''}>完全匹配</option></select></div>
+            <div class="settings-field"><label>触发后注入内容</label><textarea class="textarea" rows="5" oninput="updateKeywordRule(${i}, 'content', this.value)">${escHtml(r.content)}</textarea></div>
+        </div>
+    `).join('');
+    syncKeywordRulesToHidden();
+}
+
+function updateKeywordRule(index, field, value) {
+    if (!_keywordRules[index]) return;
+    if (field === 'keywordsText') {
+        _keywordRules[index].keywords = String(value || '').split(',').map(k => k.trim()).filter(Boolean);
+    } else {
+        _keywordRules[index][field] = value;
+    }
+    syncKeywordRulesToHidden();
+}
+
+function addKeywordRule() {
+    _keywordRules.push({enabled: true, name: '新规则', keywords: ['关键词'], match: 'contains', content: '这里填写命中后本轮临时注入的系统上下文。'});
+    renderKeywordRulesEditor();
+}
+
+function deleteKeywordRule(index) {
+    if (!confirm('删除这条关键词规则？')) return;
+    _keywordRules.splice(index, 1);
+    renderKeywordRulesEditor();
+}
+
+function syncKeywordRulesToHidden() {
+    const el = document.getElementById('set-KEYWORD_CONTEXT_RULES');
+    if (el) el.value = JSON.stringify(_keywordRules.map(normalizeKeywordRule), null, 2);
+}
+
+function testKeywordRules() {
+    syncKeywordRulesToHidden();
+    const input = document.getElementById('keyword-rule-test-input');
+    const result = document.getElementById('keyword-rule-test-result');
+    const text = input ? input.value : '';
+    const q = String(text || '');
+    const qLower = q.toLowerCase();
+    const hits = _keywordRules.filter(r => r.enabled && r.keywords.some(k => {
+        k = String(k || '').trim();
+        if (!k) return false;
+        return r.match === 'exact' ? q.trim() === k : qLower.includes(k.toLowerCase());
+    }));
+    if (result) result.textContent = hits.length ? ('会命中：' + hits.map(r => r.name).join('、')) : '不会命中任何规则';
 }
 
 // 绑定 prompt 字数实时更新

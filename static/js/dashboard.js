@@ -1722,6 +1722,8 @@ async function saveSettings() {
 
     const payload = {};
     syncKeywordRulesToHidden();
+    const keywordRulesEl = document.getElementById('set-KEYWORD_CONTEXT_RULES');
+    if (keywordRulesEl) payload.KEYWORD_CONTEXT_RULES = keywordRulesEl.value || '[]';
 
     // 字符串
     _SETTINGS_FIELDS.str.forEach(k => {

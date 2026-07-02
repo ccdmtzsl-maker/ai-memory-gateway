@@ -61,13 +61,6 @@ PORT = int(os.getenv("PORT", "8080"))
 # 记忆系统开关（数据库出问题时可以临时关掉）
 MEMORY_ENABLED = os.getenv("MEMORY_ENABLED", "false").lower() == "true"
 
-# 每次注入的最大记忆条数
-MAX_MEMORIES_INJECT = int(os.getenv("MAX_MEMORIES_INJECT", "15"))
-
-
-# 记忆提取+注入总开关（false时数据库仍连接、消息仍存储，但不提取也不注入记忆）
-MEMORY_EXTRACT_ENABLED = os.getenv("MEMORY_EXTRACT_ENABLED", "true").lower() == "true"
-
 # 分区缓存
 CACHE_PARTITION_ENABLED = os.getenv("CACHE_PARTITION_ENABLED", "false").lower() == "true"
 CACHE_PARTITION_X = int(os.getenv("CACHE_PARTITION_X", "15"))
@@ -289,7 +282,6 @@ async def lifespan(app: FastAPI):
                     _RESTORE_MAIN = {
                         "API_BASE_URL": str, "API_KEY": str, "DEFAULT_MODEL": str, "CHAT_TEMPERATURE": str,
                         "MEMORY_ENABLED": lambda v: _parse_bool(v),
-                        "MAX_MEMORIES_INJECT": int,
                         "CACHE_PARTITION_ENABLED": lambda v: _parse_bool(v),
                         "CACHE_PARTITION_X": int, "CACHE_PARTITION_TRIGGER": str,
                         "CACHE_PARTITION_WINDOW": int, "CACHE_SUMMARY_MODEL": str,
@@ -303,8 +295,6 @@ async def lifespan(app: FastAPI):
                     _RESTORE_DB = {
                         "EMBEDDING_API_KEY": str, "EMBEDDING_BASE_URL": str,
                         "EMBEDDING_MODEL": str, "EMBEDDING_DIM": int,
-                        "MIN_SCORE_THRESHOLD": float,
-                        "MEMORY_VECTOR_ENABLED": lambda v: _parse_bool(v),
                     }
                     restored = []
                     for key, val in db_cfg.items():
@@ -342,9 +332,6 @@ async def lifespan(app: FastAPI):
                         print(f"🔄 从数据库恢复 {len(restored)} 项面板配置: {', '.join(restored)}")
             except Exception as e:
                 print(f"[warning] 恢复面板配置失败: {e}")
-            
-            if not MEMORY_EXTRACT_ENABLED:
-                print(f"ℹ️  记忆提取+注入已关闭（MEMORY_EXTRACT_ENABLED=false）")
             
             # 分区缓存：从DB读取活跃对话线ID
             if CACHE_PARTITION_ENABLED:
@@ -1878,11 +1865,6 @@ async def inject_memory_palace_auto_context(messages: list, query: str = "", cha
     _insert_memory_palace_system_message(messages, injection)
     return True
 
-async def build_system_prompt_with_memories(user_message: str) -> str:
-    """旧碎片记忆召回已下线；长期记忆只走 Memory Palace 注入。"""
-    return SYSTEM_PROMPT
-
-
 # ============================================================
 # 分区缓存（Partition Cache）
 # ============================================================
@@ -2827,12 +2809,6 @@ async def build_partitioned_messages(
         if env_text:
             result.append({"role": "system", "content": env_text})
 
-        # 相关记忆后置：先让模型看到用户本轮原话，再参考检索记忆，降低“记忆抢注意力”的概率。
-        if MEMORY_ENABLED and MEMORY_EXTRACT_ENABLED and user_message:
-            mem_text = await build_memory_text(user_message)
-            if mem_text:
-                result.append({"role": "system", "content": mem_text})
-
         # Operit 原生记忆附件放在最底部，按用户手动检索结果使用。
         if operit_memory_text:
             result.append({"role": "system", "content": operit_memory_text})
@@ -2881,12 +2857,6 @@ async def _build_basic_cached(
         if env_text:
             result.append({"role": "system", "content": env_text})
 
-        # 相关记忆后置：先让模型看到用户本轮原话，再参考检索记忆，降低“记忆抢注意力”的概率。
-        if MEMORY_ENABLED and MEMORY_EXTRACT_ENABLED and user_message:
-            mem_text = await build_memory_text(user_message)
-            if mem_text:
-                result.append({"role": "system", "content": mem_text})
-
         # Operit 原生记忆附件放在最底部，按用户手动检索结果使用。
         if operit_memory_text:
             result.append({"role": "system", "content": operit_memory_text})
@@ -2894,11 +2864,6 @@ async def _build_basic_cached(
     bp_count = 1 + (1 if history else 0)
     print(f"🔒 基础缓存(降级): BP×{bp_count} | 历史{len(history)}条 | 总{len(result)}条messages")
     return result
-
-
-async def build_memory_text(user_message: str) -> str:
-    """旧碎片记忆召回已下线；分区缓存不再注入 memories 表内容。"""
-    return ""
 
 
 # ============================================================
@@ -7108,8 +7073,6 @@ async def get_settings():
             "MEMORY_API_KEY":          _mask_key(memory_key_raw),
             "MEMORY_API_BASE_URL":     db.get("MEMORY_API_BASE_URL") or str(MEMORY_API_BASE_URL),
             "MEMORY_MODEL":            db.get("MEMORY_MODEL") or os.environ.get("MEMORY_MODEL", ""),
-            "MAX_MEMORIES_INJECT":     int(db.get("MAX_MEMORIES_INJECT") or MAX_MEMORIES_INJECT),
-            "MIN_SCORE_THRESHOLD":     float(db.get("MIN_SCORE_THRESHOLD") or _db_module.MIN_SCORE_THRESHOLD),
 
             # 缓存分区
             "CACHE_PARTITION_ENABLED": _parse_bool(db.get("CACHE_PARTITION_ENABLED"), CACHE_PARTITION_ENABLED),
@@ -7119,7 +7082,6 @@ async def get_settings():
             "CACHE_SUMMARY_MODEL":     db.get("CACHE_SUMMARY_MODEL") or str(CACHE_SUMMARY_MODEL),
 
             # 向量搜索（开源版用 EMBEDDING_API_KEY + EMBEDDING_BASE_URL）
-            "MEMORY_VECTOR_ENABLED":   _parse_bool(db.get("MEMORY_VECTOR_ENABLED"), _db_module.MEMORY_VECTOR_ENABLED),
             "EMBEDDING_API_KEY":       _mask_key(embedding_key_raw),
             "EMBEDDING_BASE_URL":      db.get("EMBEDDING_BASE_URL") or str(_db_module.EMBEDDING_BASE_URL),
             "EMBEDDING_MODEL":         db.get("EMBEDDING_MODEL") or str(_db_module.EMBEDDING_MODEL),
@@ -7229,7 +7191,6 @@ async def save_settings(request: Request):
             "MEMORY_API_KEY":        str,
             "MEMORY_API_BASE_URL":   str,
             "MEMORY_ENABLED":        lambda v: _parse_bool(v),
-            "MAX_MEMORIES_INJECT":   int,
             "CACHE_PARTITION_ENABLED": lambda v: _parse_bool(v),
             "CACHE_PARTITION_X":     int,
             "CACHE_PARTITION_TRIGGER": str,
@@ -7250,8 +7211,6 @@ async def save_settings(request: Request):
             "EMBEDDING_BASE_URL":      str,
             "EMBEDDING_MODEL":         str,
             "EMBEDDING_DIM":           int,
-            "MIN_SCORE_THRESHOLD":     float,
-            "MEMORY_VECTOR_ENABLED":   lambda v: _parse_bool(v),
         }
 
         # 只存 os.environ 的变量
@@ -7406,8 +7365,6 @@ if __name__ == "__main__":
     print(f"🤖 默认模型：{DEFAULT_MODEL}")
     print(f"🔗 API 地址：{API_BASE_URL}")
     print(f"🧠 记忆系统：{'开启' if MEMORY_ENABLED else '关闭'}")
-    if MEMORY_ENABLED:
-        print(f"📝 记忆提取+注入：{'开启' if MEMORY_EXTRACT_ENABLED else '关闭'}")
     if CACHE_PARTITION_ENABLED:
         print(f"🔒 分区缓存：开启 (X={CACHE_PARTITION_X}, session={PARTITION_SESSION_ID or '未设置'})")
     if FORCE_STREAM:

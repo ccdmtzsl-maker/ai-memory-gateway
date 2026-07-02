@@ -682,21 +682,22 @@ async def compute_embedding(text: str) -> list:
     """调用 OpenAI 兼容的 Embedding API 计算文本向量"""
     if not EMBEDDING_API_KEY:
         return []
-    
+
     try:
         import httpx
-        
+
+        text = str(text or "").strip()
+        if not text:
+            return []
         if len(text) > 4000:
             text = text[:4000]
-        
-        body = {
+
+        base_body = {
             "model": EMBEDDING_MODEL,
             "input": text,
         }
-        if EMBEDDING_DIM > 0:
-            body["dimensions"] = EMBEDDING_DIM
-        
-        async with httpx.AsyncClient() as client:
+
+        async def _post_embedding(client, body):
             resp = await client.post(
                 f"{EMBEDDING_BASE_URL}/embeddings",
                 headers={
@@ -706,11 +707,31 @@ async def compute_embedding(text: str) -> list:
                 json=body,
                 timeout=30.0,
             )
+            if resp.status_code >= 400:
+                preview = ""
+                try:
+                    preview = resp.text[:500]
+                except Exception:
+                    preview = ""
+                print(f"⚠️ Embedding接口返回 {resp.status_code}: {preview}")
             resp.raise_for_status()
             data = resp.json()
             return data["data"][0]["embedding"]
+
+        async with httpx.AsyncClient() as client:
+            body = dict(base_body)
+            if EMBEDDING_DIM > 0:
+                body["dimensions"] = EMBEDDING_DIM
+            try:
+                return await _post_embedding(client, body)
+            except httpx.HTTPStatusError as e:
+                # 部分 OpenAI 兼容服务/模型不接受 dimensions 字段，400 时自动无 dimensions 重试一次。
+                if e.response is not None and e.response.status_code == 400 and "dimensions" in body:
+                    print("⚠️ Embedding带 dimensions 失败，重试不带 dimensions")
+                    return await _post_embedding(client, base_body)
+                raise
     except Exception as e:
-        print(f"⚠️ Embedding计算失败: {e}")
+        print(f"⚠️ Embedding计算失败: {type(e).__name__}: {e}")
         return []
 
 

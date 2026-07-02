@@ -2000,6 +2000,11 @@ function testKeywordRules() {
     if (result) result.textContent = hits.length ? ('会命中：' + hits.map(r => r.name).join('、')) : '不会命中任何规则';
 }
 
+window.addKeywordRule = addKeywordRule;
+window.deleteKeywordRule = deleteKeywordRule;
+window.updateKeywordRule = updateKeywordRule;
+window.testKeywordRules = testKeywordRules;
+
 // 绑定 prompt 字数实时更新
 document.addEventListener('DOMContentLoaded', () => {
     const p = document.getElementById('set-systemPrompt');

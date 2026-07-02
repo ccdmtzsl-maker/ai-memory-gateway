@@ -856,6 +856,8 @@ async function showMemoryPalaceVectorStats() {
             '节点 ' + (data.total_nodes || 0) + ' 条，' +
             '向量 ' + (data.total_vectors || 0) + ' 条，' +
             '缺失 ' + (data.missing_vectors || 0) + ' 条，' +
+            '可补 ' + (data.fillable_missing_vectors || 0) + ' 条，' +
+            '空内容缺失 ' + (data.empty_missing_vectors || 0) + ' 条，' +
             '标记异常：已标记但无向量 ' + (data.embedded_true_without_vector || 0) + ' 条 / ' +
             '未标记但有向量 ' + (data.embedded_false_with_vector || 0) + ' 条，' +
             '空内容 ' + (data.empty_content_nodes || 0) + ' 条'
@@ -889,7 +891,7 @@ async function backfillMemoryPalaceEmbeddings() {
         if (data.error) throw new Error(data.error);
         if (data.status === 'done') {
             const st = data.stats || {};
-            showMemoryPalaceBackfillStatus('✅ 向量索引完整：节点 ' + (st.total_nodes || 0) + ' 条，向量 ' + (st.total_vectors || 0) + ' 条，缺失 ' + (st.missing_vectors || 0) + ' 条');
+            showMemoryPalaceBackfillStatus('✅ ' + (data.message || ('向量索引完整：节点 ' + (st.total_nodes || 0) + ' 条，向量 ' + (st.total_vectors || 0) + ' 条，缺失 ' + (st.missing_vectors || 0) + ' 条')));
             _mpBackfillRunning = false;
             setMemoryPalaceBackfillButton(false);
             return;

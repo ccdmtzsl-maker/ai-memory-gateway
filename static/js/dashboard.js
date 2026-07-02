@@ -1909,6 +1909,7 @@ function updatePromptCount() {
 // 关键词触发上下文规则编辑器
 // ============================================
 let _keywordRules = [];
+let _keywordRuleExpanded = [];
 
 function normalizeKeywordRule(rule) {
     rule = rule || {};
@@ -1935,6 +1936,7 @@ function loadKeywordRulesEditor(raw) {
         if (result) result.textContent = '规则 JSON 解析失败，已显示为空列表：' + e.message;
     }
     _keywordRules = rules.map(normalizeKeywordRule);
+    _keywordRuleExpanded = _keywordRules.map(() => false);
     renderKeywordRulesEditor();
 }
 
@@ -1946,18 +1948,32 @@ function renderKeywordRulesEditor() {
         syncKeywordRulesToHidden();
         return;
     }
-    box.innerHTML = _keywordRules.map((r, i) => `
-        <div class="card" style="padding:12px;margin:10px 0;border-left:4px solid var(--primary);">
-            <div style="display:flex;gap:8px;align-items:center;justify-content:space-between;flex-wrap:wrap;margin-bottom:8px;">
-                <label class="checkbox-label"><input type="checkbox" ${r.enabled ? 'checked' : ''} onchange="updateKeywordRule(${i}, 'enabled', this.checked)"><span>启用</span></label>
-                <button type="button" class="btn btn-danger btn-sm" onclick="deleteKeywordRule(${i})">删除</button>
+    box.innerHTML = _keywordRules.map((r, i) => {
+        const expanded = !!_keywordRuleExpanded[i];
+        const kwSummary = r.keywords.length ? r.keywords.slice(0, 5).join('、') + (r.keywords.length > 5 ? '…' : '') : '未设置关键词';
+        const contentSummary = String(r.content || '').trim().replace(/\s+/g, ' ').slice(0, 80);
+        return `
+        <div class="card" style="padding:12px;margin:10px 0;border-left:4px solid ${r.enabled ? 'var(--primary)' : 'var(--border)'};">
+            <div style="display:flex;gap:8px;align-items:center;justify-content:space-between;flex-wrap:wrap;">
+                <div style="min-width:220px;flex:1;">
+                    <div style="font-weight:600;">${escHtml(r.name || '未命名规则')}</div>
+                    <div class="form-hint" style="margin-top:3px;">${r.enabled ? '已启用' : '已禁用'} · ${r.match === 'exact' ? '完全匹配' : '包含关键词'} · ${escHtml(kwSummary)}</div>
+                    ${contentSummary ? `<div class="form-hint" style="margin-top:3px;">${escHtml(contentSummary)}${String(r.content || '').length > 80 ? '…' : ''}</div>` : ''}
+                </div>
+                <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+                    <label class="checkbox-label"><input type="checkbox" ${r.enabled ? 'checked' : ''} onchange="updateKeywordRule(${i}, 'enabled', this.checked); renderKeywordRulesEditor();"><span>启用</span></label>
+                    <button type="button" class="btn btn-sm" onclick="toggleKeywordRule(${i})">${expanded ? '收起' : '展开'}</button>
+                    <button type="button" class="btn btn-sm" style="color:var(--danger);" onclick="deleteKeywordRule(${i})">删除</button>
+                </div>
             </div>
-            <div class="settings-field"><label>规则名</label><input class="input" value="${escHtml(r.name)}" oninput="updateKeywordRule(${i}, 'name', this.value)"></div>
-            <div class="settings-field"><label>关键词（用逗号分隔）</label><input class="input" value="${escHtml(r.keywords.join(', '))}" oninput="updateKeywordRule(${i}, 'keywordsText', this.value)"></div>
-            <div class="settings-field"><label>匹配方式</label><select class="input" onchange="updateKeywordRule(${i}, 'match', this.value)"><option value="contains" ${r.match !== 'exact' ? 'selected' : ''}>包含关键词</option><option value="exact" ${r.match === 'exact' ? 'selected' : ''}>完全匹配</option></select></div>
-            <div class="settings-field"><label>触发后注入内容</label><textarea class="textarea" rows="5" oninput="updateKeywordRule(${i}, 'content', this.value)">${escHtml(r.content)}</textarea></div>
+            <div style="display:${expanded ? 'block' : 'none'};margin-top:10px;">
+                <div class="settings-field"><label>规则名</label><input class="input" value="${escHtml(r.name)}" oninput="updateKeywordRule(${i}, 'name', this.value)"></div>
+                <div class="settings-field"><label>关键词（用逗号分隔）</label><input class="input" value="${escHtml(r.keywords.join(', '))}" oninput="updateKeywordRule(${i}, 'keywordsText', this.value)"></div>
+                <div class="settings-field"><label>匹配方式</label><select class="input" onchange="updateKeywordRule(${i}, 'match', this.value)"><option value="contains" ${r.match !== 'exact' ? 'selected' : ''}>包含关键词</option><option value="exact" ${r.match === 'exact' ? 'selected' : ''}>完全匹配</option></select></div>
+                <div class="settings-field"><label>触发后注入内容</label><textarea class="textarea" rows="5" oninput="updateKeywordRule(${i}, 'content', this.value)">${escHtml(r.content)}</textarea></div>
+            </div>
         </div>
-    `).join('');
+    `}).join('');
     syncKeywordRulesToHidden();
 }
 
@@ -1973,12 +1989,19 @@ function updateKeywordRule(index, field, value) {
 
 function addKeywordRule() {
     _keywordRules.push({enabled: true, name: '新规则', keywords: ['关键词'], match: 'contains', content: '这里填写命中后本轮临时注入的系统上下文。'});
+    _keywordRuleExpanded = _keywordRules.map((_, i) => i === _keywordRules.length - 1 ? true : !!_keywordRuleExpanded[i]);
+    renderKeywordRulesEditor();
+}
+
+function toggleKeywordRule(index) {
+    _keywordRuleExpanded[index] = !_keywordRuleExpanded[index];
     renderKeywordRulesEditor();
 }
 
 function deleteKeywordRule(index) {
     if (!confirm('删除这条关键词规则？')) return;
     _keywordRules.splice(index, 1);
+    _keywordRuleExpanded.splice(index, 1);
     renderKeywordRulesEditor();
 }
 
@@ -2005,6 +2028,7 @@ function testKeywordRules() {
 window.addKeywordRule = addKeywordRule;
 window.deleteKeywordRule = deleteKeywordRule;
 window.updateKeywordRule = updateKeywordRule;
+window.toggleKeywordRule = toggleKeywordRule;
 window.testKeywordRules = testKeywordRules;
 
 // 绑定 prompt 字数实时更新

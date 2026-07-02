@@ -40,10 +40,6 @@
                 <span class="logo-text">Memory Gateway</span>
             </div>
             <nav class="sidebar-nav">
-                <a href="#" class="nav-item active" data-section="manage">
-                    <span class="nav-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9.5 2A2.5 2.5 0 0 1 12 4.5v15a2.5 2.5 0 0 1-4.96.44 2.5 2.5 0 0 1-2.96-3.08 3 3 0 0 1-.34-5.58 2.5 2.5 0 0 1 1.32-4.24 2.5 2.5 0 0 1 1.98-3A2.5 2.5 0 0 1 9.5 2Z"/><path d="M14.5 2A2.5 2.5 0 0 0 12 4.5v15a2.5 2.5 0 0 0 4.96.44 2.5 2.5 0 0 0 2.96-3.08 3 3 0 0 0 .34-5.58 2.5 2.5 0 0 0-1.32-4.24 2.5 2.5 0 0 0-1.98-3A2.5 2.5 0 0 0 14.5 2Z"/></svg></span>
-                    <span class="nav-label">记忆管理</span>
-                </a>
                 <a href="#" class="nav-item" data-section="import">
                     <span class="nav-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></svg></span>
                     <span class="nav-label">导入记忆</span>
@@ -60,7 +56,7 @@
                     <span class="nav-icon">📔</span>
                     <span class="nav-label">日印象</span>
                 </a>
-                <a href="#" class="nav-item" data-section="memory-palace">
+                <a href="#" class="nav-item active" data-section="memory-palace">
                     <span class="nav-icon">🏛️</span>
                     <span class="nav-label">记忆宫殿</span>
                 </a>
@@ -87,198 +83,6 @@
 
         <!-- 主内容区 -->
         <main class="main-content">
-            <!-- 记忆管理 Section -->
-            <section id="section-manage" class="section active">
-                <div class="section-header">
-                    <h1>记忆管理</h1>
-                    <p class="section-desc">查看、编辑、删除已存储的记忆</p>
-                </div>
-
-                <!-- 分层 Tab -->
-                <div class="card layer-tabs-card">
-                    <div class="layer-tabs">
-                        <button class="layer-tab active" data-layer="all" onclick="switchLayer('all')">全部</button>
-                        <button class="layer-tab" data-layer="3" onclick="switchLayer(3)">核心记忆 <span id="count-layer-3">0</span></button>
-                        <button class="layer-tab" data-layer="2" onclick="switchLayer(2)">事件记忆 <span id="count-layer-2">0</span></button>
-                        <button class="layer-tab" data-layer="1" onclick="switchLayer(1)">原始碎片 <span id="count-layer-1">0</span></button>
-                        <label class="checkbox-label" style="margin-left:auto;">
-                            <input type="checkbox" id="showInactive" onchange="memCurrentPage=1;filterAndSort()">
-                            <span>显示已归档</span>
-                        </label>
-                    </div>
-                </div>
-
-                <div class="card toolbar-card">
-                    <div class="toolbar">
-                        <input type="text" id="searchBox" class="search-input" placeholder="搜索记忆..." oninput="memCurrentPage=1;filterAndSort()">
-                        <button class="btn btn-sm" onclick="semanticSearch()" title="使用后端混合搜索（关键词+向量）" style="white-space: nowrap;">语义搜索</button>
-                        <div class="toolbar-group">
-                            <input type="date" id="dateFilter" class="date-input" onchange="memCurrentPage=1;filterAndSort()" title="按日期筛选">
-                            <button class="btn btn-icon" onclick="clearDateFilter()" title="清除日期">✕</button>
-                        </div>
-                        <select id="sortSelect" class="select-input" onchange="memCurrentPage=1;filterAndSort()">
-                            <option value="id-desc">时间从新到旧</option>
-                            <option value="id-asc">时间从旧到新</option>
-                            <option value="imp-desc">强度 高到低</option>
-                            <option value="imp-asc">强度 低到高</option>
-                        </select>
-                        <div class="toolbar-actions">
-                            <button class="btn btn-warning" onclick="openConsolidateModal()">整理记忆</button>
-                            <label class="checkbox-label">
-                                <input type="checkbox" id="selectAll" onchange="toggleAll()">
-                                <span>全选</span>
-                            </label>
-                        </div>
-                    </div>
-                </div>
-
-                <div id="manage-msg" class="msg-container"></div>
-                
-                <div class="stats-bar">
-                    <span id="stats">加载中...</span>
-                </div>
-
-                <div class="card table-card">
-                    <table class="data-table">
-                        <thead>
-                            <tr>
-                                <th class="col-check"><input type="checkbox" id="selectAllHead" onchange="toggleAll()"></th>
-                                <th class="col-id">ID</th>
-                                <th class="col-layer">层级</th>
-                                <th class="col-title">标题</th>
-                                <th class="col-content">内容</th>
-                                <th class="col-importance">权重</th>
-                                <th class="col-time">时间</th>
-                                <th class="col-actions">操作</th>
-                            </tr>
-                        </thead>
-                        <tbody id="tbody"></tbody>
-                    </table>
-                </div>
-
-                <!-- 清理归档碎片 -->
-                <div class="card" style="margin-top: 16px; padding: 16px;">
-                    <div style="display: flex; align-items: center; gap: 16px;">
-                        <span style="color: var(--text-light); font-size: 14px;">清理30天前的归档碎片：</span>
-                        <button class="btn btn-danger" onclick="cleanupOldFragments()">清理</button>
-                    </div>
-                </div>
-
-                <!-- 记忆向量补算 -->
-                <div class="card" style="margin-top: 16px; padding: 16px;">
-                    <div style="display: flex; align-items: center; gap: 16px; flex-wrap: wrap;">
-                        <span style="color: var(--text-light); font-size: 14px;">记忆向量补算（给已有记忆计算 embedding）：</span>
-                        <button class="btn btn-primary" id="backfillMemBtn" onclick="startBackfillMemoryEmbeddings()">开始补算</button>
-                    </div>
-                    <div id="backfill-mem-progress" style="display: none; margin-top: 12px;">
-                        <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 8px;">
-                            <div style="flex: 1; height: 8px; background: var(--border); border-radius: 4px; overflow: hidden;">
-                                <div id="backfill-mem-bar" style="width: 0%; height: 100%; background: var(--primary); border-radius: 4px; transition: width 0.3s ease;"></div>
-                            </div>
-                            <span id="backfill-mem-text" style="font-size: 13px; color: var(--text-muted); white-space: nowrap;">0/0</span>
-                        </div>
-                    </div>
-                    <div id="backfill-mem-msg" style="margin-top: 8px;"></div>
-                </div>
-            </section>
-
-            <!-- 合并弹窗 -->
-            <div id="mergeModal" class="modal" style="display:none;">
-                <div class="modal-content">
-                    <h3>合并记忆</h3>
-                    <p>已选择 <span id="mergeCount">0</span> 条记忆</p>
-                    <div class="form-group">
-                        <label class="form-label">标题（可选）：</label>
-                        <input type="text" id="mergeTitle" class="form-input" placeholder="10字以内的标题" maxlength="20">
-                    </div>
-                    <div class="form-group">
-                        <label class="form-label">合并后内容：</label>
-                        <textarea id="mergeContent" class="textarea" rows="6" placeholder="请输入合并后的完整描述..."></textarea>
-                    </div>
-                    <div class="form-group">
-                        <label class="form-label">重要度：</label>
-                        <input type="number" id="mergeImportance" class="form-input" value="0" min="-10" max="10" style="width:80px;">
-                    </div>
-                    <div class="form-group">
-                        <label class="form-label">层级：</label>
-                        <select id="mergeLayer" class="select-input">
-                            <option value="2">事件记忆</option>
-                            <option value="3">核心记忆</option>
-                        </select>
-                    </div>
-                    <div class="modal-actions">
-                        <button class="btn btn-secondary" onclick="closeMergeModal()">取消</button>
-                        <button class="btn btn-primary" onclick="doMerge()">确认合并</button>
-                    </div>
-                </div>
-            </div>
-
-            <!-- 整理弹窗 -->
-            <div id="consolidateModal" class="modal" style="display:none;">
-                <div class="modal-content">
-                    <h3>整理记忆</h3>
-                    <p>将指定时间段的碎片记忆整理合并为事件记忆</p>
-                    <div class="form-group">
-                        <label class="form-label">开始日期：</label>
-                        <input type="date" id="consolidateDateStart" class="form-input">
-                    </div>
-                    <div class="form-group">
-                        <label class="form-label">结束日期：</label>
-                        <input type="date" id="consolidateDateEnd" class="form-input">
-                    </div>
-                    <div class="form-group">
-                        <p class="hint">整理过程会调用 AI 将这段时间内的碎片合并成完整事件，合并后的碎片将被标记为"已归档"。跨天的相关碎片也会被合并到一起。</p>
-                    </div>
-                    <div class="modal-actions">
-                        <button class="btn btn-secondary" onclick="closeConsolidateModal()">取消</button>
-                        <button class="btn btn-primary" onclick="doConsolidate()">开始整理</button>
-                    </div>
-                </div>
-            </div>
-
-            <!-- 日印象弹窗 -->
-            <div id="dailyImpressionModal" class="modal" style="display:none;">
-                <div class="modal-content modal-wide">
-                    <h3>生成日印象</h3>
-                    <p>根据指定日期的原始碎片生成一条日记式印象，不会归档或修改碎片。</p>
-                    <div class="form-group">
-                        <label class="form-label">日期：</label>
-                        <input type="date" id="dailyImpressionDate" class="form-input">
-                    </div>
-                    <div class="modal-actions">
-                        <button class="btn btn-secondary" onclick="closeDailyImpressionModal()">取消</button>
-                        <button class="btn btn-primary" onclick="doGenerateDailyImpression()">生成/更新</button>
-                    </div>
-                    <div id="dailyImpressionResult" class="preview-box" style="margin-top:12px;display:none;"></div>
-                    <div style="margin-top:16px;">
-                        <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:8px;">
-                            <h4 style="margin:0;">最近日印象</h4>
-                            <button class="btn btn-sm btn-secondary" onclick="loadDailyImpressions()">刷新</button>
-                        </div>
-                        <div id="dailyImpressionList" class="preview-box" style="max-height:320px;overflow:auto;">加载中...</div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- 查看合并来源弹窗 -->
-            <div id="mergeSourceModal" class="modal" style="display:none;">
-                <div class="modal-content modal-wide">
-                    <div id="mergeSourceContent"></div>
-                </div>
-            </div>
-
-            <!-- 底部浮动操作栏 -->
-            <div id="floatingBar" class="floating-bar" style="display:none;">
-                <span class="floating-count">已选 <b id="selectedCount">0</b> 条</span>
-                <div class="floating-actions">
-                    <button class="btn btn-primary" onclick="batchSave()">保存选中</button>
-                    <button class="btn btn-secondary" onclick="openMergeModal()">合并选中</button>
-                    <button class="btn btn-secondary" onclick="batchChangeDate()">修改日期</button>
-                    <button class="btn btn-danger" onclick="batchDelete()">删除选中</button>
-                    <button class="btn btn-icon" onclick="clearSelection()" title="取消选择">✕</button>
-                </div>
-            </div>
-
             <!-- 导入记忆 Section -->
             <section id="section-import" class="section">
                 <div class="section-header">
@@ -493,7 +297,7 @@
 
 
             <!-- 记忆宫殿 Section -->
-            <section id="section-memory-palace" class="section">
+            <section id="section-memory-palace" class="section active">
                 <div class="section-header">
                     <h1>记忆宫殿</h1>
                     <p class="section-desc">七房间长期记忆系统。阶段 1：手动管理记忆节点，不影响旧碎片记忆。</p>

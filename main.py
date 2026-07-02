@@ -1831,9 +1831,7 @@ def _is_operit_memory_context_message(msg: dict) -> bool:
     if not text:
         return False
     markers = (
-        "【从operit中检索到的相关记忆】",
         "【从operit记忆库中检索到的相关记忆】",
-        "【相关记忆】",
     )
     return any(marker in text for marker in markers)
 
@@ -2388,7 +2386,7 @@ def extract_operit_memory_attachment_from_text(text: str) -> tuple[str, str]:
         return cleaned, ""
 
     memory_text = "\n\n".join(memory_bodies).strip()
-    formatted = f"""【从operit中检索到的相关记忆】
+    formatted = f"""【从operit记忆库中检索到的相关记忆】
 {memory_text}
 
 # 记忆应用

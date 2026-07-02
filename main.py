@@ -6507,8 +6507,8 @@ async def save_memory_palace_embedding_if_missing(memory_id: str, content: str) 
         return "empty"
     pool = await get_pool()
     async with pool.acquire() as conn:
-        exists = await conn.fetchval("SELECT 1 FROM memory_palace_vectors WHERE memory_id=$1", memory_id)
-        if exists:
+        existing_embedding = await conn.fetchval("SELECT embedding_json FROM memory_palace_vectors WHERE memory_id=$1", memory_id)
+        if existing_embedding is not None and str(existing_embedding or "").strip() not in ("", "[]", "null"):
             await conn.execute("UPDATE memory_palace_nodes SET embedded=TRUE, updated_at=NOW() WHERE id=$1", memory_id)
             return "exists"
     embedding = await compute_memory_palace_embedding(content)
@@ -6518,7 +6518,11 @@ async def save_memory_palace_embedding_if_missing(memory_id: str, content: str) 
         res = await conn.execute("""
             INSERT INTO memory_palace_vectors (memory_id, embedding_json, dimensions, model, created_at, updated_at)
             VALUES ($1, $2, $3, $4, NOW(), NOW())
-            ON CONFLICT (memory_id) DO NOTHING
+            ON CONFLICT (memory_id) DO UPDATE SET
+                embedding_json = EXCLUDED.embedding_json,
+                dimensions = EXCLUDED.dimensions,
+                model = EXCLUDED.model,
+                updated_at = NOW()
         """, memory_id, json.dumps(embedding), len(embedding), getattr(_db_module, "EMBEDDING_MODEL", ""))
         if res.endswith("1"):
             await conn.execute("UPDATE memory_palace_nodes SET embedded=TRUE, updated_at=NOW() WHERE id=$1", memory_id)
@@ -6534,10 +6538,11 @@ async def get_memory_palace_vector_stats() -> dict:
         row = await conn.fetchrow("""
             SELECT
                 COUNT(n.id)::int AS total_nodes,
-                COUNT(v.memory_id)::int AS total_vectors,
-                COUNT(n.id) FILTER (WHERE v.memory_id IS NULL)::int AS missing_vectors,
-                COUNT(n.id) FILTER (WHERE n.embedded = TRUE AND v.memory_id IS NULL)::int AS embedded_true_without_vector,
-                COUNT(n.id) FILTER (WHERE COALESCE(n.embedded, FALSE) = FALSE AND v.memory_id IS NOT NULL)::int AS embedded_false_with_vector,
+                COUNT(n.id) FILTER (WHERE v.memory_id IS NOT NULL AND COALESCE(NULLIF(TRIM(v.embedding_json), ''), '') NOT IN ('[]', 'null'))::int AS total_vectors,
+                COUNT(n.id) FILTER (WHERE v.memory_id IS NULL OR COALESCE(NULLIF(TRIM(v.embedding_json), ''), '') IN ('', '[]', 'null'))::int AS missing_vectors,
+                COUNT(n.id) FILTER (WHERE v.memory_id IS NOT NULL AND COALESCE(NULLIF(TRIM(v.embedding_json), ''), '') IN ('', '[]', 'null'))::int AS invalid_vector_rows,
+                COUNT(n.id) FILTER (WHERE n.embedded = TRUE AND (v.memory_id IS NULL OR COALESCE(NULLIF(TRIM(v.embedding_json), ''), '') IN ('', '[]', 'null')))::int AS embedded_true_without_vector,
+                COUNT(n.id) FILTER (WHERE COALESCE(n.embedded, FALSE) = FALSE AND v.memory_id IS NOT NULL AND COALESCE(NULLIF(TRIM(v.embedding_json), ''), '') NOT IN ('[]', 'null'))::int AS embedded_false_with_vector,
                 COUNT(n.id) FILTER (WHERE COALESCE(NULLIF(TRIM(n.content), ''), '') = '')::int AS empty_content_nodes
             FROM memory_palace_nodes n
             LEFT JOIN memory_palace_vectors v ON v.memory_id = n.id
@@ -6546,6 +6551,7 @@ async def get_memory_palace_vector_stats() -> dict:
             "total_nodes": row["total_nodes"] or 0,
             "total_vectors": row["total_vectors"] or 0,
             "missing_vectors": row["missing_vectors"] or 0,
+            "invalid_vector_rows": row["invalid_vector_rows"] or 0,
             "embedded_true_without_vector": row["embedded_true_without_vector"] or 0,
             "embedded_false_with_vector": row["embedded_false_with_vector"] or 0,
             "empty_content_nodes": row["empty_content_nodes"] or 0,
@@ -7660,7 +7666,7 @@ async def api_mp_backfill_embeddings():
                 SELECT n.id, n.content
                 FROM memory_palace_nodes n
                 LEFT JOIN memory_palace_vectors v ON v.memory_id = n.id
-                WHERE v.memory_id IS NULL
+                WHERE (v.memory_id IS NULL OR COALESCE(NULLIF(TRIM(v.embedding_json), ''), '') IN ('', '[]', 'null'))
                   AND COALESCE(NULLIF(TRIM(n.content), ''), '') <> ''
                 ORDER BY n.created_at
             """)

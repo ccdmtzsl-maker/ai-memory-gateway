@@ -111,8 +111,7 @@ REASONING_EFFORT = os.getenv("REASONING_EFFORT", "")
 # 记忆宫殿提取中称呼用户用的昵称；留空则使用“用户”
 USER_NICKNAME = os.getenv("USER_NICKNAME", "用户")
 
-# 记忆宫殿变量注入开关与默认注入数量
-MEMORY_PALACE_ENABLED = os.getenv("MEMORY_PALACE_ENABLED", "true").lower() == "true"
+# 记忆宫殿默认注入数量；是否启用跟随 MEMORY_ENABLED 总开关
 MEMORY_PALACE_DEFAULT_LIMIT = int(os.getenv("MEMORY_PALACE_DEFAULT_LIMIT", "5"))
 MEMORY_PALACE_EVENT_BOX_COMPRESS_THRESHOLD = int(os.getenv("MEMORY_PALACE_EVENT_BOX_COMPRESS_THRESHOLD", "4"))
 MEMORY_PALACE_EVENT_BOX_LIVE_HARD_CAP = int(os.getenv("MEMORY_PALACE_EVENT_BOX_LIVE_HARD_CAP", "16"))
@@ -177,14 +176,8 @@ async def get_runtime_user_nickname() -> str:
 
 
 async def get_runtime_memory_palace_enabled() -> bool:
-    """获取记忆宫殿变量注入开关：优先读设置页配置。"""
-    try:
-        db_value = await get_gateway_config("MEMORY_PALACE_ENABLED", None)
-        if db_value is not None and str(db_value).strip() != "":
-            return _parse_bool(db_value, MEMORY_PALACE_ENABLED)
-    except Exception as e:
-        print(f"[memory_config] 读取 MEMORY_PALACE_ENABLED 配置失败，回退到运行时变量: {e}")
-    return bool(MEMORY_PALACE_ENABLED)
+    """记忆宫殿自动注入跟随 MEMORY_ENABLED 总开关。"""
+    return bool(MEMORY_ENABLED)
 
 
 async def get_runtime_memory_palace_default_limit() -> int:
@@ -289,7 +282,6 @@ async def lifespan(app: FastAPI):
                         "RESPONSE_TRANSFORM_ENABLED": lambda v: _parse_bool(v),
                         "RESPONSE_TRANSFORM_RULES": str,
                         "REASONING_EFFORT": str,
-                        "MEMORY_PALACE_ENABLED": lambda v: _parse_bool(v),
                         "MEMORY_PALACE_DEFAULT_LIMIT": int,
                     }
                     _RESTORE_DB = {
@@ -2462,7 +2454,7 @@ async def generate_summary(messages: list, session_id: str = "") -> str:
 
 async def extract_memory_palace_from_partition_messages(messages: list, session_id: str, character_id: str = "default") -> dict:
     """把缓存区外新挤出的消息自动提取入记忆宫殿，并推进session提取游标。"""
-    if not MEMORY_ENABLED or not MEMORY_PALACE_ENABLED or not messages:
+    if not MEMORY_ENABLED or not messages:
         reason = "disabled_or_empty"
         log_memory_palace_auto_extract("info", f"🧠 分区自动提取跳过：{reason} session={session_id}", session_id=session_id)
         return {"status": "skipped", "reason": reason, "created": 0, "marked": 0}
@@ -7061,7 +7053,6 @@ async def get_settings():
             "RESPONSE_TRANSFORM_RULES": db.get("RESPONSE_TRANSFORM_RULES") or str(RESPONSE_TRANSFORM_RULES),
             "REASONING_EFFORT":   db.get("REASONING_EFFORT") or str(REASONING_EFFORT),
             "USER_NICKNAME":      db.get("USER_NICKNAME") or str(USER_NICKNAME),
-            "MEMORY_PALACE_ENABLED": _parse_bool(db.get("MEMORY_PALACE_ENABLED"), MEMORY_PALACE_ENABLED),
             "MEMORY_PALACE_DEFAULT_LIMIT": int(db.get("MEMORY_PALACE_DEFAULT_LIMIT") or MEMORY_PALACE_DEFAULT_LIMIT),
 
             # System Prompt
@@ -7167,7 +7158,6 @@ async def save_settings(request: Request):
             "RESPONSE_TRANSFORM_RULES": str,
             "REASONING_EFFORT":      str,
             "USER_NICKNAME":         str,
-            "MEMORY_PALACE_ENABLED": lambda v: _parse_bool(v),
             "MEMORY_PALACE_DEFAULT_LIMIT": int,
         }
 

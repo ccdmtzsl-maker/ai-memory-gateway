@@ -3551,36 +3551,6 @@ async def chat_completions(request: Request):
         body["messages"] = messages
     
     else:
-        # ---------- 原有逻辑：system prompt + 记忆注入 ----------
-        if False and (SYSTEM_PROMPT or (MEMORY_ENABLED and MEMORY_EXTRACT_ENABLED and user_message)):
-            if MEMORY_ENABLED and MEMORY_EXTRACT_ENABLED and user_message:
-                enhanced_prompt = await build_system_prompt_with_memories(user_message)
-            else:
-                enhanced_prompt = SYSTEM_PROMPT
-            
-            if enhanced_prompt:
-                has_system = any(msg.get("role") == "system" for msg in messages)
-                if has_system:
-                    for i, msg in enumerate(messages):
-                        if msg.get("role") == "system":
-                            messages[i]["content"] = enhanced_prompt + "\n\n" + msg["content"]
-                            break
-                else:
-                    messages.insert(0, {"role": "system", "content": enhanced_prompt})
-
-        non_partition_has_explicit_memory_palace = any(
-            msg.get("role") in ("system", "developer") and _message_contains_memory_palace_variable(msg)
-            for msg in messages
-        )
-        for msg in messages:
-            if msg.get("role") in ("system", "developer"):
-                c = msg.get("content", "")
-                if isinstance(c, str):
-                    msg["content"] = await replace_explicit_memory_variables(c, query=user_message, recent_messages=messages, session_id=session_id)
-                elif isinstance(c, list):
-                    for item in c:
-                        if isinstance(item, dict) and item.get("type") == "text" and isinstance(item.get("text"), str):
-                            item["text"] = await replace_explicit_memory_variables(item["text"], query=user_message, recent_messages=messages, session_id=session_id)
         await inject_memory_palace_auto_context(messages, query=user_message, recent_messages=messages, explicit_present=non_partition_has_explicit_memory_palace, session_id=session_id)
 
         # 非分区模式下也要兜一下工具轮次：

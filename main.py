@@ -2873,18 +2873,8 @@ async def build_partitioned_messages(
         await save_session_cache_state(session_id, summary_parts, a_start_round)
         print(f"🔄 轮转完成(共{rotation_count}次): 摘要已架空, A区{len(a_msgs)}条, B区{len(b_msgs)}条")
 
-    # 分区自动提取范围：只处理当前 session 中已经离开缓存区的轮。
-    # 先用 a_start_round 找出缓存区外轮次，再交给 cursor 按 message_id 过滤。
-    if a_start_round > 0:
-        evicted_round_groups = rounds[:min(a_start_round, total_rounds)]
-        evicted_msgs = [msg for rnd in evicted_round_groups for msg in rnd]
-        if evicted_msgs:
-            log_memory_palace_auto_extract(
-                "run",
-                f"🧠 分区自动提取检查缓存区外内容：session={session_id}, rounds< {a_start_round}, 消息{len(evicted_msgs)}条",
-                session_id=session_id,
-            )
-            await extract_memory_palace_from_partition_messages(evicted_msgs, session_id)
+    # 自动提取不在请求构造阶段执行，避免用户到临界值时等待提取完成。
+    # assistant 回复保存后会在后台检查/提取缓存区外内容；失败则因 cursor 不推进而在下次回复后重试。
     
     # 拼装messages
     result = []
@@ -3080,6 +3070,73 @@ async def persist_assistant_tool_calls_sync(session_id: str, user_msg: str, assi
 
 
 
+async def run_partition_auto_extract_after_response(session_id: str, character_id: str = "default"):
+    """assistant 回复保存后后台检查分区临界值并自动提取缓存区外内容。
+
+    不阻塞当前回复：调用方通常在 process_memories_background 中等待。
+    失败不推进 cursor，下次 assistant 回复保存后会再次尝试。
+    """
+    if not MEMORY_ENABLED or not CACHE_PARTITION_ENABLED:
+        return
+    try:
+        db_history = await get_conversation_messages(session_id, limit=10000)
+        db_msgs = []
+        for m in (db_history or []):
+            msg = db_row_to_message(m)
+            msg['created_at'] = m.get('created_at')
+            msg['id'] = m.get('id')
+            db_msgs.append(msg)
+
+        non_system = [m for m in db_msgs if m.get('role') not in ('system', 'developer')]
+        rounds = group_by_rounds(non_system)
+        total_rounds = len(rounds)
+        if total_rounds <= 0:
+            return
+
+        state = await get_session_cache_state(session_id)
+        summary_parts = state['summary_parts']
+        a_start_round = int(state.get('a_start_round') or 0)
+        X = CACHE_PARTITION_X
+
+        a_end_round = a_start_round + X
+        a_round_groups = rounds[a_start_round : a_end_round]
+        b_round_groups = rounds[a_end_round :]
+        a_msgs = [msg for rnd in a_round_groups for msg in rnd]
+        b_rounds_count = len(b_round_groups)
+
+        rotation_count = 0
+        max_rotations = CACHE_MAX_ROTATIONS if CACHE_PARTITION_TRIGGER == "time" else 999
+        while _should_rotate(b_rounds_count, X, a_msgs) and rotation_count < max_rotations:
+            rotation_count += 1
+            trigger_info = f"B区{b_rounds_count}轮 >= X={X}" if CACHE_PARTITION_TRIGGER != "time" else f"A区首条消息超出{CACHE_PARTITION_WINDOW}分钟窗口"
+            log_memory_palace_auto_extract("run", f"🧠 回复后分区轮转推进缓存边界：session={session_id}, {trigger_info}, 当前A区{len(a_msgs)}条", session_id=session_id)
+            a_start_round += X
+            a_end_round = a_start_round + X
+            a_round_groups = rounds[a_start_round : a_end_round]
+            b_round_groups = rounds[a_end_round :]
+            a_msgs = [msg for rnd in a_round_groups for msg in rnd]
+            b_rounds_count = len(b_round_groups)
+
+        if rotation_count > 0:
+            await save_session_cache_state(session_id, summary_parts, a_start_round)
+            log_memory_palace_auto_extract("run", f"🧠 回复后分区轮转完成：session={session_id}, 共{rotation_count}次, a_start_round={a_start_round}", session_id=session_id)
+
+        if a_start_round > 0:
+            evicted_round_groups = rounds[:min(a_start_round, total_rounds)]
+            evicted_msgs = [msg for rnd in evicted_round_groups for msg in rnd]
+            if evicted_msgs:
+                log_memory_palace_auto_extract(
+                    "run",
+                    f"🧠 回复后分区自动提取检查缓存区外内容：session={session_id}, rounds< {a_start_round}, 消息{len(evicted_msgs)}条",
+                    session_id=session_id,
+                )
+                result = await extract_memory_palace_from_partition_messages(evicted_msgs, session_id, character_id=character_id)
+                if isinstance(result, dict) and result.get("status") == "error":
+                    log_memory_palace_auto_extract("error", f"⚠️ 回复后分区自动提取失败，下次回复后重试：session={session_id}, error={result.get('error')}", session_id=session_id)
+    except Exception as e:
+        log_memory_palace_auto_extract("error", f"⚠️ 回复后分区自动提取异常，下次回复后重试：session={session_id}, error={e}", session_id=session_id)
+
+
 async def process_memories_background(session_id: str, user_msg: str, assistant_msg: str, model: str, context_messages: list = None, skip_conversation_log: bool = False, tool_messages: list = None, assistant_tool_calls: list = None, assistant_reasoning: str = None):
     """
     后台异步：存储对话记录（不阻塞主流程）。
@@ -3202,7 +3259,9 @@ async def process_memories_background(session_id: str, user_msg: str, assistant_
         
         # 2. 旧碎片记忆自动提取已移除。
         # 对话记录仍然保存；长期记忆由 Memory Palace 的手动预览导入
-        # 和分区轮转自动提取负责，避免旧 gateway_config 书签逻辑与新游标混淆。
+        # 和回复保存后的分区后台自动提取负责，避免旧 gateway_config 书签逻辑与新游标混淆。
+        if not skip_conversation_log:
+            await run_partition_auto_extract_after_response(session_id)
         return
             
     except Exception as e:

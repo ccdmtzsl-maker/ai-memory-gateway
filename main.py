@@ -7540,6 +7540,39 @@ async def api_backfill_memory_embeddings():
 _mp_backfill_status = {"running": False, "total": 0, "done": 0, "inserted": 0, "skipped": 0, "failed": 0, "error": None, "message": "", "finished_at": None}
 
 
+
+@app.get("/api/memory-palace/vector-stats")
+async def api_memory_palace_vector_stats():
+    """只读诊断：返回记忆宫殿节点/向量数量，不触发补全、不修改数据。"""
+    if not MEMORY_ENABLED:
+        return {"error": "记忆系统未启用"}
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow("""
+                SELECT
+                    COUNT(n.id)::int AS total_nodes,
+                    COUNT(v.memory_id)::int AS total_vectors,
+                    COUNT(n.id) FILTER (WHERE v.memory_id IS NULL)::int AS missing_vectors,
+                    COUNT(n.id) FILTER (WHERE n.embedded = TRUE AND v.memory_id IS NULL)::int AS embedded_true_without_vector,
+                    COUNT(n.id) FILTER (WHERE COALESCE(n.embedded, FALSE) = FALSE AND v.memory_id IS NOT NULL)::int AS embedded_false_with_vector,
+                    COUNT(n.id) FILTER (WHERE COALESCE(NULLIF(TRIM(n.content), ''), '') = '')::int AS empty_content_nodes
+                FROM memory_palace_nodes n
+                LEFT JOIN memory_palace_vectors v ON v.memory_id = n.id
+            """)
+            return {
+                "total_nodes": row["total_nodes"] or 0,
+                "total_vectors": row["total_vectors"] or 0,
+                "missing_vectors": row["missing_vectors"] or 0,
+                "embedded_true_without_vector": row["embedded_true_without_vector"] or 0,
+                "embedded_false_with_vector": row["embedded_false_with_vector"] or 0,
+                "empty_content_nodes": row["empty_content_nodes"] or 0,
+            }
+    except Exception as e:
+        print(f"[mp-vector-stats] 查询失败: {e}")
+        return {"error": str(e)}
+
+
 @app.post("/api/memory-palace/backfill-embeddings")
 async def api_mp_backfill_embeddings():
     """给记忆宫殿中缺少向量的节点补算 embedding（不覆盖已有向量）。"""

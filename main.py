@@ -7512,6 +7512,73 @@ async def api_backfill_memory_embeddings():
     asyncio.create_task(run_backfill())
     return {"status": "started", "total": total}
 
+
+_mp_backfill_status = {"running": False, "total": 0, "done": 0, "error": None, "finished_at": None}
+
+
+@app.post("/api/memory-palace/backfill-embeddings")
+async def api_mp_backfill_embeddings():
+    """给记忆宫殿中缺少向量的节点补算 embedding（不覆盖已有向量）。"""
+    if not MEMORY_ENABLED:
+        return {"error": "记忆系统未启用"}
+    if _mp_backfill_status["running"]:
+        return {"error": "补算任务正在运行中，请等待完成"}
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT n.id, n.content
+                FROM memory_palace_nodes n
+                LEFT JOIN memory_palace_vectors v ON v.memory_id = n.id
+                WHERE v.memory_id IS NULL OR n.embedded = FALSE
+                ORDER BY n.created_at
+            """)
+    except Exception as e:
+        return {"error": f"查询待补算节点失败: {e}"}
+    if not rows:
+        return {"status": "done", "message": "所有节点已有向量，无需补算", "total": 0, "done": 0}
+    _mp_backfill_status["running"] = True
+    _mp_backfill_status["total"] = len(rows)
+    _mp_backfill_status["done"] = 0
+    _mp_backfill_status["error"] = None
+    _mp_backfill_status["finished_at"] = None
+
+    async def run_mp_backfill():
+        try:
+            for row in rows:
+                if not _mp_backfill_status["running"]:
+                    break
+                try:
+                    await save_memory_palace_embedding(row["id"], row["content"])
+                    _mp_backfill_status["done"] += 1
+                except Exception as e:
+                    print(f"[mp-backfill] 节点 {row['id']} 补算失败: {e}")
+                    _mp_backfill_status["done"] += 1
+                await asyncio.sleep(0.1)
+            _mp_backfill_status["finished_at"] = datetime.now(timezone.utc).isoformat()
+            print(f"[mp-backfill] 记忆宫殿向量补算完成: {_mp_backfill_status['done']}/{_mp_backfill_status['total']}")
+        except Exception as e:
+            _mp_backfill_status["error"] = str(e)
+            print(f"[mp-backfill] 记忆宫殿向量补算异常: {e}")
+        finally:
+            _mp_backfill_status["running"] = False
+
+    asyncio.create_task(run_mp_backfill())
+    return {"status": "started", "total": len(rows)}
+
+
+@app.get("/api/memory-palace/backfill-embeddings/status")
+async def api_mp_backfill_embeddings_status():
+    """查询记忆宫殿向量补算进度。"""
+    return {
+        "running": _mp_backfill_status["running"],
+        "total": _mp_backfill_status["total"],
+        "done": _mp_backfill_status["done"],
+        "error": _mp_backfill_status["error"],
+        "finished_at": _mp_backfill_status["finished_at"],
+    }
+
+
 @app.get("/api/admin/backfill-memory-embeddings/status")
 async def api_backfill_memory_embeddings_status():
     """查询记忆embedding补算进度"""

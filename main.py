@@ -6487,8 +6487,6 @@ async def get_memory_palace_vector_stats() -> dict:
                 COUNT(n.id)::int AS total_nodes,
                 COUNT(v.memory_id)::int AS total_vectors,
                 COUNT(n.id) FILTER (WHERE v.memory_id IS NULL)::int AS missing_vectors,
-                COUNT(n.id) FILTER (WHERE v.memory_id IS NULL AND COALESCE(NULLIF(TRIM(n.content), ''), '') <> '')::int AS fillable_missing_vectors,
-                COUNT(n.id) FILTER (WHERE v.memory_id IS NULL AND COALESCE(NULLIF(TRIM(n.content), ''), '') = '')::int AS empty_missing_vectors,
                 COUNT(n.id) FILTER (WHERE n.embedded = TRUE AND v.memory_id IS NULL)::int AS embedded_true_without_vector,
                 COUNT(n.id) FILTER (WHERE COALESCE(n.embedded, FALSE) = FALSE AND v.memory_id IS NOT NULL)::int AS embedded_false_with_vector,
                 COUNT(n.id) FILTER (WHERE COALESCE(NULLIF(TRIM(n.content), ''), '') = '')::int AS empty_content_nodes
@@ -6499,8 +6497,6 @@ async def get_memory_palace_vector_stats() -> dict:
             "total_nodes": row["total_nodes"] or 0,
             "total_vectors": row["total_vectors"] or 0,
             "missing_vectors": row["missing_vectors"] or 0,
-            "fillable_missing_vectors": row["fillable_missing_vectors"] or 0,
-            "empty_missing_vectors": row["empty_missing_vectors"] or 0,
             "embedded_true_without_vector": row["embedded_true_without_vector"] or 0,
             "embedded_false_with_vector": row["embedded_false_with_vector"] or 0,
             "empty_content_nodes": row["empty_content_nodes"] or 0,
@@ -7623,10 +7619,7 @@ async def api_mp_backfill_embeddings():
         return {"error": f"查询待补算节点失败: {e}"}
     if not rows:
         stats = await get_memory_palace_vector_stats()
-        if stats.get("missing_vectors", 0) > 0:
-            msg = f"没有可补的非空内容节点；当前节点 {stats.get('total_nodes', 0)} 条，向量 {stats.get('total_vectors', 0)} 条，缺失 {stats.get('missing_vectors', 0)} 条，其中空内容缺失 {stats.get('empty_missing_vectors', 0)} 条"
-            return {"status": "done", "message": msg, "total": 0, "done": 0, "stats": stats}
-        return {"status": "done", "message": f"向量索引完整：节点 {stats.get('total_nodes', 0)} 条，向量 {stats.get('total_vectors', 0)} 条，缺失 0 条", "total": 0, "done": 0, "stats": stats}
+        return {"status": "done", "message": f"当前向量：节点 {stats.get('total_nodes', 0)} 条，向量 {stats.get('total_vectors', 0)} 条，缺失 {stats.get('missing_vectors', 0)} 条", "total": 0, "done": 0, "stats": stats}
     before_stats = await get_memory_palace_vector_stats()
     _mp_backfill_status["running"] = True
     _mp_backfill_status["total"] = len(rows)

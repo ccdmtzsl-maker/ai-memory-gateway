@@ -86,9 +86,6 @@ _dashboard_logs = deque(maxlen=200)
 _last_upstream_request_body = None
 _last_upstream_request_meta = {}
 
-# Memory Palace 分区自动提取锁：同一角色/会话串行化，避免并发请求重复处理同一游标区间。
-_memory_palace_auto_extract_locks = {}
-
 def add_dashboard_log(level: str, message: str, category: str = "memory", session_id: str = ""):
     item = {
         "time": (datetime.now(timezone.utc) + timedelta(hours=TIMEZONE_HOURS)).strftime("%m-%d %H:%M:%S"),
@@ -2565,19 +2562,7 @@ async def generate_summary(messages: list, session_id: str = "") -> str:
 
 
 async def extract_memory_palace_from_partition_messages(messages: list, session_id: str, character_id: str = "default") -> dict:
-    """把缓存区外新挤出的消息自动提取入记忆宫殿，并推进session提取游标。
-
-    同一 character/session 必须串行化：否则并发请求可能同时读到旧 cursor，
-    重复提取同一批被挤出消息。
-    """
-    lock_key = f"{character_id}:{session_id}"
-    lock = _memory_palace_auto_extract_locks.setdefault(lock_key, asyncio.Lock())
-    async with lock:
-        return await _extract_memory_palace_from_partition_messages_locked(messages, session_id, character_id=character_id)
-
-
-async def _extract_memory_palace_from_partition_messages_locked(messages: list, session_id: str, character_id: str = "default") -> dict:
-    """实际执行分区自动提取；调用方已保证同会话串行。"""
+    """把缓存区外新挤出的消息自动提取入记忆宫殿，并推进session提取游标。"""
     if not MEMORY_ENABLED or not messages:
         reason = "disabled_or_empty"
         log_memory_palace_auto_extract("info", f"🧠 分区自动提取跳过：{reason} session={session_id}", session_id=session_id)
@@ -2608,14 +2593,6 @@ async def _extract_memory_palace_from_partition_messages_locked(messages: list, 
         if not rows:
             log_memory_palace_auto_extract("info", f"🧠 分区自动提取等待：没有游标后的新消息 session={session_id}, cursor={last_id}", session_id=session_id)
             return {"status": "skipped", "reason": "no_new_after_cursor", "created": 0, "marked": 0}
-        candidate_ids = [int(r["id"]) for r in rows]
-        already_extracted = await get_memory_palace_extracted_message_ids(candidate_ids, character_id=character_id)
-        if already_extracted:
-            rows = [r for r in rows if int(r["id"]) not in already_extracted]
-            if not rows:
-                await save_memory_palace_extraction_cursor(session_id, tail_max_id, character_id=character_id, last_source="partition_auto_seen_marked")
-                log_memory_palace_auto_extract("info", f"🧠 分区自动提取等待：游标后消息均已标记 session={session_id}, cursor={last_id}, tail={tail_max_id}", session_id=session_id)
-                return {"status": "skipped", "reason": "already_marked", "created": 0, "marked": 0, "cursor": tail_max_id}
         message_ids = [int(r["id"]) for r in rows]
         log_memory_palace_auto_extract("run", f"🧠 分区自动提取开始：session={session_id}, cursor={last_id}, 待处理{len(rows)}条", session_id=session_id)
         messages_text = _format_messages_for_memory_palace(rows)
@@ -2646,21 +2623,12 @@ async def _extract_memory_palace_from_partition_messages_locked(messages: list, 
             except Exception as e:
                 log_memory_palace_auto_extract("error", f"⚠️ 分区自动提取摘除便利贴失败: {e}", session_id=session_id)
         marked_count = 0
-        max_message_id = tail_max_id
-        advanced_cursor = last_id
+        max_message_id = max(message_ids)
         if created or unpinned_count:
-            try:
-                marked_count = await mark_memory_palace_messages_extracted(message_ids, session_id, character_id=character_id, source="partition_auto")
-            except Exception as e:
-                log_memory_palace_auto_extract("error", f"⚠️ 分区自动提取标记消息失败: {e}", session_id=session_id)
+            marked_count = await mark_memory_palace_messages_extracted(message_ids, session_id, character_id=character_id, source="partition_auto")
             await save_memory_palace_extraction_cursor(session_id, max_message_id, character_id=character_id, last_source="partition_auto")
-            advanced_cursor = max_message_id
-            cursor_note = f"cursor->{max_message_id}"
-        else:
-            # 0 条记忆时不推进游标：当前没有重 roll 设计，保留这批消息供后续再次尝试。
-            cursor_note = f"cursor保持{last_id}"
-        log_memory_palace_auto_extract("success", f"🧠 分区自动提取完成：session={session_id}, 消息{len(rows)}条, 记忆{len(created)}条, unpin={unpinned_count}, 标记{marked_count}条, {cursor_note}", session_id=session_id)
-        return {"status": "ok", "processed_messages": len(rows), "extracted": len(raw_items), "created": len(created), "embedded": embedded_count, "unpinned": unpinned_count, "marked": marked_count, "cursor": advanced_cursor}
+        log_memory_palace_auto_extract("success", f"🧠 分区自动提取完成：session={session_id}, 消息{len(rows)}条, 记忆{len(created)}条, unpin={unpinned_count}, 标记{marked_count}条, cursor->{max_message_id}", session_id=session_id)
+        return {"status": "ok", "processed_messages": len(rows), "extracted": len(raw_items), "created": len(created), "embedded": embedded_count, "unpinned": unpinned_count, "marked": marked_count, "cursor": max_message_id}
     except Exception as e:
         log_memory_palace_auto_extract("error", f"⚠️ 分区自动提取失败：session={session_id}, error={e}", session_id=session_id)
         return {"status": "error", "error": str(e), "created": 0, "marked": 0}
@@ -2868,18 +2836,14 @@ async def build_partitioned_messages(
     b_rounds_count = len(b_round_groups)
     
     rotation_count = 0
-    newly_evicted_batches = []
     max_rotations = CACHE_MAX_ROTATIONS if CACHE_PARTITION_TRIGGER == "time" else 999
     while _should_rotate(b_rounds_count, X, a_msgs) and rotation_count < max_rotations:
         rotation_count += 1
         trigger_info = f"B区{b_rounds_count}轮 >= X={X}" if CACHE_PARTITION_TRIGGER != "time" else f"A区首条消息超出{CACHE_PARTITION_WINDOW}分钟窗口"
         print(f"🔄 轮转#{rotation_count}: session={session_id}, {trigger_info}")
-        log_memory_palace_auto_extract("run", f"🧠 分区轮转准备挤出A区：session={session_id}, {trigger_info}, A区{len(a_msgs)}条", session_id=session_id)
-        # 先记录即将被挤出的旧 A 区；只有在 a_start_round 保存成功后，
-        # 这些消息才真正离开缓存区，随后才允许推进自动提取游标。
-        if a_msgs:
-            newly_evicted_batches.append(a_msgs)
-
+        log_memory_palace_auto_extract("run", f"🧠 分区轮转触发自动提取：session={session_id}, {trigger_info}, A区{len(a_msgs)}条", session_id=session_id)
+        await extract_memory_palace_from_partition_messages(a_msgs, session_id)
+        
         a_start_round += X
         a_end_round = a_start_round + X
         a_round_groups = rounds[a_start_round : a_end_round]
@@ -2891,9 +2855,6 @@ async def build_partitioned_messages(
     if rotation_count > 0:
         await save_session_cache_state(session_id, summary_parts, a_start_round)
         print(f"🔄 轮转完成(共{rotation_count}次): 摘要已架空, A区{len(a_msgs)}条, B区{len(b_msgs)}条")
-        for evicted_msgs in newly_evicted_batches:
-            log_memory_palace_auto_extract("run", f"🧠 分区轮转后自动提取已挤出内容：session={session_id}, 消息{len(evicted_msgs)}条", session_id=session_id)
-            await extract_memory_palace_from_partition_messages(evicted_msgs, session_id)
     
     # 拼装messages
     result = []
@@ -6264,26 +6225,6 @@ def log_memory_palace_auto_extract(level: str, message: str, session_id: str = N
         add_dashboard_log(level, message, category="mp-auto", session_id=session_id)
     except Exception:
         pass
-
-async def get_memory_palace_extracted_message_ids(message_ids: list, character_id: str = "default") -> set:
-    ids = []
-    for mid in message_ids or []:
-        try:
-            ids.append(int(mid))
-        except Exception:
-            pass
-    ids = list(dict.fromkeys(ids))
-    if not ids:
-        return set()
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        rows = await conn.fetch("""
-            SELECT message_id
-            FROM memory_palace_extracted_messages
-            WHERE character_id = $1 AND message_id = ANY($2::bigint[])
-        """, character_id, ids)
-    return {int(r["message_id"]) for r in rows}
-
 
 async def mark_memory_palace_messages_extracted(message_ids: list, session_id: str, character_id: str = "default", source: str = "manual_preview") -> int:
     ids = []

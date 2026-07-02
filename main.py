@@ -306,9 +306,6 @@ async def lifespan(app: FastAPI):
                         "EMBEDDING_MODEL": str, "EMBEDDING_DIM": int,
                         "MIN_SCORE_THRESHOLD": float,
                         "MEMORY_VECTOR_ENABLED": lambda v: _parse_bool(v),
-                        "MEMORY_HW_KEYWORD": float, "MEMORY_HW_SEMANTIC": float,
-                        "MEMORY_HW_IMPORTANCE": float, "MEMORY_HW_RECENCY": float,
-                        "MEMORY_SEMANTIC_THRESHOLD": float,
                     }
                     restored = []
                     for key, val in db_cfg.items():
@@ -7969,12 +7966,6 @@ async def get_settings():
             "EMBEDDING_MODEL":         db.get("EMBEDDING_MODEL") or str(_db_module.EMBEDDING_MODEL),
             "EMBEDDING_DIM":           int(db.get("EMBEDDING_DIM") or _db_module.EMBEDDING_DIM),
 
-            # 搜索权重
-            "MEMORY_HW_KEYWORD":        float(db.get("MEMORY_HW_KEYWORD") or _db_module.MEMORY_HW_KEYWORD),
-            "MEMORY_HW_SEMANTIC":       float(db.get("MEMORY_HW_SEMANTIC") or _db_module.MEMORY_HW_SEMANTIC),
-            "MEMORY_HW_IMPORTANCE":     float(db.get("MEMORY_HW_IMPORTANCE") or _db_module.MEMORY_HW_IMPORTANCE),
-            "MEMORY_HW_RECENCY":        float(db.get("MEMORY_HW_RECENCY") or _db_module.MEMORY_HW_RECENCY),
-            "MEMORY_SEMANTIC_THRESHOLD": float(db.get("MEMORY_SEMANTIC_THRESHOLD") or _db_module.MEMORY_SEMANTIC_THRESHOLD),
 
             # 其他
             "FORCE_STREAM":       _parse_bool(db.get("FORCE_STREAM"), FORCE_STREAM),
@@ -8102,11 +8093,6 @@ async def save_settings(request: Request):
             "EMBEDDING_DIM":           int,
             "MIN_SCORE_THRESHOLD":     float,
             "MEMORY_VECTOR_ENABLED":   lambda v: _parse_bool(v),
-            "MEMORY_HW_KEYWORD":       float,
-            "MEMORY_HW_SEMANTIC":      float,
-            "MEMORY_HW_IMPORTANCE":    float,
-            "MEMORY_HW_RECENCY":       float,
-            "MEMORY_SEMANTIC_THRESHOLD": float,
         }
 
         # 只存 os.environ 的变量

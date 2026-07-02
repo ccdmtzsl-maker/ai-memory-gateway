@@ -86,6 +86,9 @@ _dashboard_logs = deque(maxlen=200)
 _last_upstream_request_body = None
 _last_upstream_request_meta = {}
 
+# Memory Palace 分区自动提取锁：同一角色/会话串行化，避免并发请求重复处理同一游标区间。
+_memory_palace_auto_extract_locks = {}
+
 def add_dashboard_log(level: str, message: str, category: str = "memory", session_id: str = ""):
     item = {
         "time": (datetime.now(timezone.utc) + timedelta(hours=TIMEZONE_HOURS)).strftime("%m-%d %H:%M:%S"),
@@ -2562,7 +2565,19 @@ async def generate_summary(messages: list, session_id: str = "") -> str:
 
 
 async def extract_memory_palace_from_partition_messages(messages: list, session_id: str, character_id: str = "default") -> dict:
-    """把缓存区外新挤出的消息自动提取入记忆宫殿，并推进session提取游标。"""
+    """把缓存区外新挤出的消息自动提取入记忆宫殿，并推进session提取游标。
+
+    同一 character/session 必须串行化：否则并发请求可能同时读到旧 cursor，
+    重复提取同一批被挤出消息。
+    """
+    lock_key = f"{character_id}:{session_id}"
+    lock = _memory_palace_auto_extract_locks.setdefault(lock_key, asyncio.Lock())
+    async with lock:
+        return await _extract_memory_palace_from_partition_messages_locked(messages, session_id, character_id=character_id)
+
+
+async def _extract_memory_palace_from_partition_messages_locked(messages: list, session_id: str, character_id: str = "default") -> dict:
+    """实际执行分区自动提取；调用方已保证同会话串行。"""
     if not MEMORY_ENABLED or not messages:
         reason = "disabled_or_empty"
         log_memory_palace_auto_extract("info", f"🧠 分区自动提取跳过：{reason} session={session_id}", session_id=session_id)
@@ -2624,9 +2639,13 @@ async def extract_memory_palace_from_partition_messages(messages: list, session_
                 log_memory_palace_auto_extract("error", f"⚠️ 分区自动提取摘除便利贴失败: {e}", session_id=session_id)
         marked_count = 0
         max_message_id = max(message_ids)
-        if created or unpinned_count:
+        try:
             marked_count = await mark_memory_palace_messages_extracted(message_ids, session_id, character_id=character_id, source="partition_auto")
-            await save_memory_palace_extraction_cursor(session_id, max_message_id, character_id=character_id, last_source="partition_auto")
+        except Exception as e:
+            log_memory_palace_auto_extract("error", f"⚠️ 分区自动提取标记消息失败: {e}", session_id=session_id)
+        # 提取器成功处理过这批消息后，无论是否生成新记忆，都推进游标；
+        # 否则 0 记忆结果会被后续轮次反复提取。
+        await save_memory_palace_extraction_cursor(session_id, max_message_id, character_id=character_id, last_source="partition_auto")
         log_memory_palace_auto_extract("success", f"🧠 分区自动提取完成：session={session_id}, 消息{len(rows)}条, 记忆{len(created)}条, unpin={unpinned_count}, 标记{marked_count}条, cursor->{max_message_id}", session_id=session_id)
         return {"status": "ok", "processed_messages": len(rows), "extracted": len(raw_items), "created": len(created), "embedded": embedded_count, "unpinned": unpinned_count, "marked": marked_count, "cursor": max_message_id}
     except Exception as e:

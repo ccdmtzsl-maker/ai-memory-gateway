@@ -2373,7 +2373,7 @@ def extract_operit_memory_attachment_from_text(text: str) -> tuple[str, str]:
         filename_match = re.search(r'filename="([^"]+)"', attrs)
         filename = filename_match.group(1) if filename_match else ""
 
-        if filename != "相关记忆" and "【相关记忆】" not in body:
+        if filename != "相关记忆":
             return match.group(0)
         if not body:
             return ""

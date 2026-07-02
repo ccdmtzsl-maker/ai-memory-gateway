@@ -708,6 +708,10 @@
                         <small class="form-hint" id="test-memory-model-result">会使用上方当前填写的记忆模型 URL / Key / 模型名发送一次测试请求</small>
                     </div>
                     <div class="settings-field">
+                        <label>记忆宫殿默认注入数量 (MEMORY_PALACE_DEFAULT_LIMIT)</label>
+                        <input type="number" id="set-MEMORY_PALACE_DEFAULT_LIMIT" class="input" min="1" max="30" value="5">
+                        <small class="form-hint">影响 &#123;&#123;memory_palace&#125;&#125; 默认条数；&#123;&#123;memory_palace:10&#125;&#125; 这种显式数量仍以变量为准。</small>
+                    </div>
                 </div>
 
                 <!-- 缓存分区 -->
@@ -760,15 +764,6 @@
                         <label>用户昵称 (USER_NICKNAME)</label>
                         <input type="text" id="set-USER_NICKNAME" class="input" placeholder="留空则使用：用户">
                         <small class="form-hint">记忆宫殿自动提取时，会用这个称呼写入记忆。</small>
-                    </div>
-                    <div class="settings-field settings-toggle-row">
-                        <label>启用记忆宫殿注入 (MEMORY_PALACE_ENABLED)</label>
-                        <label class="toggle"><input type="checkbox" id="set-MEMORY_PALACE_ENABLED"><span class="toggle-slider"></span></label>
-                    </div>
-                    <div class="settings-field">
-                        <label>记忆宫殿默认注入数量 (MEMORY_PALACE_DEFAULT_LIMIT)</label>
-                        <input type="number" id="set-MEMORY_PALACE_DEFAULT_LIMIT" class="input" min="1" max="30" value="5">
-                        <small class="form-hint">影响 &#123;&#123;memory_palace&#125;&#125; 默认条数；&#123;&#123;memory_palace:10&#125;&#125; 这种显式数量仍以变量为准。</small>
                     </div>
                     <div class="settings-field settings-toggle-row">
                         <label>启用非流式响应转换</label>

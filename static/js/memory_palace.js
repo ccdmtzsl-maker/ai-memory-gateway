@@ -826,35 +826,74 @@ function initMemoryPalacePage() {
 document.addEventListener('DOMContentLoaded', initMemoryPalacePage);
 
 let _mpBackfillRunning = false;
+let _mpBackfillPollTimer = null;
+
+function setMemoryPalaceBackfillButton(running) {
+    const btn = document.getElementById('mpBackfillBtn');
+    if (!btn) return;
+    btn.disabled = !!running;
+    btn.textContent = running ? '补全中...' : '补全向量';
+}
+
+function showMemoryPalaceBackfillStatus(text, type) {
+    mpMsg(text || '', type);
+}
 
 async function backfillMemoryPalaceEmbeddings() {
     if (_mpBackfillRunning) return;
-    const btn = document.getElementById('mpBackfillBtn');
-    const oldText = btn ? btn.textContent : '';
-    if (btn) { btn.disabled = true; btn.textContent = '补算中...'; }
+    if (_mpBackfillPollTimer) {
+        clearTimeout(_mpBackfillPollTimer);
+        _mpBackfillPollTimer = null;
+    }
     _mpBackfillRunning = true;
+    setMemoryPalaceBackfillButton(true);
+    showMemoryPalaceBackfillStatus('正在检查缺失向量...');
     try {
-        const resp = await fetch('/api/memory-palace/backfill-embeddings', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({})});
+        const resp = await fetch('/api/memory-palace/backfill-embeddings', {
+            method:'POST',
+            headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({})
+        });
         const data = await resp.json();
         if (data.error) throw new Error(data.error);
-        if (data.status === 'done') { mpMsg('所有节点已有向量，无需补算'); return; }
-        mpMsg('开始补全向量，共 ' + (data.total || 0) + ' 个节点待处理...');
+        if (data.status === 'done') {
+            showMemoryPalaceBackfillStatus('✅ 向量索引完整：无需补全');
+            _mpBackfillRunning = false;
+            setMemoryPalaceBackfillButton(false);
+            return;
+        }
+
+        showMemoryPalaceBackfillStatus('⏳ ' + (data.message || ('开始补全向量，共 ' + (data.total || 0) + ' 个节点待处理')));
         const poll = async () => {
             try {
                 const r = await fetch('/api/memory-palace/backfill-embeddings/status');
                 const s = await r.json();
-                if (s.error) { mpMsg('补算异常: ' + s.error, 'error'); return; }
-                mpMsg('补全向量进度: ' + (s.done || 0) + '/' + (s.total || 0) + (s.running ? ' ...' : ' 完成'));
-                if (s.running) { setTimeout(poll, 2000); return; }
-                if (btn) { btn.disabled = false; btn.textContent = oldText || '补全向量'; }
+                if (s.error) {
+                    showMemoryPalaceBackfillStatus('❌ 向量补全失败：' + s.error, 'error');
+                    _mpBackfillRunning = false;
+                    setMemoryPalaceBackfillButton(false);
+                    return;
+                }
+                if (s.running) {
+                    showMemoryPalaceBackfillStatus('⏳ ' + (s.message || ('正在补全向量：' + (s.done || 0) + '/' + (s.total || 0))));
+                    _mpBackfillPollTimer = setTimeout(poll, 1500);
+                    return;
+                }
+                const doneMsg = s.message || ('向量补全完成：新增 ' + (s.inserted || 0) + ' 条，跳过/已有 ' + (s.skipped || 0) + ' 条，失败 ' + (s.failed || 0) + ' 条');
+                showMemoryPalaceBackfillStatus((s.failed || 0) > 0 ? ('⚠️ ' + doneMsg) : ('✅ ' + doneMsg), (s.failed || 0) > 0 ? 'error' : undefined);
                 _mpBackfillRunning = false;
+                setMemoryPalaceBackfillButton(false);
                 await loadMemoryPalace();
-            } catch(e) { mpMsg('查询补算进度失败: ' + e.message, 'error'); }
+            } catch(e) {
+                showMemoryPalaceBackfillStatus('❌ 查询补全进度失败：' + e.message, 'error');
+                _mpBackfillRunning = false;
+                setMemoryPalaceBackfillButton(false);
+            }
         };
-        setTimeout(poll, 1500);
+        _mpBackfillPollTimer = setTimeout(poll, 800);
     } catch(e) {
-        mpMsg('补全向量失败: ' + e.message, 'error');
-        if (btn) { btn.disabled = false; btn.textContent = oldText || '补全向量'; }
+        showMemoryPalaceBackfillStatus('❌ 向量补全失败：' + e.message, 'error');
         _mpBackfillRunning = false;
+        setMemoryPalaceBackfillButton(false);
     }
 }

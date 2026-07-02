@@ -907,50 +907,6 @@ async function cleanupOldFragments() {
 // ============================================
 // 导入功能
 // ============================================
-async function doTextImport() {
-    const file = document.getElementById('txtFile').files[0];
-    const text = document.getElementById('txtInput').value.trim();
-    const skip = document.getElementById('skipScore').checked;
-    
-    let content = '';
-    if (file) {
-        content = await file.text();
-    } else if (text) {
-        content = text;
-    } else {
-        showImportResult('error', '请先上传文件或输入文本');
-        return;
-    }
-    
-    const lines = content.split('\n').map(l => l.trim()).filter(l => l.length > 0);
-    if (lines.length === 0) {
-        showImportResult('error', '没有找到有效的记忆条目');
-        return;
-    }
-    
-    showImportResult('info', skip 
-        ? '正在导入 ' + lines.length + ' 条记忆...' 
-        : '正在为 ' + lines.length + ' 条记忆自动评分，请稍候...');
-    
-    try {
-        const resp = await fetch('/import/text', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({lines: lines, skip_scoring: skip})
-        });
-        const data = await resp.json();
-        if (data.error) {
-            showImportResult('error', '❌ ' + data.error);
-        } else {
-            showImportResult('success', '✅ 导入完成！新增 ' + data.imported + ' 条，跳过 ' + data.skipped + ' 条（已存在），总计 ' + data.total + ' 条');
-            // 刷新记忆列表
-            loadMemories();
-        }
-    } catch(e) {
-        showImportResult('error', '❌ 请求失败：' + e.message);
-    }
-}
-
 async function previewJson() {
     const file = document.getElementById('jsonFile').files[0];
     const text = document.getElementById('jsonInput').value.trim();

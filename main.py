@@ -2646,7 +2646,7 @@ async def _extract_memory_palace_from_partition_messages_locked(messages: list, 
             except Exception as e:
                 log_memory_palace_auto_extract("error", f"⚠️ 分区自动提取摘除便利贴失败: {e}", session_id=session_id)
         marked_count = 0
-        max_message_id = max(message_ids)
+        max_message_id = tail_max_id
         try:
             marked_count = await mark_memory_palace_messages_extracted(message_ids, session_id, character_id=character_id, source="partition_auto")
         except Exception as e:

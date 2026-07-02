@@ -7707,7 +7707,7 @@ async def api_mp_backfill_embeddings():
                   AND n.embedded = FALSE
                   AND NULLIF(TRIM(COALESCE(v.embedding_json, '')), '') IS NOT NULL
                   AND LOWER(TRIM(v.embedding_json)) NOT IN ('[]', 'null')
-                  AND TRIM(v.embedding_json) ~ '^\[[[:space:]]*-?[0-9]'
+                  AND TRIM(v.embedding_json) ~ '^\\[[[:space:]]*-?[0-9]'
             """)
             # 只补真正缺失向量的节点，避免破坏已有向量。
             rows = await conn.fetch("""

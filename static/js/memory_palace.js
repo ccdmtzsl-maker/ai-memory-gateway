@@ -888,7 +888,7 @@ async function backfillMemoryPalaceEmbeddings() {
         const data = await resp.json();
         if (data.error) throw new Error(data.error);
         if (data.status === 'done') {
-            showMemoryPalaceBackfillStatus('✅ 向量索引完整：无需补全');
+            const st = data.stats || {};\n            showMemoryPalaceBackfillStatus('✅ 向量索引完整：节点 ' + (st.total_nodes || 0) + ' 条，向量 ' + (st.total_vectors || 0) + ' 条，缺失 ' + (st.missing_vectors || 0) + ' 条');
             _mpBackfillRunning = false;
             setMemoryPalaceBackfillButton(false);
             return;

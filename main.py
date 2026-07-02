@@ -64,6 +64,8 @@ MEMORY_ENABLED = os.getenv("MEMORY_ENABLED", "false").lower() == "true"
 # 分区缓存
 CACHE_PARTITION_ENABLED = os.getenv("CACHE_PARTITION_ENABLED", "false").lower() == "true"
 CACHE_PARTITION_X = int(os.getenv("CACHE_PARTITION_X", "15"))
+# 分区自动提取单批最多处理的消息数；先按 cursor 过滤，再限量，避免一次塞入过多历史。
+CACHE_PARTITION_EXTRACT_LIMIT = int(os.getenv("CACHE_PARTITION_EXTRACT_LIMIT", "120"))
 CACHE_SUMMARY_MODEL = os.getenv("CACHE_SUMMARY_MODEL", "anthropic/claude-haiku-4.5")
 CACHE_PARTITION_TRIGGER = os.getenv("CACHE_PARTITION_TRIGGER", "rounds")  # rounds=按轮次 | time=按时间窗口
 CACHE_PARTITION_WINDOW = int(os.getenv("CACHE_PARTITION_WINDOW", "30"))  # 时间窗口（分钟），仅 trigger=time 时生效
@@ -305,7 +307,7 @@ async def lifespan(app: FastAPI):
                         "API_BASE_URL": str, "API_KEY": str, "DEFAULT_MODEL": str, "CHAT_TEMPERATURE": str,
                         "MEMORY_ENABLED": lambda v: _parse_bool(v),
                         "CACHE_PARTITION_ENABLED": lambda v: _parse_bool(v),
-                        "CACHE_PARTITION_X": int, "CACHE_PARTITION_TRIGGER": str,
+                        "CACHE_PARTITION_X": int, "CACHE_PARTITION_EXTRACT_LIMIT": int, "CACHE_PARTITION_TRIGGER": str,
                         "CACHE_PARTITION_WINDOW": int, "CACHE_SUMMARY_MODEL": str,
                         "FORCE_STREAM": lambda v: _parse_bool(v),
                         "RESPONSE_TRANSFORM_ENABLED": lambda v: _parse_bool(v),
@@ -2608,6 +2610,11 @@ async def _extract_memory_palace_from_partition_messages_locked(messages: list, 
         if not rows:
             log_memory_palace_auto_extract("info", f"🧠 分区自动提取等待：没有游标后的新消息 session={session_id}, cursor={last_id}", session_id=session_id)
             return {"status": "skipped", "reason": "no_new_after_cursor", "created": 0, "marked": 0}
+        pending_count = len(rows)
+        batch_limit = max(1, int(CACHE_PARTITION_EXTRACT_LIMIT or 120))
+        if len(rows) > batch_limit:
+            rows = rows[:batch_limit]
+            log_memory_palace_auto_extract("info", f"🧠 分区自动提取限量：session={session_id}, cursor={last_id}, 待处理{pending_count}条，本批{len(rows)}条", session_id=session_id)
         message_ids = [int(r["id"]) for r in rows]
         log_memory_palace_auto_extract("run", f"🧠 分区自动提取开始：session={session_id}, cursor={last_id}, 待处理{len(rows)}条", session_id=session_id)
         messages_text = _format_messages_for_memory_palace(rows)
@@ -7176,6 +7183,7 @@ async def get_settings():
             # 缓存分区
             "CACHE_PARTITION_ENABLED": _parse_bool(db.get("CACHE_PARTITION_ENABLED"), CACHE_PARTITION_ENABLED),
             "CACHE_PARTITION_X":       int(db.get("CACHE_PARTITION_X") or CACHE_PARTITION_X),
+            "CACHE_PARTITION_EXTRACT_LIMIT": int(db.get("CACHE_PARTITION_EXTRACT_LIMIT") or CACHE_PARTITION_EXTRACT_LIMIT),
             "CACHE_PARTITION_TRIGGER": db.get("CACHE_PARTITION_TRIGGER") or CACHE_PARTITION_TRIGGER,
             "CACHE_PARTITION_WINDOW":  int(db.get("CACHE_PARTITION_WINDOW") or CACHE_PARTITION_WINDOW),
             "CACHE_SUMMARY_MODEL":     db.get("CACHE_SUMMARY_MODEL") or str(CACHE_SUMMARY_MODEL),
@@ -7292,6 +7300,7 @@ async def save_settings(request: Request):
             "MEMORY_ENABLED":        lambda v: _parse_bool(v),
             "CACHE_PARTITION_ENABLED": lambda v: _parse_bool(v),
             "CACHE_PARTITION_X":     int,
+            "CACHE_PARTITION_EXTRACT_LIMIT": int,
             "CACHE_PARTITION_TRIGGER": str,
             "CACHE_PARTITION_WINDOW": int,
             "CACHE_SUMMARY_MODEL":   str,

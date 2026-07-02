@@ -6475,6 +6475,31 @@ async def save_memory_palace_embedding_if_missing(memory_id: str, content: str) 
         return res.endswith("1")
 
 
+async def get_memory_palace_vector_stats() -> dict:
+    """只读统计记忆宫殿向量状态。"""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow("""
+            SELECT
+                COUNT(n.id)::int AS total_nodes,
+                COUNT(v.memory_id)::int AS total_vectors,
+                COUNT(n.id) FILTER (WHERE v.memory_id IS NULL)::int AS missing_vectors,
+                COUNT(n.id) FILTER (WHERE n.embedded = TRUE AND v.memory_id IS NULL)::int AS embedded_true_without_vector,
+                COUNT(n.id) FILTER (WHERE COALESCE(n.embedded, FALSE) = FALSE AND v.memory_id IS NOT NULL)::int AS embedded_false_with_vector,
+                COUNT(n.id) FILTER (WHERE COALESCE(NULLIF(TRIM(n.content), ''), '') = '')::int AS empty_content_nodes
+            FROM memory_palace_nodes n
+            LEFT JOIN memory_palace_vectors v ON v.memory_id = n.id
+        """)
+        return {
+            "total_nodes": row["total_nodes"] or 0,
+            "total_vectors": row["total_vectors"] or 0,
+            "missing_vectors": row["missing_vectors"] or 0,
+            "embedded_true_without_vector": row["embedded_true_without_vector"] or 0,
+            "embedded_false_with_vector": row["embedded_false_with_vector"] or 0,
+            "empty_content_nodes": row["empty_content_nodes"] or 0,
+        }
+
+
 @app.post("/api/memory-palace/extract-preview-sessions")
 async def api_memory_palace_extract_preview_sessions(request: Request):
     if not MEMORY_ENABLED:
@@ -7545,7 +7570,7 @@ async def api_backfill_memory_embeddings():
     return {"status": "started", "total": total}
 
 
-_mp_backfill_status = {"running": False, "total": 0, "done": 0, "inserted": 0, "skipped": 0, "failed": 0, "error": None, "message": "", "finished_at": None}
+_mp_backfill_status = {"running": False, "total": 0, "done": 0, "inserted": 0, "skipped": 0, "failed": 0, "error": None, "message": "", "before_stats": None, "after_stats": None, "finished_at": None}
 
 
 
@@ -7555,27 +7580,7 @@ async def api_memory_palace_vector_stats():
     if not MEMORY_ENABLED:
         return {"error": "记忆系统未启用"}
     try:
-        pool = await get_pool()
-        async with pool.acquire() as conn:
-            row = await conn.fetchrow("""
-                SELECT
-                    COUNT(n.id)::int AS total_nodes,
-                    COUNT(v.memory_id)::int AS total_vectors,
-                    COUNT(n.id) FILTER (WHERE v.memory_id IS NULL)::int AS missing_vectors,
-                    COUNT(n.id) FILTER (WHERE n.embedded = TRUE AND v.memory_id IS NULL)::int AS embedded_true_without_vector,
-                    COUNT(n.id) FILTER (WHERE COALESCE(n.embedded, FALSE) = FALSE AND v.memory_id IS NOT NULL)::int AS embedded_false_with_vector,
-                    COUNT(n.id) FILTER (WHERE COALESCE(NULLIF(TRIM(n.content), ''), '') = '')::int AS empty_content_nodes
-                FROM memory_palace_nodes n
-                LEFT JOIN memory_palace_vectors v ON v.memory_id = n.id
-            """)
-            return {
-                "total_nodes": row["total_nodes"] or 0,
-                "total_vectors": row["total_vectors"] or 0,
-                "missing_vectors": row["missing_vectors"] or 0,
-                "embedded_true_without_vector": row["embedded_true_without_vector"] or 0,
-                "embedded_false_with_vector": row["embedded_false_with_vector"] or 0,
-                "empty_content_nodes": row["empty_content_nodes"] or 0,
-            }
+        return await get_memory_palace_vector_stats()
     except Exception as e:
         print(f"[mp-vector-stats] 查询失败: {e}")
         return {"error": str(e)}
@@ -7610,7 +7615,8 @@ async def api_mp_backfill_embeddings():
     except Exception as e:
         return {"error": f"查询待补算节点失败: {e}"}
     if not rows:
-        return {"status": "done", "message": "所有节点已有向量，无需补算", "total": 0, "done": 0}
+        return {"status": "done", "message": "所有节点已有向量，无需补算", "total": 0, "done": 0, "stats": await get_memory_palace_vector_stats()}
+    before_stats = await get_memory_palace_vector_stats()
     _mp_backfill_status["running"] = True
     _mp_backfill_status["total"] = len(rows)
     _mp_backfill_status["done"] = 0
@@ -7618,7 +7624,12 @@ async def api_mp_backfill_embeddings():
     _mp_backfill_status["skipped"] = 0
     _mp_backfill_status["failed"] = 0
     _mp_backfill_status["error"] = None
-    _mp_backfill_status["message"] = f"准备补全 {len(rows)} 条缺失向量"
+    _mp_backfill_status["message"] = (
+        f"当前节点 {before_stats.get('total_nodes', 0)} 条，向量 {before_stats.get('total_vectors', 0)} 条，"
+        f"缺失 {before_stats.get('missing_vectors', len(rows))} 条；准备补全 {len(rows)} 条"
+    )
+    _mp_backfill_status["before_stats"] = before_stats
+    _mp_backfill_status["after_stats"] = None
     _mp_backfill_status["finished_at"] = None
 
     async def run_mp_backfill():
@@ -7641,9 +7652,12 @@ async def api_mp_backfill_embeddings():
                     _mp_backfill_status["message"] = f"正在补全向量：{_mp_backfill_status['done']}/{_mp_backfill_status['total']}（失败 {_mp_backfill_status['failed']}）"
                 await asyncio.sleep(0.1)
             _mp_backfill_status["finished_at"] = datetime.now(timezone.utc).isoformat()
+            _mp_backfill_status["after_stats"] = await get_memory_palace_vector_stats()
             _mp_backfill_status["message"] = (
                 f"向量补全完成：新增 {_mp_backfill_status['inserted']} 条，"
-                f"跳过/已有 {_mp_backfill_status['skipped']} 条，失败 {_mp_backfill_status['failed']} 条"
+                f"跳过/已有 {_mp_backfill_status['skipped']} 条，失败 {_mp_backfill_status['failed']} 条；"
+                f"当前向量 {_mp_backfill_status['after_stats'].get('total_vectors', 0)} 条，"
+                f"仍缺 {_mp_backfill_status['after_stats'].get('missing_vectors', 0)} 条"
             )
             print(f"[mp-backfill] 记忆宫殿向量补算完成: {_mp_backfill_status['done']}/{_mp_backfill_status['total']}, inserted={_mp_backfill_status['inserted']}, skipped={_mp_backfill_status['skipped']}, failed={_mp_backfill_status['failed']}")
         except Exception as e:
@@ -7653,7 +7667,7 @@ async def api_mp_backfill_embeddings():
             _mp_backfill_status["running"] = False
 
     asyncio.create_task(run_mp_backfill())
-    return {"status": "started", "total": len(rows), "message": _mp_backfill_status["message"]}
+    return {"status": "started", "total": len(rows), "message": _mp_backfill_status["message"], "before_stats": before_stats}
 
 
 @app.get("/api/memory-palace/backfill-embeddings/status")
@@ -7667,6 +7681,8 @@ async def api_mp_backfill_embeddings_status():
         "skipped": _mp_backfill_status.get("skipped", 0),
         "failed": _mp_backfill_status.get("failed", 0),
         "message": _mp_backfill_status.get("message", ""),
+        "before_stats": _mp_backfill_status.get("before_stats"),
+        "after_stats": _mp_backfill_status.get("after_stats"),
         "error": _mp_backfill_status["error"],
         "finished_at": _mp_backfill_status["finished_at"],
     }

@@ -309,6 +309,8 @@ async def lifespan(app: FastAPI):
                         "RESPONSE_TRANSFORM_RULES": str,
                         "REASONING_EFFORT": str,
                         "MEMORY_PALACE_DEFAULT_LIMIT": int,
+            "KEYWORD_CONTEXT_ENABLED": lambda v: _parse_bool(v),
+            "KEYWORD_CONTEXT_RULES": str,
                     }
                     _RESTORE_DB = {
                         "EMBEDDING_API_KEY": str, "EMBEDDING_BASE_URL": str,
@@ -2905,6 +2907,10 @@ async def build_partitioned_messages(
         if env_text:
             result.append({"role": "system", "content": env_text})
 
+        keyword_context_text = await build_keyword_context_text(current_content)
+        if keyword_context_text:
+            result.append({"role": "system", "content": keyword_context_text})
+
         # Operit 原生记忆附件放在最底部，按用户手动检索结果使用。
         if operit_memory_text:
             result.append({"role": "system", "content": operit_memory_text})
@@ -2952,6 +2958,10 @@ async def _build_basic_cached(
         # 环境/插件上下文后置为轻量 system 消息，避免原始注入污染用户正文。
         if env_text:
             result.append({"role": "system", "content": env_text})
+
+        keyword_context_text = await build_keyword_context_text(current_content)
+        if keyword_context_text:
+            result.append({"role": "system", "content": keyword_context_text})
 
         # Operit 原生记忆附件放在最底部，按用户手动检索结果使用。
         if operit_memory_text:
@@ -3647,6 +3657,7 @@ async def chat_completions(request: Request):
         body["messages"] = messages
     
     else:
+        await inject_keyword_context_auto_context(messages, user_message)
         await inject_memory_palace_auto_context(messages, query=user_message, recent_messages=messages, explicit_present=non_partition_has_explicit_memory_palace, session_id=session_id)
 
         # 非分区模式下也要兜一下工具轮次：
@@ -7161,6 +7172,8 @@ async def get_settings():
             "REASONING_EFFORT":   db.get("REASONING_EFFORT") or str(REASONING_EFFORT),
             "USER_NICKNAME":      db.get("USER_NICKNAME") or str(USER_NICKNAME),
             "MEMORY_PALACE_DEFAULT_LIMIT": int(db.get("MEMORY_PALACE_DEFAULT_LIMIT") or MEMORY_PALACE_DEFAULT_LIMIT),
+            "KEYWORD_CONTEXT_ENABLED": _parse_bool(db.get("KEYWORD_CONTEXT_ENABLED"), KEYWORD_CONTEXT_ENABLED),
+            "KEYWORD_CONTEXT_RULES": db.get("KEYWORD_CONTEXT_RULES") or str(KEYWORD_CONTEXT_RULES),
 
             # System Prompt
             "systemPrompt": db.get("systemPrompt") or _DEFAULT_SYSTEM_PROMPT or "",

@@ -852,15 +852,9 @@ async function showMemoryPalaceVectorStats() {
         const data = await resp.json();
         if (data.error) throw new Error(data.error);
         showMemoryPalaceBackfillStatus(
-            '📊 当前向量：' +
-            '节点 ' + (data.total_nodes || 0) + ' 条，' +
-            '向量 ' + (data.total_vectors || 0) + ' 条，' +
-            '缺失 ' + (data.missing_vectors || 0) + ' 条，' +
-            '可补 ' + (data.fillable_missing_vectors || 0) + ' 条，' +
-            '空内容缺失 ' + (data.empty_missing_vectors || 0) + ' 条，' +
-            '标记异常：已标记但无向量 ' + (data.embedded_true_without_vector || 0) + ' 条 / ' +
-            '未标记但有向量 ' + (data.embedded_false_with_vector || 0) + ' 条，' +
-            '空内容 ' + (data.empty_content_nodes || 0) + ' 条'
+            '📊 当前向量：节点 ' + (data.total_nodes || 0) +
+            ' 条，向量 ' + (data.total_vectors || 0) +
+            ' 条，缺失 ' + (data.missing_vectors || 0) + ' 条'
         );
     } catch (e) {
         showMemoryPalaceBackfillStatus('❌ 查询向量数量失败：' + e.message, 'error');

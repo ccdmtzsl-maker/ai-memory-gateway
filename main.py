@@ -7069,7 +7069,6 @@ async def get_settings():
 
             # 记忆提取提示词
             "extractionPrompt": db.get("extractionPrompt") or _DEFAULT_EXTRACTION_PROMPT or "",
-            "consolidationPrompt": db.get("consolidationPrompt") or _DEFAULT_CONSOLIDATION_PROMPT or "",
             "dailyImpressionPrompt": db.get("dailyImpressionPrompt") or _DEFAULT_DAILY_IMPRESSION_PROMPT or "",
             "modelPresets": json.loads(db.get("modelPresets") or "[]"),
         }
@@ -7219,13 +7218,6 @@ async def save_settings(request: Request):
                 await set_gateway_config("extractionPrompt", str(value))
                 set_extraction_prompt(str(value))
                 updated.append("extractionPrompt")
-                continue
-
-            # --- consolidationPrompt 特殊处理 ---
-            if key == "consolidationPrompt":
-                await set_gateway_config("consolidationPrompt", str(value))
-                set_consolidation_prompt(str(value))
-                updated.append("consolidationPrompt")
                 continue
 
             # --- dailyImpressionPrompt 特殊处理 ---

@@ -14,6 +14,7 @@ COPY . .
 # 端口（Render 等平台会通过 PORT 环境变量分配）
 # 默认 8000
 ENV PORT=8000
+ENV PYTHONUNBUFFERED=1
 
 # 启动网关
 CMD ["python", "main.py"]

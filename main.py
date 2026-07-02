@@ -6428,12 +6428,61 @@ async def call_memory_palace_extractor(messages_text: str, character_id: str = "
     return raw_items, unpin_ids, related_refs, corrections
 
 
+async def compute_memory_palace_embedding(text: str) -> list:
+    """记忆宫殿专用 embedding 调用：兼容常见 OpenAI/SiliconFlow embeddings 参数差异。"""
+    text = str(text or "").strip()
+    if not text:
+        return []
+    if len(text) > 4000:
+        text = text[:4000]
+    api_key = str(getattr(_db_module, "EMBEDDING_API_KEY", "") or "").strip()
+    base_url = str(getattr(_db_module, "EMBEDDING_BASE_URL", "") or "").strip().rstrip("/")
+    model = str(getattr(_db_module, "EMBEDDING_MODEL", "") or "").strip()
+    dim = int(getattr(_db_module, "EMBEDDING_DIM", 0) or 0)
+    if not api_key or not base_url or not model:
+        print("[mp-embedding] EMBEDDING_API_KEY / EMBEDDING_BASE_URL / EMBEDDING_MODEL 未完整配置")
+        return []
+    endpoint = base_url if base_url.endswith("/embeddings") else (base_url + "/embeddings")
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    variants = []
+    # 优先不带 dimensions；很多兼容端（含部分 SiliconFlow 模型）不接受 dimensions。
+    variants.append({"model": model, "input": text})
+    variants.append({"model": model, "input": [text]})
+    if dim > 0:
+        variants.append({"model": model, "input": text, "dimensions": dim})
+        variants.append({"model": model, "input": [text], "dimensions": dim})
+    try:
+        async with httpx.AsyncClient() as client:
+            last_error = ""
+            for idx, body in enumerate(variants, 1):
+                try:
+                    resp = await client.post(endpoint, headers=headers, json=body, timeout=30.0)
+                    if resp.status_code >= 400:
+                        last_error = resp.text[:500]
+                        print(f"[mp-embedding] variant#{idx} HTTP {resp.status_code}: {last_error}")
+                        continue
+                    data = resp.json()
+                    emb = (data.get("data") or [{}])[0].get("embedding")
+                    if emb:
+                        return emb
+                    last_error = str(data)[:500]
+                    print(f"[mp-embedding] variant#{idx} 无 embedding: {last_error}")
+                except Exception as e:
+                    last_error = f"{type(e).__name__}: {e}"
+                    print(f"[mp-embedding] variant#{idx} failed: {last_error}")
+            print(f"[mp-embedding] 所有请求格式均失败: endpoint={endpoint}, model={model}, last={last_error}")
+            return []
+    except Exception as e:
+        print(f"[mp-embedding] 请求异常: {type(e).__name__}: {e}")
+        return []
+
+
 async def save_memory_palace_embedding(memory_id: str, content: str) -> bool:
     """保存/刷新记忆宫殿向量。只在 embedding 成功后 UPSERT，不先删除旧向量。"""
     content = str(content or "").strip()
     if not content:
         return False
-    embedding = await _db_module.compute_embedding(content)
+    embedding = await compute_memory_palace_embedding(content)
     if not embedding:
         return False
     pool = await get_pool()
@@ -6462,7 +6511,7 @@ async def save_memory_palace_embedding_if_missing(memory_id: str, content: str) 
         if exists:
             await conn.execute("UPDATE memory_palace_nodes SET embedded=TRUE, updated_at=NOW() WHERE id=$1", memory_id)
             return "exists"
-    embedding = await _db_module.compute_embedding(content)
+    embedding = await compute_memory_palace_embedding(content)
     if not embedding:
         return "failed"
     async with pool.acquire() as conn:

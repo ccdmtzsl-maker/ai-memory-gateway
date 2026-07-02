@@ -545,6 +545,11 @@
                         <input type="number" id="set-CACHE_PARTITION_X" class="input" min="5" max="100">
                     </div>
                     <div class="settings-field">
+                        <label>自动提取单批上限 (CACHE_PARTITION_EXTRACT_LIMIT)</label>
+                        <input type="number" id="set-CACHE_PARTITION_EXTRACT_LIMIT" class="input" min="1" max="1000">
+                        <small class="form-hint">cursor 过滤后最多送入记忆提取模型的消息数，避免一次处理过多历史；默认 120。</small>
+                    </div>
+                    <div class="settings-field">
                         <label>Embedding API Key</label>
                         <input type="text" id="set-EMBEDDING_API_KEY" class="input" placeholder="sk-...">
                         <small class="form-hint" id="set-EMBEDDING_API_KEY-hint">打码显示，留空不改</small>
@@ -619,7 +624,7 @@
         </main>
     </div>
 
-    <script src="/static/js/dashboard.js?v=4.3"></script>
+    <script src="/static/js/dashboard.js?v=4.4"></script>
 <script src="/static/js/daily_impressions.js?v=1.4"></script>
 <script>
     // --- 模型预设管理（右上角切换面板） ---

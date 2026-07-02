@@ -715,6 +715,12 @@ function initMemoryPalaceInteractions() {
     if (!section || section.dataset.mpBound === '1') return;
     section.dataset.mpBound = '1';
     section.addEventListener('click', (event) => {
+        const backfillBtn = event.target.closest('#mpBackfillBtn');
+        if (backfillBtn) {
+            event.preventDefault();
+            backfillMemoryPalaceEmbeddings();
+            return;
+        }
         const roomCard = event.target.closest('.mp-room-card');
         if (roomCard) {
             selectMemoryPalaceRoom(roomCard.dataset.room || '');

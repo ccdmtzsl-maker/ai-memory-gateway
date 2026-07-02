@@ -516,6 +516,15 @@
                         <input type="number" id="set-MEMORY_PALACE_DEFAULT_LIMIT" class="input" min="1" max="30" value="5">
                         <small class="form-hint">影响 &#123;&#123;memory_palace&#125;&#125; 默认条数；&#123;&#123;memory_palace:10&#125;&#125; 这种显式数量仍以变量为准。</small>
                     </div>
+                    <div class="settings-field settings-toggle-row">
+                        <label>启用关键词触发上下文 (KEYWORD_CONTEXT_ENABLED)</label>
+                        <label class="toggle"><input type="checkbox" id="set-KEYWORD_CONTEXT_ENABLED"><span class="toggle-slider"></span></label>
+                    </div>
+                    <div class="settings-field">
+                        <label>关键词触发规则 (KEYWORD_CONTEXT_RULES)</label>
+                        <textarea id="set-KEYWORD_CONTEXT_RULES" class="textarea" rows="12" placeholder='[{"enabled":true,"name":"示例","keywords":["关键词"],"match":"contains","content":"命中后本轮临时注入的系统上下文"}]'></textarea>
+                        <small class="form-hint">JSON 数组；当前支持 contains / exact。命中后仅本轮追加 system 消息，不写入历史。</small>
+                    </div>
                 </div>
 
                 <!-- 缓存分区 -->

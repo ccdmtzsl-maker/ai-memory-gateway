@@ -1844,6 +1844,87 @@ def _message_content_text(msg: dict) -> str:
     return str(content or "")
 
 
+def _normalize_keyword_context_rules(raw: str) -> list:
+    try:
+        data = json.loads(raw or "[]")
+    except Exception as e:
+        print(f"[keyword_context] 规则 JSON 解析失败: {e}")
+        return []
+    if isinstance(data, dict):
+        data = data.get("rules", [])
+    if not isinstance(data, list):
+        return []
+    rules = []
+    for item in data:
+        if not isinstance(item, dict) or item.get("enabled", True) is False:
+            continue
+        content = str(item.get("content", "") or "").strip()
+        keywords = item.get("keywords", [])
+        if isinstance(keywords, str):
+            keywords = [keywords]
+        keywords = [str(k).strip() for k in keywords if str(k).strip()] if isinstance(keywords, list) else []
+        if not content or not keywords:
+            continue
+        rules.append({
+            "name": str(item.get("name", "未命名规则") or "未命名规则").strip(),
+            "keywords": keywords,
+            "match": str(item.get("match", "contains") or "contains").strip().lower(),
+            "content": content,
+        })
+    return rules
+
+
+def _keyword_rule_matches(rule: dict, text: str) -> bool:
+    q = str(text or "")
+    if not q:
+        return False
+    q_lower = q.lower()
+    match_type = rule.get("match", "contains")
+    for kw in rule.get("keywords", []):
+        kw = str(kw or "").strip()
+        if not kw:
+            continue
+        if match_type == "exact" and q.strip() == kw:
+            return True
+        if match_type != "exact" and kw.lower() in q_lower:
+            return True
+    return False
+
+
+async def build_keyword_context_text(user_message: str, max_rules: int = 5) -> str:
+    if not user_message or not await get_runtime_keyword_context_enabled():
+        return ""
+    rules = _normalize_keyword_context_rules(await get_runtime_keyword_context_rules_raw())
+    matched = [r for r in rules if _keyword_rule_matches(r, user_message)]
+    if not matched:
+        return ""
+    matched = matched[:max(1, int(max_rules or 5))]
+    parts = ["【关键词触发上下文】", "以下内容仅因当前用户消息命中关键词而在本轮临时提供参考；不要主动说明触发规则。"]
+    for rule in matched:
+        parts.append("")
+        parts.append("# " + rule["name"])
+        parts.append(rule["content"])
+    return chr(10).join(parts).strip()
+
+
+def insert_keyword_context_system_message(messages: list, text: str) -> bool:
+    if not text or not isinstance(messages, list):
+        return False
+    insert_at = len(messages)
+    for idx in range(len(messages) - 1, -1, -1):
+        msg = messages[idx]
+        if isinstance(msg, dict) and msg.get("role") == "user":
+            insert_at = idx + 1
+            break
+    messages.insert(insert_at, {"role": "system", "content": text})
+    return True
+
+
+async def inject_keyword_context_auto_context(messages: list, user_message: str) -> bool:
+    text = await build_keyword_context_text(user_message)
+    return insert_keyword_context_system_message(messages, text)
+
+
 def _is_operit_memory_context_message(msg: dict) -> bool:
     text = _message_content_text(msg)
     if not text:

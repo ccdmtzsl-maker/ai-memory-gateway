@@ -2868,14 +2868,18 @@ async def build_partitioned_messages(
     b_rounds_count = len(b_round_groups)
     
     rotation_count = 0
+    newly_evicted_batches = []
     max_rotations = CACHE_MAX_ROTATIONS if CACHE_PARTITION_TRIGGER == "time" else 999
     while _should_rotate(b_rounds_count, X, a_msgs) and rotation_count < max_rotations:
         rotation_count += 1
         trigger_info = f"B区{b_rounds_count}轮 >= X={X}" if CACHE_PARTITION_TRIGGER != "time" else f"A区首条消息超出{CACHE_PARTITION_WINDOW}分钟窗口"
         print(f"🔄 轮转#{rotation_count}: session={session_id}, {trigger_info}")
-        log_memory_palace_auto_extract("run", f"🧠 分区轮转触发自动提取：session={session_id}, {trigger_info}, A区{len(a_msgs)}条", session_id=session_id)
-        await extract_memory_palace_from_partition_messages(a_msgs, session_id)
-        
+        log_memory_palace_auto_extract("run", f"🧠 分区轮转准备挤出A区：session={session_id}, {trigger_info}, A区{len(a_msgs)}条", session_id=session_id)
+        # 先记录即将被挤出的旧 A 区；只有在 a_start_round 保存成功后，
+        # 这些消息才真正离开缓存区，随后才允许推进自动提取游标。
+        if a_msgs:
+            newly_evicted_batches.append(a_msgs)
+
         a_start_round += X
         a_end_round = a_start_round + X
         a_round_groups = rounds[a_start_round : a_end_round]
@@ -2887,6 +2891,9 @@ async def build_partitioned_messages(
     if rotation_count > 0:
         await save_session_cache_state(session_id, summary_parts, a_start_round)
         print(f"🔄 轮转完成(共{rotation_count}次): 摘要已架空, A区{len(a_msgs)}条, B区{len(b_msgs)}条")
+        for evicted_msgs in newly_evicted_batches:
+            log_memory_palace_auto_extract("run", f"🧠 分区轮转后自动提取已挤出内容：session={session_id}, 消息{len(evicted_msgs)}条", session_id=session_id)
+            await extract_memory_palace_from_partition_messages(evicted_msgs, session_id)
     
     # 拼装messages
     result = []

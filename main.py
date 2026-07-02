@@ -90,6 +90,8 @@ _last_upstream_request_meta = {}
 
 # Memory Palace 分区自动提取锁：同一角色/会话串行化，避免并发请求重复处理同一批 cursor 区间。
 _memory_palace_auto_extract_locks = {}
+# 分区后台维护锁：保护 a_start_round 读取/轮转/保存/提取调度，避免同一会话后台任务互相覆盖状态。
+_partition_auto_maintenance_locks = {}
 
 def add_dashboard_log(level: str, message: str, category: str = "memory", session_id: str = ""):
     item = {
@@ -3078,6 +3080,14 @@ async def run_partition_auto_extract_after_response(session_id: str, character_i
     """
     if not MEMORY_ENABLED or not CACHE_PARTITION_ENABLED:
         return
+    lock_key = f"{character_id}:{session_id}"
+    lock = _partition_auto_maintenance_locks.setdefault(lock_key, asyncio.Lock())
+    async with lock:
+        await _run_partition_auto_extract_after_response_locked(session_id, character_id=character_id)
+
+
+async def _run_partition_auto_extract_after_response_locked(session_id: str, character_id: str = "default"):
+    """实际执行回复后分区维护；调用方已保证同会话串行。"""
     try:
         db_history = await get_conversation_messages(session_id, limit=10000)
         db_msgs = []

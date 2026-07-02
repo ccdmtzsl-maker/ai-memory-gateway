@@ -818,3 +818,37 @@ function initMemoryPalacePage() {
 }
 
 document.addEventListener('DOMContentLoaded', initMemoryPalacePage);
+
+let _mpBackfillRunning = false;
+
+async function backfillMemoryPalaceEmbeddings() {
+    if (_mpBackfillRunning) return;
+    const btn = document.getElementById('mpBackfillBtn');
+    const oldText = btn ? btn.textContent : '';
+    if (btn) { btn.disabled = true; btn.textContent = '补算中...'; }
+    _mpBackfillRunning = true;
+    try {
+        const resp = await fetch('/api/memory-palace/backfill-embeddings', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({})});
+        const data = await resp.json();
+        if (data.error) throw new Error(data.error);
+        if (data.status === 'done') { mpMsg('所有节点已有向量，无需补算'); return; }
+        mpMsg('开始补全向量，共 ' + (data.total || 0) + ' 个节点待处理...');
+        const poll = async () => {
+            try {
+                const r = await fetch('/api/memory-palace/backfill-embeddings/status');
+                const s = await r.json();
+                if (s.error) { mpMsg('补算异常: ' + s.error, 'error'); return; }
+                mpMsg('补全向量进度: ' + (s.done || 0) + '/' + (s.total || 0) + (s.running ? ' ...' : ' 完成'));
+                if (s.running) { setTimeout(poll, 2000); return; }
+                if (btn) { btn.disabled = false; btn.textContent = oldText || '补全向量'; }
+                _mpBackfillRunning = false;
+                await loadMemoryPalace();
+            } catch(e) { mpMsg('查询补算进度失败: ' + e.message, 'error'); }
+        };
+        setTimeout(poll, 1500);
+    } catch(e) {
+        mpMsg('补全向量失败: ' + e.message, 'error');
+        if (btn) { btn.disabled = false; btn.textContent = oldText || '补全向量'; }
+        _mpBackfillRunning = false;
+    }
+}

@@ -2851,8 +2851,7 @@ async def build_partitioned_messages(
         rotation_count += 1
         trigger_info = f"B区{b_rounds_count}轮 >= X={X}" if CACHE_PARTITION_TRIGGER != "time" else f"A区首条消息超出{CACHE_PARTITION_WINDOW}分钟窗口"
         print(f"🔄 轮转#{rotation_count}: session={session_id}, {trigger_info}")
-        log_memory_palace_auto_extract("run", f"🧠 分区轮转触发自动提取：session={session_id}, {trigger_info}, A区{len(a_msgs)}条", session_id=session_id)
-        await extract_memory_palace_from_partition_messages(a_msgs, session_id)
+        log_memory_palace_auto_extract("run", f"🧠 分区轮转推进缓存边界：session={session_id}, {trigger_info}, 当前A区{len(a_msgs)}条", session_id=session_id)
         
         a_start_round += X
         a_end_round = a_start_round + X

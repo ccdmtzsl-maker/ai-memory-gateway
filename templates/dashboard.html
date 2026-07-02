@@ -525,8 +525,8 @@
                         <input type="hidden" id="set-KEYWORD_CONTEXT_RULES">
                         <div id="keyword-rule-editor" class="keyword-rule-editor"></div>
                         <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:10px;">
-                            <button type="button" class="btn btn-secondary btn-sm" onclick="addKeywordRule()">+ 添加规则</button>
-                            <button type="button" class="btn btn-secondary btn-sm" onclick="testKeywordRules()">测试命中</button>
+                            <button type="button" class="btn btn-sm btn-secondary" onclick="addKeywordRule()">+ 添加规则</button>
+                            <button type="button" class="btn btn-sm btn-secondary" onclick="testKeywordRules()">测试命中</button>
                         </div>
                         <input type="text" id="keyword-rule-test-input" class="input" placeholder="输入一句用户消息，用来测试会命中哪些规则" style="margin-top:8px;">
                         <small class="form-hint" id="keyword-rule-test-result">规则会保存为 JSON；命中后仅本轮追加 system 消息，不写入历史。</small>
@@ -619,7 +619,7 @@
         </main>
     </div>
 
-    <script src="/static/js/dashboard.js?v=4.0"></script>
+    <script src="/static/js/dashboard.js?v=4.1"></script>
 <script src="/static/js/daily_impressions.js?v=1.4"></script>
 <script>
     // --- 模型预设管理（右上角切换面板） ---

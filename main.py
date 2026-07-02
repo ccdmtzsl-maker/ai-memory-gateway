@@ -6428,6 +6428,17 @@ async def call_memory_palace_extractor(messages_text: str, character_id: str = "
     return raw_items, unpin_ids, related_refs, corrections
 
 
+def is_valid_memory_palace_embedding_json(value) -> bool:
+    """Python侧有效向量判断：必须是非空数值数组，和统计/补全口径保持一致。"""
+    if value is None:
+        return False
+    try:
+        arr = json.loads(str(value).strip())
+    except Exception:
+        return False
+    return isinstance(arr, list) and len(arr) > 0 and all(isinstance(x, (int, float)) for x in arr)
+
+
 async def compute_memory_palace_embedding(text: str) -> list:
     """记忆宫殿专用 embedding 调用：兼容常见 OpenAI/SiliconFlow embeddings 参数差异。"""
     text = str(text or "").strip()
@@ -6508,8 +6519,7 @@ async def save_memory_palace_embedding_if_missing(memory_id: str, content: str) 
     pool = await get_pool()
     async with pool.acquire() as conn:
         existing_embedding = await conn.fetchval("SELECT embedding_json FROM memory_palace_vectors WHERE memory_id=$1", memory_id)
-        existing_text = str(existing_embedding or "").strip()
-        if existing_embedding is not None and existing_text and existing_text.lower() not in ("[]", "null") and existing_text.startswith("["):
+        if is_valid_memory_palace_embedding_json(existing_embedding):
             await conn.execute("UPDATE memory_palace_nodes SET embedded=TRUE, updated_at=NOW() WHERE id=$1", memory_id)
             return "exists"
     embedding = await compute_memory_palace_embedding(content)
@@ -7693,7 +7703,11 @@ async def api_mp_backfill_embeddings():
                 UPDATE memory_palace_nodes n
                 SET embedded=TRUE, updated_at=NOW()
                 FROM memory_palace_vectors v
-                WHERE v.memory_id = n.id AND n.embedded = FALSE
+                WHERE v.memory_id = n.id
+                  AND n.embedded = FALSE
+                  AND NULLIF(TRIM(COALESCE(v.embedding_json, '')), '') IS NOT NULL
+                  AND LOWER(TRIM(v.embedding_json)) NOT IN ('[]', 'null')
+                  AND TRIM(v.embedding_json) ~ '^\[[[:space:]]*-?[0-9]'
             """)
             # 只补真正缺失向量的节点，避免破坏已有向量。
             rows = await conn.fetch("""
@@ -7713,7 +7727,7 @@ async def api_mp_backfill_embeddings():
         return {"error": f"查询待补算节点失败: {e}"}
     if not rows:
         stats = await get_memory_palace_vector_stats()
-        return {"status": "done", "message": f"当前向量：节点 {stats.get('total_nodes', 0)} 条，向量 {stats.get('total_vectors', 0)} 条，缺失 {stats.get('missing_vectors', 0)} 条", "total": 0, "done": 0, "stats": stats}
+        return {"status": "done", "message": f"当前向量：节点 {stats.get('total_nodes', 0)} 条，有效向量 {stats.get('total_vectors', 0)} 条，缺失/空向量 {stats.get('missing_vectors', 0)} 条", "total": 0, "done": 0, "stats": stats}
     before_stats = await get_memory_palace_vector_stats()
     _mp_backfill_status["running"] = True
     _mp_backfill_status["total"] = len(rows)

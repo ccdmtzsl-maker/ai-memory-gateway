@@ -64,7 +64,7 @@ MEMORY_ENABLED = os.getenv("MEMORY_ENABLED", "false").lower() == "true"
 # 分区缓存
 CACHE_PARTITION_ENABLED = os.getenv("CACHE_PARTITION_ENABLED", "false").lower() == "true"
 CACHE_PARTITION_X = int(os.getenv("CACHE_PARTITION_X", "15"))
-# 分区自动提取单批最多处理的消息数；先按 cursor 过滤，再限量，避免一次塞入过多历史。
+# 分区自动提取最多处理的最新消息数；先按 cursor 过滤，再只取最新 N 条，过旧积压直接跳过。
 CACHE_PARTITION_EXTRACT_LIMIT = int(os.getenv("CACHE_PARTITION_EXTRACT_LIMIT", "120"))
 CACHE_SUMMARY_MODEL = os.getenv("CACHE_SUMMARY_MODEL", "anthropic/claude-haiku-4.5")
 CACHE_PARTITION_TRIGGER = os.getenv("CACHE_PARTITION_TRIGGER", "rounds")  # rounds=按轮次 | time=按时间窗口
@@ -2613,8 +2613,9 @@ async def _extract_memory_palace_from_partition_messages_locked(messages: list, 
         pending_count = len(rows)
         batch_limit = max(1, int(CACHE_PARTITION_EXTRACT_LIMIT or 120))
         if len(rows) > batch_limit:
-            rows = rows[:batch_limit]
-            log_memory_palace_auto_extract("info", f"🧠 分区自动提取限量：session={session_id}, cursor={last_id}, 待处理{pending_count}条，本批{len(rows)}条", session_id=session_id)
+            skipped_old = len(rows) - batch_limit
+            rows = rows[-batch_limit:]
+            log_memory_palace_auto_extract("info", f"🧠 分区自动提取限量：session={session_id}, cursor={last_id}, 候选{pending_count}条，仅取最新{len(rows)}条，跳过较旧{skipped_old}条", session_id=session_id)
         message_ids = [int(r["id"]) for r in rows]
         log_memory_palace_auto_extract("run", f"🧠 分区自动提取开始：session={session_id}, cursor={last_id}, 待处理{len(rows)}条", session_id=session_id)
         messages_text = _format_messages_for_memory_palace(rows)

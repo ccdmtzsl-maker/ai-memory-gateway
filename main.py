@@ -2835,14 +2835,9 @@ async def build_partitioned_messages(
     if total_rounds < X:
         return await _build_basic_cached(history, base_prompt, user_message, current_user_msg)
     
-    # 游标补提取：处理已经被 a_start_round 挤出缓存区的历史内容。
-    # 这覆盖“调整分区轮数/之前已轮转但自动提取尚未接入”的情况。
-    if a_start_round > 0:
-        evicted_round_groups = rounds[:min(a_start_round, total_rounds)]
-        evicted_msgs = [msg for rnd in evicted_round_groups for msg in rnd]
-        await extract_memory_palace_from_partition_messages(evicted_msgs, session_id)
-    
-    # 计算A/B区（按逻辑轮切片）
+    # 计算A/B区（按逻辑轮切片）。
+    # 注意：自动提取不直接取当前 A 区；A 区只有在 a_start_round 推进后，
+    # 才会变成 rounds[0:a_start_round] 里的“缓存区外内容”。
     a_end_round = a_start_round + X
     a_round_groups = rounds[a_start_round : a_end_round]
     b_round_groups = rounds[a_end_round :]
@@ -2870,6 +2865,19 @@ async def build_partitioned_messages(
     if rotation_count > 0:
         await save_session_cache_state(session_id, summary_parts, a_start_round)
         print(f"🔄 轮转完成(共{rotation_count}次): 摘要已架空, A区{len(a_msgs)}条, B区{len(b_msgs)}条")
+
+    # 分区自动提取范围：只处理当前 session 中已经离开缓存区的轮。
+    # 先用 a_start_round 找出缓存区外轮次，再交给 cursor 按 message_id 过滤。
+    if a_start_round > 0:
+        evicted_round_groups = rounds[:min(a_start_round, total_rounds)]
+        evicted_msgs = [msg for rnd in evicted_round_groups for msg in rnd]
+        if evicted_msgs:
+            log_memory_palace_auto_extract(
+                "run",
+                f"🧠 分区自动提取检查缓存区外内容：session={session_id}, rounds< {a_start_round}, 消息{len(evicted_msgs)}条",
+                session_id=session_id,
+            )
+            await extract_memory_palace_from_partition_messages(evicted_msgs, session_id)
     
     # 拼装messages
     result = []

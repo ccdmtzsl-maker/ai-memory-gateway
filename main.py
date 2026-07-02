@@ -6527,7 +6527,7 @@ async def save_memory_palace_embedding_if_missing(memory_id: str, content: str) 
             WHERE memory_palace_vectors.embedding_json IS NULL
                OR NULLIF(TRIM(memory_palace_vectors.embedding_json), '') IS NULL
                OR LOWER(TRIM(memory_palace_vectors.embedding_json)) IN ('[]', 'null')
-               OR TRIM(memory_palace_vectors.embedding_json) !~ '^\\[\\s*-?[0-9]'
+               OR TRIM(memory_palace_vectors.embedding_json) !~ '^\\[[[:space:]]*-?[0-9]'
         """, memory_id, json.dumps(embedding), len(embedding), getattr(_db_module, "EMBEDDING_MODEL", ""))
         if res.endswith("1"):
             await conn.execute("UPDATE memory_palace_nodes SET embedded=TRUE, updated_at=NOW() WHERE id=$1", memory_id)
@@ -6547,19 +6547,19 @@ async def get_memory_palace_vector_stats() -> dict:
                     WHERE v.memory_id IS NOT NULL
                       AND NULLIF(TRIM(COALESCE(v.embedding_json, '')), '') IS NOT NULL
                       AND LOWER(TRIM(v.embedding_json)) NOT IN ('[]', 'null')
-                      AND TRIM(v.embedding_json) ~ '^\\[\\s*-?[0-9]'
+                      AND TRIM(v.embedding_json) ~ '^\\[[[:space:]]*-?[0-9]'
                 )::int AS total_vectors,
                 COUNT(n.id) FILTER (
                     WHERE v.memory_id IS NULL
                        OR NULLIF(TRIM(COALESCE(v.embedding_json, '')), '') IS NULL
                        OR LOWER(TRIM(v.embedding_json)) IN ('[]', 'null')
-                       OR TRIM(v.embedding_json) !~ '^\\[\\s*-?[0-9]'
+                       OR TRIM(v.embedding_json) !~ '^\\[[[:space:]]*-?[0-9]'
                 )::int AS missing_vectors,
                 COUNT(n.id) FILTER (
                     WHERE v.memory_id IS NOT NULL AND (
                         NULLIF(TRIM(COALESCE(v.embedding_json, '')), '') IS NULL
                         OR LOWER(TRIM(v.embedding_json)) IN ('[]', 'null')
-                        OR TRIM(v.embedding_json) !~ '^\\[\\s*-?[0-9]'
+                        OR TRIM(v.embedding_json) !~ '^\\[[[:space:]]*-?[0-9]'
                     )
                 )::int AS invalid_vector_rows,
                 COUNT(n.id) FILTER (
@@ -6567,7 +6567,7 @@ async def get_memory_palace_vector_stats() -> dict:
                         v.memory_id IS NULL
                         OR NULLIF(TRIM(COALESCE(v.embedding_json, '')), '') IS NULL
                         OR LOWER(TRIM(v.embedding_json)) IN ('[]', 'null')
-                        OR TRIM(v.embedding_json) !~ '^\\[\\s*-?[0-9]'
+                        OR TRIM(v.embedding_json) !~ '^\\[[[:space:]]*-?[0-9]'
                     )
                 )::int AS embedded_true_without_vector,
                 COUNT(n.id) FILTER (
@@ -6575,7 +6575,7 @@ async def get_memory_palace_vector_stats() -> dict:
                       AND v.memory_id IS NOT NULL
                       AND NULLIF(TRIM(COALESCE(v.embedding_json, '')), '') IS NOT NULL
                       AND LOWER(TRIM(v.embedding_json)) NOT IN ('[]', 'null')
-                      AND TRIM(v.embedding_json) ~ '^\\[\\s*-?[0-9]'
+                      AND TRIM(v.embedding_json) ~ '^\\[[[:space:]]*-?[0-9]'
                 )::int AS embedded_false_with_vector,
                 COUNT(n.id) FILTER (WHERE COALESCE(NULLIF(TRIM(n.content), ''), '') = '')::int AS empty_content_nodes
             FROM memory_palace_nodes n
@@ -7704,7 +7704,7 @@ async def api_mp_backfill_embeddings():
                     v.memory_id IS NULL
                     OR NULLIF(TRIM(COALESCE(v.embedding_json, '')), '') IS NULL
                     OR LOWER(TRIM(v.embedding_json)) IN ('[]', 'null')
-                    OR TRIM(v.embedding_json) !~ '^\\[\\s*-?[0-9]'
+                    OR TRIM(v.embedding_json) !~ '^\\[[[:space:]]*-?[0-9]'
                 )
                   AND COALESCE(NULLIF(TRIM(n.content), ''), '') <> ''
                 ORDER BY n.created_at

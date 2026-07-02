@@ -288,33 +288,13 @@
 
                 <div class="card">
                     <div class="tabs">
-                        <button class="tab active" data-tab="text">纯文本导入</button>
-                        <button class="tab" data-tab="chat">聊天记录提取</button>
+                        <button class="tab active" data-tab="chat">聊天记录提取</button>
                         <button class="tab" data-tab="json">日印象恢复</button>
                         <button class="tab" data-tab="mp-import">记忆宫殿恢复</button>
                     </div>
 
-                    <!-- 纯文本导入 -->
-                    <div id="tab-text" class="tab-panel active">
-                        <div class="form-group">
-                            <label class="form-label">上传 .txt 文件（每行一条记忆）</label>
-                            <input type="file" id="txtFile" accept=".txt" class="file-input">
-                        </div>
-                        <div class="divider"><span>或者直接输入</span></div>
-                        <div class="form-group">
-                            <textarea id="txtInput" class="textarea" rows="8" placeholder="每行一条记忆，例如：&#10;用户的名字叫小花&#10;用户喜欢吃火锅&#10;用户养了一只狗叫豆豆"></textarea>
-                        </div>
-                        <div class="form-group">
-                            <label class="checkbox-label">
-                                <input type="checkbox" id="skipScore">
-                                <span>跳过自动评分（所有记忆默认权重 0，不消耗 API 额度）</span>
-                            </label>
-                        </div>
-                        <button class="btn btn-primary btn-lg" onclick="doTextImport()">开始导入</button>
-                    </div>
-
                     <!-- 聊天记录提取 -->
-                    <div id="tab-chat" class="tab-panel">
+                    <div id="tab-chat" class="tab-panel active">
                         <div class="form-group">
                             <label class="form-label">上传聊天记录文件（.txt / .md / .json）</label>
                             <input type="file" id="chatFile" accept=".txt,.md,.json" class="file-input">

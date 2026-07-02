@@ -522,8 +522,14 @@
                     </div>
                     <div class="settings-field">
                         <label>关键词触发规则 (KEYWORD_CONTEXT_RULES)</label>
-                        <textarea id="set-KEYWORD_CONTEXT_RULES" class="textarea" rows="12" placeholder='[{"enabled":true,"name":"示例","keywords":["关键词"],"match":"contains","content":"命中后本轮临时注入的系统上下文"}]'></textarea>
-                        <small class="form-hint">JSON 数组；当前支持 contains / exact。命中后仅本轮追加 system 消息，不写入历史。</small>
+                        <input type="hidden" id="set-KEYWORD_CONTEXT_RULES">
+                        <div id="keyword-rule-editor" class="keyword-rule-editor"></div>
+                        <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:10px;">
+                            <button type="button" class="btn btn-secondary btn-sm" onclick="addKeywordRule()">+ 添加规则</button>
+                            <button type="button" class="btn btn-secondary btn-sm" onclick="testKeywordRules()">测试命中</button>
+                        </div>
+                        <input type="text" id="keyword-rule-test-input" class="input" placeholder="输入一句用户消息，用来测试会命中哪些规则" style="margin-top:8px;">
+                        <small class="form-hint" id="keyword-rule-test-result">规则会保存为 JSON；命中后仅本轮追加 system 消息，不写入历史。</small>
                     </div>
                 </div>
 

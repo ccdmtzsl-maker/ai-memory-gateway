@@ -7537,7 +7537,7 @@ async def api_backfill_memory_embeddings():
     return {"status": "started", "total": total}
 
 
-_mp_backfill_status = {"running": False, "total": 0, "done": 0, "error": None, "finished_at": None}
+_mp_backfill_status = {"running": False, "total": 0, "done": 0, "inserted": 0, "skipped": 0, "failed": 0, "error": None, "message": "", "finished_at": None}
 
 
 @app.post("/api/memory-palace/backfill-embeddings")
@@ -7573,7 +7573,11 @@ async def api_mp_backfill_embeddings():
     _mp_backfill_status["running"] = True
     _mp_backfill_status["total"] = len(rows)
     _mp_backfill_status["done"] = 0
+    _mp_backfill_status["inserted"] = 0
+    _mp_backfill_status["skipped"] = 0
+    _mp_backfill_status["failed"] = 0
     _mp_backfill_status["error"] = None
+    _mp_backfill_status["message"] = f"准备补全 {len(rows)} 条缺失向量"
     _mp_backfill_status["finished_at"] = None
 
     async def run_mp_backfill():
@@ -7582,14 +7586,25 @@ async def api_mp_backfill_embeddings():
                 if not _mp_backfill_status["running"]:
                     break
                 try:
-                    await save_memory_palace_embedding_if_missing(row["id"], row["content"])
+                    inserted = await save_memory_palace_embedding_if_missing(row["id"], row["content"])
+                    if inserted:
+                        _mp_backfill_status["inserted"] += 1
+                    else:
+                        _mp_backfill_status["skipped"] += 1
                     _mp_backfill_status["done"] += 1
+                    _mp_backfill_status["message"] = f"正在补全向量：{_mp_backfill_status['done']}/{_mp_backfill_status['total']}"
                 except Exception as e:
                     print(f"[mp-backfill] 节点 {row['id']} 补算失败: {e}")
+                    _mp_backfill_status["failed"] += 1
                     _mp_backfill_status["done"] += 1
+                    _mp_backfill_status["message"] = f"正在补全向量：{_mp_backfill_status['done']}/{_mp_backfill_status['total']}（失败 {_mp_backfill_status['failed']}）"
                 await asyncio.sleep(0.1)
             _mp_backfill_status["finished_at"] = datetime.now(timezone.utc).isoformat()
-            print(f"[mp-backfill] 记忆宫殿向量补算完成: {_mp_backfill_status['done']}/{_mp_backfill_status['total']}")
+            _mp_backfill_status["message"] = (
+                f"向量补全完成：新增 {_mp_backfill_status['inserted']} 条，"
+                f"跳过/已有 {_mp_backfill_status['skipped']} 条，失败 {_mp_backfill_status['failed']} 条"
+            )
+            print(f"[mp-backfill] 记忆宫殿向量补算完成: {_mp_backfill_status['done']}/{_mp_backfill_status['total']}, inserted={_mp_backfill_status['inserted']}, skipped={_mp_backfill_status['skipped']}, failed={_mp_backfill_status['failed']}")
         except Exception as e:
             _mp_backfill_status["error"] = str(e)
             print(f"[mp-backfill] 记忆宫殿向量补算异常: {e}")
@@ -7597,7 +7612,7 @@ async def api_mp_backfill_embeddings():
             _mp_backfill_status["running"] = False
 
     asyncio.create_task(run_mp_backfill())
-    return {"status": "started", "total": len(rows)}
+    return {"status": "started", "total": len(rows), "message": _mp_backfill_status["message"]}
 
 
 @app.get("/api/memory-palace/backfill-embeddings/status")
@@ -7607,6 +7622,10 @@ async def api_mp_backfill_embeddings_status():
         "running": _mp_backfill_status["running"],
         "total": _mp_backfill_status["total"],
         "done": _mp_backfill_status["done"],
+        "inserted": _mp_backfill_status.get("inserted", 0),
+        "skipped": _mp_backfill_status.get("skipped", 0),
+        "failed": _mp_backfill_status.get("failed", 0),
+        "message": _mp_backfill_status.get("message", ""),
         "error": _mp_backfill_status["error"],
         "finished_at": _mp_backfill_status["finished_at"],
     }

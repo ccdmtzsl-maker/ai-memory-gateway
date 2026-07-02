@@ -869,7 +869,7 @@ async def search_memory_palace_for_prompt(query: str = "", limit: int = 5, room:
     query_embedding = None
     if query:
         try:
-            query_embedding = await _db_module.compute_embedding(query)
+            query_embedding = await compute_memory_palace_embedding(query)
         except Exception as e:
             print(f"⚠️ Memory Palace query embedding failed: {e}")
             query_embedding = None

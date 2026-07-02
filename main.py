@@ -86,6 +86,9 @@ _dashboard_logs = deque(maxlen=200)
 _last_upstream_request_body = None
 _last_upstream_request_meta = {}
 
+# Memory Palace 分区自动提取锁：同一角色/会话串行化，避免并发请求重复处理同一批 cursor 区间。
+_memory_palace_auto_extract_locks = {}
+
 def add_dashboard_log(level: str, message: str, category: str = "memory", session_id: str = ""):
     item = {
         "time": (datetime.now(timezone.utc) + timedelta(hours=TIMEZONE_HOURS)).strftime("%m-%d %H:%M:%S"),
@@ -2562,7 +2565,19 @@ async def generate_summary(messages: list, session_id: str = "") -> str:
 
 
 async def extract_memory_palace_from_partition_messages(messages: list, session_id: str, character_id: str = "default") -> dict:
-    """把缓存区外新挤出的消息自动提取入记忆宫殿，并推进session提取游标。"""
+    """把缓存区外新挤出的消息自动提取入记忆宫殿，并推进session提取游标。
+
+    只做并发保护：同一 character/session 串行执行，避免两个请求同时读到同一 cursor，
+    重复调用提取模型处理同一批消息。
+    """
+    lock_key = f"{character_id}:{session_id}"
+    lock = _memory_palace_auto_extract_locks.setdefault(lock_key, asyncio.Lock())
+    async with lock:
+        return await _extract_memory_palace_from_partition_messages_locked(messages, session_id, character_id=character_id)
+
+
+async def _extract_memory_palace_from_partition_messages_locked(messages: list, session_id: str, character_id: str = "default") -> dict:
+    """实际执行分区自动提取；调用方已保证同会话串行。"""
     if not MEMORY_ENABLED or not messages:
         reason = "disabled_or_empty"
         log_memory_palace_auto_extract("info", f"🧠 分区自动提取跳过：{reason} session={session_id}", session_id=session_id)

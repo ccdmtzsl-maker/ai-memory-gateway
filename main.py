@@ -6443,6 +6443,30 @@ async def save_memory_palace_embedding(memory_id: str, content: str) -> bool:
     return True
 
 
+async def save_memory_palace_embedding_if_missing(memory_id: str, content: str) -> bool:
+    """只在向量缺失时补算 embedding；已有向量绝不删除/覆盖。"""
+    content = str(content or "").strip()
+    if not content:
+        return False
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        exists = await conn.fetchval("SELECT 1 FROM memory_palace_vectors WHERE memory_id=$1", memory_id)
+        if exists:
+            await conn.execute("UPDATE memory_palace_nodes SET embedded=TRUE, updated_at=NOW() WHERE id=$1", memory_id)
+            return False
+    embedding = await _db_module.compute_embedding(content)
+    if not embedding:
+        return False
+    async with pool.acquire() as conn:
+        res = await conn.execute("""
+            INSERT INTO memory_palace_vectors (memory_id, embedding_json, dimensions, model, created_at, updated_at)
+            VALUES ($1, $2, $3, $4, NOW(), NOW())
+            ON CONFLICT (memory_id) DO NOTHING
+        """, memory_id, json.dumps(embedding), len(embedding), getattr(_db_module, "EMBEDDING_MODEL", ""))
+        await conn.execute("UPDATE memory_palace_nodes SET embedded=TRUE, updated_at=NOW() WHERE id=$1", memory_id)
+        return res.endswith("1")
+
+
 @app.post("/api/memory-palace/extract-preview-sessions")
 async def api_memory_palace_extract_preview_sessions(request: Request):
     if not MEMORY_ENABLED:
@@ -7526,11 +7550,20 @@ async def api_mp_backfill_embeddings():
     try:
         pool = await get_pool()
         async with pool.acquire() as conn:
+            # 先修正“已有向量但 embedded 标记为 false”的不一致状态，不重新补算、不覆盖向量。
+            await conn.execute("""
+                UPDATE memory_palace_nodes n
+                SET embedded=TRUE, updated_at=NOW()
+                FROM memory_palace_vectors v
+                WHERE v.memory_id = n.id AND n.embedded = FALSE
+            """)
+            # 只补真正缺失向量的节点，避免破坏已有向量。
             rows = await conn.fetch("""
                 SELECT n.id, n.content
                 FROM memory_palace_nodes n
                 LEFT JOIN memory_palace_vectors v ON v.memory_id = n.id
-                WHERE v.memory_id IS NULL OR n.embedded = FALSE
+                WHERE v.memory_id IS NULL
+                  AND COALESCE(NULLIF(TRIM(n.content), ''), '') <> ''
                 ORDER BY n.created_at
             """)
     except Exception as e:
@@ -7549,7 +7582,7 @@ async def api_mp_backfill_embeddings():
                 if not _mp_backfill_status["running"]:
                     break
                 try:
-                    await save_memory_palace_embedding(row["id"], row["content"])
+                    await save_memory_palace_embedding_if_missing(row["id"], row["content"])
                     _mp_backfill_status["done"] += 1
                 except Exception as e:
                     print(f"[mp-backfill] 节点 {row['id']} 补算失败: {e}")

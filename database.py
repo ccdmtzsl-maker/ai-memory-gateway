@@ -36,13 +36,8 @@ WEIGHT_IMPORTANCE = float(os.getenv("WEIGHT_IMPORTANCE", "0.3"))
 WEIGHT_RECENCY = float(os.getenv("WEIGHT_RECENCY", "0.2"))
 MIN_SCORE_THRESHOLD = float(os.getenv("MIN_SCORE_THRESHOLD", "0.15"))
 
-# 记忆混合搜索权重（MEMORY_VECTOR_ENABLED=true 时生效）
-MEMORY_HW_KEYWORD = float(os.getenv("MEMORY_HW_KEYWORD", "0.35"))
-MEMORY_HW_SEMANTIC = float(os.getenv("MEMORY_HW_SEMANTIC", "0.35"))
-MEMORY_HW_IMPORTANCE = float(os.getenv("MEMORY_HW_IMPORTANCE", "0.15"))
-MEMORY_HW_RECENCY = float(os.getenv("MEMORY_HW_RECENCY", "0.15"))
-MEMORY_SEMANTIC_THRESHOLD = float(os.getenv("MEMORY_SEMANTIC_THRESHOLD", "0.5"))
-MEMORY_HW_PERIOD = float(os.getenv("MEMORY_HW_PERIOD", "0.08"))  # 时段亲和权重
+# 旧碎片记忆混合搜索不再暴露可调权重；这里只保留内部时段加分常量。
+MEMORY_PERIOD_BONUS = 0.03
 
 
 # ============================================================
@@ -1012,9 +1007,8 @@ async def search_memories(query: str, limit: int = 10):
 
 async def search_memories_hybrid(query: str, limit: int = 10):
     """
-    记忆混合搜索：关键词 + 向量，归一化后四维加权
-    
-    权重：MEMORY_HW_KEYWORD + MEMORY_HW_SEMANTIC + MEMORY_HW_IMPORTANCE + MEMORY_HW_RECENCY
+    旧碎片记忆混合搜索：关键词 + 向量。
+    搜索权重配置已下线，这里仅保留内部固定排序分数，等待碎片记忆整体移除。
     """
     from datetime import datetime, timezone
     
@@ -1098,8 +1092,6 @@ async def search_memories_hybrid(query: str, limit: int = 10):
             
             for r in sem_rows:
                 sim = float(r['similarity'])
-                if sim < MEMORY_SEMANTIC_THRESHOLD:
-                    continue
                 mid = r['id']
                 if mid in candidates:
                     candidates[mid]['similarity'] = sim
@@ -1115,12 +1107,9 @@ async def search_memories_hybrid(query: str, limit: int = 10):
             
             # debug：向量路统计
             sem_total = len(sem_rows)
-            sem_passed = sum(1 for r in sem_rows if float(r['similarity']) >= MEMORY_SEMANTIC_THRESHOLD)
             sem_max = max((float(r['similarity']) for r in sem_rows), default=0)
-            if sem_total > 0 and sem_passed == 0:
-                print(f"   🔢 向量路: {sem_total}条候选全被阈值过滤（最高sim={sem_max:.3f}, 阈值={MEMORY_SEMANTIC_THRESHOLD}）")
-            elif sem_total > 0:
-                print(f"   🔢 向量路: {sem_passed}/{sem_total}条通过阈值（最高sim={sem_max:.3f}）")
+            if sem_total > 0:
+                print(f"   🔢 向量路: {sem_total}条候选（最高sim={sem_max:.3f}）")
         
         if not candidates:
             print(f"🔍 混合搜索 '{query}' → 两路均无结果")
@@ -1140,11 +1129,8 @@ async def search_memories_hybrid(query: str, limit: int = 10):
             rec = 1.0 / (1.0 + days)
             period = _period_bonus(now, info['created_at'])
             
-            score = (MEMORY_HW_KEYWORD * kw +
-                     MEMORY_HW_SEMANTIC * sem +
-                     MEMORY_HW_IMPORTANCE * imp +
-                     MEMORY_HW_RECENCY * rec +
-                     MEMORY_HW_PERIOD * period)
+            # 旧碎片记忆搜索的内部固定排序分数：优先相关性，重要度/时效/时段只做轻量加分。
+            score = max(kw, sem) + 0.20 * imp + 0.05 * rec + MEMORY_PERIOD_BONUS * period
             
             final.append({
                 'id': mid,

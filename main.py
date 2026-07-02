@@ -113,6 +113,10 @@ USER_NICKNAME = os.getenv("USER_NICKNAME", "用户")
 
 # 记忆宫殿默认注入数量；是否启用跟随 MEMORY_ENABLED 总开关
 MEMORY_PALACE_DEFAULT_LIMIT = int(os.getenv("MEMORY_PALACE_DEFAULT_LIMIT", "5"))
+
+# 关键词触发上下文（轻量世界书）：仅当前轮临时注入 system，不写入历史。
+KEYWORD_CONTEXT_ENABLED = os.getenv("KEYWORD_CONTEXT_ENABLED", "false").lower() == "true"
+KEYWORD_CONTEXT_RULES = os.getenv("KEYWORD_CONTEXT_RULES", "[]")
 MEMORY_PALACE_EVENT_BOX_COMPRESS_THRESHOLD = int(os.getenv("MEMORY_PALACE_EVENT_BOX_COMPRESS_THRESHOLD", "4"))
 MEMORY_PALACE_EVENT_BOX_LIVE_HARD_CAP = int(os.getenv("MEMORY_PALACE_EVENT_BOX_LIVE_HARD_CAP", "16"))
 MEMORY_PALACE_EVENT_BOX_SEAL_THRESHOLD = int(os.getenv("MEMORY_PALACE_EVENT_BOX_SEAL_THRESHOLD", "6"))
@@ -192,6 +196,28 @@ async def get_runtime_memory_palace_default_limit() -> int:
         return max(1, min(int(MEMORY_PALACE_DEFAULT_LIMIT or 5), 30))
     except Exception:
         return 5
+
+
+async def get_runtime_keyword_context_enabled() -> bool:
+    """关键词触发上下文开关：优先读设置页配置。"""
+    try:
+        db_value = await get_gateway_config("KEYWORD_CONTEXT_ENABLED", None)
+        if db_value is not None and str(db_value).strip() != "":
+            return _parse_bool(db_value, KEYWORD_CONTEXT_ENABLED)
+    except Exception as e:
+        print(f"[keyword_context] 读取 KEYWORD_CONTEXT_ENABLED 失败，回退运行时变量: {e}")
+    return bool(KEYWORD_CONTEXT_ENABLED)
+
+
+async def get_runtime_keyword_context_rules_raw() -> str:
+    """关键词触发规则 JSON：优先读设置页配置。"""
+    try:
+        db_value = await get_gateway_config("KEYWORD_CONTEXT_RULES", "")
+        if db_value is not None and str(db_value).strip() != "":
+            return str(db_value)
+    except Exception as e:
+        print(f"[keyword_context] 读取 KEYWORD_CONTEXT_RULES 失败，回退运行时变量: {e}")
+    return str(KEYWORD_CONTEXT_RULES or "[]")
 
 # 额外的请求头（有些 API 需要，比如 OpenRouter 需要 Referer）
 EXTRA_REFERER = os.getenv("EXTRA_REFERER", "https://ai-memory-gateway.local")

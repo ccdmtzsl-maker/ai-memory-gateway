@@ -2548,11 +2548,17 @@ def extract_proxy_sender_context_from_text(text: str) -> tuple[str, str, str]:
                 song_line += f" {play_match.group(1).strip()}"
             env_lines.append(f"歌曲: {song_line}")
 
-        lyrics_match = re.search(r'附近歌词[:：]\s*(.*?)(?:\n\s*用户说[:：]|$)', header, re.S)
+        lyrics_match = re.search(r'附近歌词[:：]\s*(.*?)(?:\n\s*歌曲音符密度[:：]|\n\s*用户说[:：]|$)', header, re.S)
         if lyrics_match:
             lyrics_lines = [line.rstrip() for line in lyrics_match.group(1).splitlines() if line.strip()]
             if lyrics_lines:
                 env_lines.append("附近歌词:\n" + "\n".join(lyrics_lines))
+
+        density_match = re.search(r'歌曲音符密度[:：]\s*(.*?)(?:\n\s*附近歌词[:：]|\n\s*用户说[:：]|$)', header, re.S)
+        if density_match:
+            density_lines = [line.rstrip() for line in density_match.group(1).splitlines() if line.strip()]
+            if density_lines:
+                env_lines.append("歌曲音符密度:\n" + "\n".join(density_lines))
 
     env_text = ""
     if env_lines:

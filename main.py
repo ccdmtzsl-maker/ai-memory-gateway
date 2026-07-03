@@ -2563,6 +2563,7 @@ def extract_proxy_sender_context_from_text(text: str) -> tuple[str, str, str]:
     env_text = ""
     if env_lines:
         env_text = "【一起听歌】\n" + "\n".join(env_lines)
+        env_text += "\n\n请像一起听歌的朋友一样，自然、简短地回应。"
 
     return user_text, env_text, proxy_time
 

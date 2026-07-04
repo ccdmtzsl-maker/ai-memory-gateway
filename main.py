@@ -2550,25 +2550,72 @@ def extract_proxy_sender_context_from_text(text: str) -> tuple[str, str, str]:
 
         lyrics_match = re.search(r'附近歌词[:：]\s*(.*?)(?:\n\s*歌曲音符密度[:：]|\n\s*歌曲情绪[:：]|\n\s*用户说[:：]|$)', header, re.S)
         if lyrics_match:
-            lyrics_lines = [line.rstrip() for line in lyrics_match.group(1).splitlines() if line.strip()]
+            lyrics_lines = [line.strip() for line in lyrics_match.group(1).splitlines() if line.strip()]
             if lyrics_lines:
                 env_lines.append("附近歌词:\n" + "\n".join(lyrics_lines))
 
-        density_match = re.search(r'歌曲音符密度[:：]\s*(.*?)(?:\n\s*附近歌词[:：]|\n\s*歌曲情绪[:：]|\n\s*用户说[:：]|$)', header, re.S)
-        if density_match:
-            density_lines = [line.rstrip() for line in density_match.group(1).splitlines() if line.strip()]
-            if density_lines:
-                env_lines.append("歌曲音符密度:\n" + "\n".join(density_lines))
-
         mood_match = re.search(r'歌曲情绪[:：]\s*(.*?)(?:\n\s*附近歌词[:：]|\n\s*歌曲音符密度[:：]|\n\s*用户说[:：]|$)', header, re.S)
+        mood_summary = ""
         if mood_match:
-            mood_lines = [line.rstrip() for line in mood_match.group(1).splitlines() if line.strip()]
-            if mood_lines:
-                env_lines.append("歌曲情绪:\n" + "\n".join(mood_lines))
+            mood_text = mood_match.group(1)
+            mood_label = ""
+            bpm_text = ""
+            key_text = ""
+            m = re.search(r'情绪[:：]\s*([^\n]+)', mood_text)
+            if m:
+                mood_label = m.group(1).strip()
+            m = re.search(r'BPM\s*([0-9]+(?:\.[0-9]+)?)', mood_text, re.I)
+            if m:
+                bpm_text = f"BPM {m.group(1)}"
+            m = re.search(r'调性\s*([A-G][#b♯♭]?(?:\s*(?:major|minor|大调|小调))?)', mood_text, re.I)
+            if m:
+                key_text = f"{m.group(1).strip()}调"
+            parts = [p for p in [mood_label, "，".join(p for p in [bpm_text, key_text] if p)] if p]
+            if parts:
+                mood_summary = "氛围: " + " · ".join(parts)
+
+        density_match = re.search(r'歌曲音符密度[:：]\s*(.*?)(?:\n\s*附近歌词[:：]|\n\s*歌曲情绪[:：]|\n\s*用户说[:：]|$)', header, re.S)
+        density_summary = ""
+        if density_match:
+            density_lines = [line.strip() for line in density_match.group(1).splitlines() if line.strip()]
+            focus_line = next((line for line in density_lines if line.startswith("▶")), density_lines[len(density_lines)//2] if density_lines else "")
+            density_val = None
+            pitch_low = pitch_high = None
+            m = re.search(r'密度\s*([0-9]+(?:\.[0-9]+)?)\s*/s', focus_line)
+            if m:
+                density_val = float(m.group(1))
+            m = re.search(r'音区\s*([0-9]+)\s*[–-]\s*([0-9]+)', focus_line)
+            if m:
+                pitch_low, pitch_high = int(m.group(1)), int(m.group(2))
+            if density_val is not None:
+                if density_val < 1.4:
+                    density_desc = "音符很疏朗"
+                elif density_val < 2.2:
+                    density_desc = "音符疏朗"
+                elif density_val < 3.2:
+                    density_desc = "音符稍密"
+                else:
+                    density_desc = "音符密集"
+            else:
+                density_desc = "音符流动"
+            pitch_desc = ""
+            if pitch_low is not None and pitch_high is not None:
+                center = (pitch_low + pitch_high) / 2
+                if center < 45:
+                    pitch_desc = "中低音区为主"
+                elif center < 62:
+                    pitch_desc = "中音区为主"
+                else:
+                    pitch_desc = "偏高音区"
+            density_summary = "此刻: " + "，".join(p for p in [density_desc, pitch_desc] if p)
+
+        feel_lines = [p for p in [mood_summary, density_summary] if p]
+        if feel_lines:
+            env_lines.append("\n".join(feel_lines))
 
     env_text = ""
     if env_lines:
-        env_text = "【一起听歌】\n" + "\n".join(env_lines)
+        env_text = "【一起听歌】\n" + "\n\n".join(env_lines)
         env_text += "\n\n请像一起听歌的朋友一样，自然、简短地回应。"
 
     return user_text, env_text, proxy_time

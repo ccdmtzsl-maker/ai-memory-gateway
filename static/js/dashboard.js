@@ -2057,6 +2057,7 @@ function showSettingsMsg(type, text) {
 
 let _userImpressionCurrent = null;
 let _userImpressionPreview = null;
+let _userImpressionEditOpen = false;
 
 function uiEsc(v) {
     return String(v === undefined || v === null ? '' : v)
@@ -2151,6 +2152,186 @@ function renderUserImpressionObject(imp) {
     html += '<div style="font-size:12px;color:var(--text-muted);margin-top:12px;">Version ' + uiEsc(imp.version || 3.0) + ' · lastUpdated ' + uiEsc(imp.lastUpdated || '') + '</div>';
     return html;
 }
+
+
+function uiArrToText(items) {
+    return Array.isArray(items) ? items.map(x => String(x || '').trim()).filter(Boolean).join('\n') : '';
+}
+
+function uiTextToArr(id) {
+    const el = document.getElementById(id);
+    if (!el) return [];
+    return String(el.value || '').split(/\n+/).map(x => x.trim()).filter(Boolean);
+}
+
+function uiEditValue(id) {
+    const el = document.getElementById(id);
+    return el ? String(el.value || '').trim() : '';
+}
+
+function uiEditNum(id, fallback) {
+    const n = parseInt(uiEditValue(id), 10);
+    if (!Number.isFinite(n)) return fallback;
+    return Math.max(0, Math.min(100, n));
+}
+
+function uiEditField(label, id, value, multiline) {
+    if (multiline) {
+        return '<label style="display:flex;flex-direction:column;gap:6px;font-size:12px;font-weight:800;">' +
+            uiEsc(label) +
+            '<textarea id="' + uiEsc(id) + '" class="textarea" rows="4" style="min-height:90px;">' + uiEsc(value || '') + '</textarea>' +
+            '</label>';
+    }
+    return '<label style="display:flex;flex-direction:column;gap:6px;font-size:12px;font-weight:800;">' +
+        uiEsc(label) +
+        '<input id="' + uiEsc(id) + '" class="input" value="' + uiEsc(value || '') + '">' +
+        '</label>';
+}
+
+function uiEditBlock(title, inner) {
+    return '<div class="card" style="box-shadow:none;border:1px solid var(--border-color);padding:16px;margin:0;">' +
+        '<div style="font-weight:900;margin-bottom:12px;">' + uiEsc(title) + '</div>' +
+        '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px;">' + inner + '</div>' +
+        '</div>';
+}
+
+function renderUserImpressionEditor(imp) {
+    imp = imp || {};
+    const value = imp.value_map || {};
+    const behavior = imp.behavior_profile || {};
+    const emotion = imp.emotion_schema || {};
+    const triggers = emotion.triggers || {};
+    const core = imp.personality_core || {};
+    const mbti = imp.mbti_analysis || {};
+    const dims = mbti.dimensions || {};
+
+    let html = '<div id="uiFieldEditor" class="card" style="padding:18px;border:1px solid var(--primary);box-shadow:none;margin-top:14px;">';
+    html += '<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:14px;">' +
+        '<div><div style="font-weight:900;">编辑画像字段</div><div style="font-size:12px;color:var(--text-muted);margin-top:2px;">数组字段一行一个。保存后会走后端 normalize 兜底。</div></div>' +
+        '<div style="display:flex;gap:8px;flex-wrap:wrap;"><button class="btn btn-primary" onclick="saveUserImpressionEdit()">保存编辑</button><button class="btn btn-secondary" onclick="cancelUserImpressionEdit()">取消</button></div>' +
+        '</div>';
+
+    html += '<div style="display:grid;gap:14px;">';
+    html += uiEditBlock('核心印象',
+        uiEditField('核心评价 / summary', 'uiEdit_summary', core.summary, true) +
+        uiEditField('互动模式 / interaction_style', 'uiEdit_interaction', core.interaction_style, true) +
+        uiEditField('观察到的特质（一行一个）', 'uiEdit_traits', uiArrToText(core.observed_traits), true)
+    );
+    html += uiEditBlock('价值地图',
+        uiEditField('喜欢（一行一个）', 'uiEdit_likes', uiArrToText(value.likes), true) +
+        uiEditField('讨厌/排斥（一行一个）', 'uiEdit_dislikes', uiArrToText(value.dislikes), true) +
+        uiEditField('核心价值观', 'uiEdit_core_values', value.core_values, true)
+    );
+    html += uiEditBlock('行为画像',
+        uiEditField('语气风格', 'uiEdit_tone', behavior.tone_style, true) +
+        uiEditField('情绪状态总结', 'uiEdit_emotion_summary', behavior.emotion_summary, true) +
+        uiEditField('回应模式', 'uiEdit_response_patterns', behavior.response_patterns, true)
+    );
+    html += uiEditBlock('情绪图谱',
+        uiEditField('正向触发器（一行一个）', 'uiEdit_positive', uiArrToText(triggers.positive), true) +
+        uiEditField('压力/雷区（一行一个）', 'uiEdit_negative', uiArrToText(triggers.negative), true) +
+        uiEditField('舒适区', 'uiEdit_comfort_zone', emotion.comfort_zone, true) +
+        uiEditField('压力信号（一行一个）', 'uiEdit_stress', uiArrToText(emotion.stress_signals), true)
+    );
+    html += uiEditBlock('MBTI 侧写',
+        uiEditField('类型', 'uiEdit_mbti_type', mbti.type || '', false) +
+        uiEditField('推断理由', 'uiEdit_mbti_reasoning', mbti.reasoning || '', true) +
+        uiEditField('E/I 数值 0-100', 'uiEdit_ei', dims.e_i ?? 50, false) +
+        uiEditField('S/N 数值 0-100', 'uiEdit_sn', dims.s_n ?? 50, false) +
+        uiEditField('T/F 数值 0-100', 'uiEdit_tf', dims.t_f ?? 50, false) +
+        uiEditField('J/P 数值 0-100', 'uiEdit_jp', dims.j_p ?? 50, false)
+    );
+    html += uiEditBlock('最近变化',
+        uiEditField('最近变化（一行一个）', 'uiEdit_changes', uiArrToText(imp.observed_changes), true)
+    );
+    html += '</div></div>';
+    return html;
+}
+
+function openUserImpressionEditor() {
+    if (!_userImpressionCurrent || !_userImpressionCurrent.impression) {
+        showUserImpressionMsg('error', '当前没有可编辑的画像。');
+        return;
+    }
+    _userImpressionEditOpen = true;
+    renderUserImpression();
+}
+
+function cancelUserImpressionEdit() {
+    _userImpressionEditOpen = false;
+    renderUserImpression();
+}
+
+function collectUserImpressionEdit() {
+    const old = (_userImpressionCurrent && _userImpressionCurrent.impression) || {};
+    return {
+        version: parseFloat(old.version || 3.0) || 3.0,
+        lastUpdated: Date.now(),
+        value_map: {
+            likes: uiTextToArr('uiEdit_likes'),
+            dislikes: uiTextToArr('uiEdit_dislikes'),
+            core_values: uiEditValue('uiEdit_core_values'),
+        },
+        behavior_profile: {
+            tone_style: uiEditValue('uiEdit_tone'),
+            emotion_summary: uiEditValue('uiEdit_emotion_summary'),
+            response_patterns: uiEditValue('uiEdit_response_patterns'),
+        },
+        emotion_schema: {
+            triggers: {
+                positive: uiTextToArr('uiEdit_positive'),
+                negative: uiTextToArr('uiEdit_negative'),
+            },
+            comfort_zone: uiEditValue('uiEdit_comfort_zone'),
+            stress_signals: uiTextToArr('uiEdit_stress'),
+        },
+        personality_core: {
+            observed_traits: uiTextToArr('uiEdit_traits'),
+            interaction_style: uiEditValue('uiEdit_interaction'),
+            summary: uiEditValue('uiEdit_summary'),
+        },
+        mbti_analysis: {
+            type: uiEditValue('uiEdit_mbti_type'),
+            reasoning: uiEditValue('uiEdit_mbti_reasoning'),
+            dimensions: {
+                e_i: uiEditNum('uiEdit_ei', 50),
+                s_n: uiEditNum('uiEdit_sn', 50),
+                t_f: uiEditNum('uiEdit_tf', 50),
+                j_p: uiEditNum('uiEdit_jp', 50),
+            },
+        },
+        observed_changes: uiTextToArr('uiEdit_changes'),
+    };
+}
+
+async function saveUserImpressionEdit() {
+    if (!_userImpressionCurrent || !_userImpressionCurrent.impression) {
+        showUserImpressionMsg('error', '当前没有可保存的画像。');
+        return;
+    }
+    try {
+        const impression = collectUserImpressionEdit();
+        const resp = await fetch('/api/user-impression/confirm', {
+            method: 'POST',
+            headers: {'Content-Type':'application/json'},
+            body: JSON.stringify({
+                character_id: _userImpressionCurrent.character_id || 'default',
+                mode: 'manual',
+                source_message_count: _userImpressionCurrent.source_message_count || 0,
+                impression
+            })
+        });
+        const data = await resp.json();
+        if (data.status !== 'ok') throw new Error(data.error || '保存失败');
+        _userImpressionCurrent = data;
+        _userImpressionEditOpen = false;
+        renderUserImpression();
+        showUserImpressionMsg('success', '画像编辑已保存。');
+    } catch (e) {
+        showUserImpressionMsg('error', '保存失败：' + e.message);
+    }
+}
+
 
 function renderUserImpression() {
     const el = document.getElementById('uiCurrentImpression');

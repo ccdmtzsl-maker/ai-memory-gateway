@@ -1539,3 +1539,34 @@ body {
     border: none;
     box-shadow: 0 1px 4px rgba(0,0,0,0.15);
 }
+
+
+/* 记忆宫殿：房间操作按钮移动端自适应 */
+@media (max-width: 640px) {
+    .mp-room-actions {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 10px;
+        align-items: stretch !important;
+    }
+
+    .mp-room-actions #mpCurrentRoomTitle {
+        grid-column: 1 / -1;
+        margin-bottom: 2px;
+    }
+
+    .mp-room-actions .btn {
+        width: 100%;
+        min-width: 0;
+        padding-left: 10px;
+        padding-right: 10px;
+        white-space: nowrap;
+    }
+}
+
+@media (max-width: 360px) {
+    .mp-room-actions {
+        grid-template-columns: 1fr;
+    }
+}
+

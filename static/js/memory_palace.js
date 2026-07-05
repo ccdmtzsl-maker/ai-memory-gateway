@@ -152,8 +152,8 @@ function renderMemoryPalaceNodes() {
         const color = room.color || '#64748b';
         const tags = node.tags ? String(node.tags).split(/[、,，\\n]/).map(t => t.trim()).filter(Boolean) : [];
         const pinnedText = mpPinnedText(node.pinned_until);
-        const nodeSeq = String(_mpNodes.indexOf(node) + 1).padStart(2, '0');
-        const idBadge = _mpShowNodeIds ? ' <span title=\"' + mpEsc(node.id || '') + '\" style=\"font-weight:900;color:#e75480;margin-left:8px;font-size:20px;vertical-align:middle;\">#' + nodeSeq + '</span>' : '';
+        const nodeIdText = String(node.id || '');
+        const idBadge = _mpShowNodeIds ? ' <code title=\"点击绑定时使用这个节点ID\" style=\"font-weight:700;color:#e75480;margin-left:8px;font-size:12px;background:#fff1f5;border:1px solid #f9a8d4;border-radius:6px;padding:2px 6px;vertical-align:middle;user-select:text;\">' + mpEsc(nodeIdText) + '</code>' : '';
         return '<div class=\"card mp-node-card\" data-id=\"' + mpEsc(node.id) + '\" style=\"padding:16px;border-top:4px solid ' + color + ';\">' +
             '<div style=\"display:flex;justify-content:space-between;gap:10px;margin-bottom:10px;\">' +
                 '<div>' +

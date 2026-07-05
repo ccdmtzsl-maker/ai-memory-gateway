@@ -4,6 +4,7 @@ let _mpCurrentRoom = '';
 let _mpEditingId = null;
 let _mpEventBoxes = [];
 let _mpCurrentEventBoxId = null;
+let _mpShowNodeIds = false;
 
 function mpEsc(s) {
     return String(s == null ? '' : s)
@@ -154,7 +155,7 @@ function renderMemoryPalaceNodes() {
         return '<div class=\"card mp-node-card\" data-id=\"' + mpEsc(node.id) + '\" style=\"padding:16px;border-top:4px solid ' + color + ';\">' +
             '<div style=\"display:flex;justify-content:space-between;gap:10px;margin-bottom:10px;\">' +
                 '<div>' +
-                    '<div style=\"font-weight:800;color:' + color + ';\">' + mpEsc(room.label || node.room) + '</div>' +
+                    '<div style=\"font-weight:800;color:' + color + ';\">' + mpEsc(room.label || node.room) + idBadge + '</div>' +
                     '<div style=\"font-size:12px;color:var(--text-muted);margin-top:2px;\">importance ' + mpEsc(node.importance || 5) + ' · ' + mpEsc(node.mood || 'neutral') + (pinnedText ? ' · ' + mpEsc(pinnedText) : '') + '</div>' +
                 '</div>' +
                 '<div style=\"display:flex;gap:6px;align-items:flex-start;\">' +
@@ -753,6 +754,14 @@ function initMemoryPalaceInteractions() {
         const eventBoxBtn = event.target.closest('.mp-event-box-card');
         if (eventBoxBtn) {
             selectMemoryPalaceEventBox(eventBoxBtn.dataset.id || '');
+        }
+    });
+
+    section.addEventListener('change', (event) => {
+        const showIds = event.target.closest('#mpShowNodeIds');
+        if (showIds) {
+            _mpShowNodeIds = !!showIds.checked;
+            renderMemoryPalaceNodes();
         }
     });
 }

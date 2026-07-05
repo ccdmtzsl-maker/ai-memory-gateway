@@ -1545,10 +1545,13 @@ body {
    手机端改为横向滑动按钮条，避免按钮竖排占满屏幕。 */
 @media (max-width: 640px) {
     .mp-room-actions {
-        display: flex;
-        flex-wrap: nowrap;
-        gap: 8px;
+        display: flex !important;
+        flex-direction: row !important;
+        flex-wrap: nowrap !important;
+        justify-content: flex-start !important;
         align-items: center !important;
+        width: 100%;
+        gap: 8px;
         overflow-x: auto;
         overflow-y: hidden;
         -webkit-overflow-scrolling: touch;
@@ -1567,9 +1570,10 @@ body {
     }
 
     .mp-room-actions .btn {
-        flex: 0 0 auto;
-        width: auto;
-        min-width: auto;
+        flex: 0 0 auto !important;
+        width: auto !important;
+        min-width: auto !important;
+        max-width: none !important;
         padding: 8px 12px;
         font-size: 13px;
         white-space: nowrap;

@@ -347,7 +347,13 @@
                 <div class="card" style="margin-top:14px;padding:16px;">
                     <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:12px;">
                         <div>
-                            <div style="font-weight:800;">事件盒</div>
+                            <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;">
+                                <div style="font-weight:800;">事件盒</div>
+                                <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text-muted);cursor:pointer;">
+                                    <input type="checkbox" id="mpShowNodeIds">
+                                    显示ID
+                                </label>
+                            </div>
                             <div style="font-size:12px;color:var(--text-muted);margin-top:2px;">查看同一事件下的记忆片段，当前为只读视图。</div>
                         </div>
                         <div style="display:flex;gap:8px;flex-wrap:wrap;">
@@ -794,6 +800,6 @@
     });
 
     </script>
-    <script src="/static/js/memory_palace.js?v=3.2"></script>
+    <script src="/static/js/memory_palace.js?v=3.3"></script>
 </body>
 </html>

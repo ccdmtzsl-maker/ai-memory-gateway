@@ -4769,26 +4769,6 @@ async def _collect_user_impression_recent_messages(mode: str = "initial", sessio
     }
 
 
-async def _collect_user_impression_daily_impressions(limit: int = 10) -> dict:
-    """收集少量近期日印象，作为画像的近期状态辅助材料。"""
-    limit = max(1, min(int(limit or 10), 30))
-    rows = await list_daily_impressions(limit=limit)
-    items = []
-    for r in rows:
-        items.append({
-            "date": _ui_iso(r.get("impression_date") or r.get("date")),
-            "summary": _ui_preview_text(r.get("summary"), 800),
-            "tags": r.get("tags") or "",
-            "mood": r.get("mood") or "",
-            "updated_at": _ui_iso(r.get("updated_at")),
-        })
-    return {
-        "limit": limit,
-        "count": len(items),
-        "items": items,
-    }
-
-
 async def build_user_impression_materials_preview(character_id: str = "default", mode: str = "initial", session_id: str = None) -> dict:
     """用户画像阶段 2：材料预览。只收集材料，不调用 LLM，不保存画像。"""
     character_id = character_id or "default"
@@ -4796,7 +4776,7 @@ async def build_user_impression_materials_preview(character_id: str = "default",
     system_prompt = (await get_system_prompt()).strip()
     user_nickname = await get_runtime_user_nickname() or "用户"
     memory_material = await _collect_user_impression_memory_material(character_id)
-    daily_impressions = await _collect_user_impression_daily_impressions(limit=10)
+    daily_impressions_text = await format_daily_impressions_for_prompt(limit=10)
     recent_messages = await _collect_user_impression_recent_messages(mode=mode, session_id=session_id)
     current = await get_user_impression(character_id=character_id) if mode == "update" else None
 
@@ -4812,16 +4792,8 @@ async def build_user_impression_materials_preview(character_id: str = "default",
         sections.append("【记忆宫殿长期材料】\n" + "\n".join(lines))
     else:
         sections.append("【记忆宫殿长期材料】\n（暂无）")
-    if daily_impressions["items"]:
-        daily_lines = []
-        for d in daily_impressions["items"]:
-            meta = d.get("date") or ""
-            mood = f" mood={d.get('mood')}" if d.get("mood") else ""
-            tags = f" tags={d.get('tags')}" if d.get("tags") else ""
-            daily_lines.append(f"- {meta}{mood}{tags}\n  {d.get('summary')}")
-        sections.append("【近期日印象】\n" + "\n".join(daily_lines))
-    else:
-        sections.append("【近期日印象】\n（暂无）")
+    if daily_impressions_text:
+        sections.append(daily_impressions_text)
 
     if recent_messages["items"]:
         msg_lines = []
@@ -4842,7 +4814,7 @@ async def build_user_impression_materials_preview(character_id: str = "default",
         "user_nickname": user_nickname,
         "system_prompt_chars": len(system_prompt),
         "memory_palace": memory_material,
-        "daily_impressions": daily_impressions,
+        "daily_impressions_text": daily_impressions_text,
         "recent_messages": recent_messages,
         "current_impression": current if mode == "update" else None,
         "source_message_count": recent_messages["count"],

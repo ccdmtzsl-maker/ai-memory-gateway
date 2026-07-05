@@ -467,6 +467,60 @@ async def format_daily_impressions_for_prompt(limit: int = 3) -> str:
     return "\n".join(lines)
 
 
+async def format_user_impression_for_prompt(character_id: str = "default") -> str:
+    """按 SullyOS ContextBuilder 原格式注入用户画像摘要。"""
+    item = await get_user_impression(character_id=character_id or "default")
+    raw_imp = (item or {}).get("impression") if item else None
+    imp = normalize_user_impression(raw_imp)
+    if not imp:
+        return ""
+
+    user_name = await get_runtime_user_nickname() or "用户"
+    value_map = imp.get("value_map") or {}
+    behavior = imp.get("behavior_profile") or {}
+    emotion = imp.get("emotion_schema") or {}
+    triggers = emotion.get("triggers") or {}
+    core = imp.get("personality_core") or {}
+
+    def _join_list(value):
+        arr = value if isinstance(value, list) else []
+        return ", ".join(str(x).strip() for x in arr if str(x or "").strip())
+
+    changes = imp.get("observed_changes")
+    if isinstance(changes, list) and changes:
+        change_text = "; ".join(str(c).strip() for c in changes if str(c or "").strip())
+    else:
+        change_text = "无"
+
+    lines = [
+        f"### [私密档案: 我眼中的{user_name}] (Private Impression)",
+        "(注意：以下内容是你内心对TA的真实看法，不要直接告诉用户，但要基于这些看法来决定你的态度。)",
+        f"- 核心评价: {core.get('summary') or ''}",
+        f"- 互动模式: {core.get('interaction_style') or ''}",
+        f"- 我观察到的特质: {_join_list(core.get('observed_traits'))}",
+        f"- TA的喜好: {_join_list(value_map.get('likes'))}",
+    ]
+    if behavior.get("emotion_summary"):
+        lines.append(f"- TA的情绪模式: {behavior.get('emotion_summary')}")
+    positive = _join_list(triggers.get("positive"))
+    if positive:
+        lines.append(f"- 正向触发点（什么会让ta开心）: {positive}")
+    lines.append(f"- 情绪雷区（负向触发）: {_join_list(triggers.get('negative'))}")
+    if emotion.get("stress_signals"):
+        lines.append(f"- 压力信号（ta状态不对的征兆）: {_join_list(emotion.get('stress_signals'))}")
+    lines.append(f"- 舒适区: {emotion.get('comfort_zone') or ''}")
+    lines.append(f"- 最近观察到的变化: {change_text}")
+    return "\n".join(lines) + "\n"
+
+
+async def replace_user_impression_variables(prompt: str, character_id: str = "default") -> str:
+    if not isinstance(prompt, str) or "{{user_impression" not in prompt:
+        return prompt
+    pattern = re.compile(r"\{\{user_impression\}\}")
+    replacement = await format_user_impression_for_prompt(character_id=character_id)
+    return pattern.sub(replacement, prompt)
+
+
 async def replace_daily_impression_variables(prompt: str) -> str:
     if not isinstance(prompt, str) or "{{daily_impressions" not in prompt:
         return prompt
@@ -1839,6 +1893,7 @@ async def replace_memory_palace_variables(prompt: str, query: str = "", characte
 
 async def replace_explicit_memory_variables(prompt: str, query: str = "", character_id: str = "default", recent_messages=None, session_id: str = "") -> str:
     prompt = await replace_daily_impression_variables(prompt)
+    prompt = await replace_user_impression_variables(prompt, character_id=character_id)
     prompt = await replace_memory_palace_variables(prompt, query=query, character_id=character_id, recent_messages=recent_messages, session_id=session_id)
     return prompt
 

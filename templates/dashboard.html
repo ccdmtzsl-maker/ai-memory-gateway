@@ -405,7 +405,7 @@
                     <div class="hint" style="margin-top:10px;">initial 会从零生成；update 会带入旧画像并读取更多近期聊天。两者都会先生成预览，不会自动覆盖。</div>
                 </div>
 
-                <div id="uiCurrentImpression" class="card" style="padding:18px;">加载中...</div>
+                <div id="uiEditorCard" style="display:none;"></div>
 
                 <div id="uiPreviewCard" class="card" style="display:none;padding:18px;">
                     <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:12px;">
@@ -420,6 +420,8 @@
                     </div>
                     <div id="uiPreviewContent"></div>
                 </div>
+
+                <div id="uiCurrentImpression" class="card" style="padding:18px;">加载中...</div>
             </section>
 
             <section id="section-threads" class="section">

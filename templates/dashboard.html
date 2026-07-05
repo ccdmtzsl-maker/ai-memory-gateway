@@ -311,20 +311,20 @@
 
                 <div class="card toolbar-card">
                     <div class="toolbar mp-room-actions" style="align-items:center;">
-                        <div id="mpCurrentRoomTitle" style="font-weight:700;">全部房间</div>
+                        <button type="button" id="mpCurrentRoomTitle" class="btn btn-secondary mp-room-tools-toggle" onclick="toggleMemoryPalaceTools()">全部房间 ▾</button>
                         <button class="btn btn-primary" onclick="openMemoryPalaceCreate()">新增记忆</button>
                         <button id="mpClearPinsBtn" class="btn btn-secondary" onclick="clearMemoryPalacePins()">清除便利贴</button>
-                        <button class="btn btn-secondary" onclick="runMemoryPalaceConsolidation()">巩固记忆</button>
-                        <button class="btn btn-secondary" onclick="runCognitiveDigestion()">认知消化</button>
-                        <button type="button" id="mpVectorStatsBtn" class="btn btn-secondary" onclick="showMemoryPalaceVectorStats()">查看向量数</button>
-                        <button type="button" id="mpBackfillBtn" class="btn btn-secondary" onclick="backfillMemoryPalaceEmbeddings()">补全向量</button>
-                        <button class="btn btn-secondary" onclick="loadMemoryPalace()">刷新</button>
+                        <button class="btn btn-secondary mp-advanced-action" style="display:none;" onclick="runMemoryPalaceConsolidation()">巩固记忆</button>
+                        <button class="btn btn-secondary mp-advanced-action" style="display:none;" onclick="runCognitiveDigestion()">认知消化</button>
+                        <button type="button" id="mpVectorStatsBtn" class="btn btn-secondary mp-advanced-action" style="display:none;" onclick="showMemoryPalaceVectorStats()">查看向量数</button>
+                        <button type="button" id="mpBackfillBtn" class="btn btn-secondary mp-advanced-action" style="display:none;" onclick="backfillMemoryPalaceEmbeddings()">补全向量</button>
+                        <button class="btn btn-secondary mp-advanced-action" style="display:none;" onclick="loadMemoryPalace()">刷新</button>
                     </div>
                 </div>
 
                 <div id="mpDigestPreview" style="display:none;margin-top:14px;"></div>
 
-                <div class="card" style="margin-top:14px;padding:16px;">
+                <div id="mpRecallDebugCard" class="card" style="display:none;margin-top:14px;padding:16px;">
                     <div style="font-weight:800;margin-bottom:10px;">召回调试</div>
                     <div style="display:grid;grid-template-columns:minmax(220px,1fr) 110px 160px auto;gap:10px;align-items:center;">
                         <input id="mpDebugQuery" class="form-control" placeholder="输入测试问题，例如：上周我们聊了什么 / 我最近在担心什么">
@@ -804,6 +804,6 @@
     });
 
     </script>
-    <script src="/static/js/memory_palace.js?v=4.1"></script>
+    <script src="/static/js/memory_palace.js?v=4.2"></script>
 </body>
 </html>

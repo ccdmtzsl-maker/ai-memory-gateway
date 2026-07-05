@@ -2254,12 +2254,26 @@ function openUserImpressionEditor() {
         return;
     }
     _userImpressionEditOpen = true;
-    renderUserImpression();
+    renderUserImpressionEditorCard();
+    const editor = document.getElementById('uiEditorCard');
+    if (editor && editor.scrollIntoView) editor.scrollIntoView({behavior:'smooth', block:'start'});
+}
+
+function renderUserImpressionEditorCard() {
+    const el = document.getElementById('uiEditorCard');
+    if (!el) return;
+    if (_userImpressionEditOpen && _userImpressionCurrent && _userImpressionCurrent.impression) {
+        el.style.display = 'block';
+        el.innerHTML = renderUserImpressionEditor(_userImpressionCurrent.impression);
+    } else {
+        el.style.display = 'none';
+        el.innerHTML = '';
+    }
 }
 
 function cancelUserImpressionEdit() {
     _userImpressionEditOpen = false;
-    renderUserImpression();
+    renderUserImpressionEditorCard();
 }
 
 function collectUserImpressionEdit() {
@@ -2338,14 +2352,15 @@ function renderUserImpression() {
     if (!el) return;
     if (!_userImpressionCurrent) {
         el.innerHTML = '<div style="font-weight:800;margin-bottom:8px;">当前画像</div>' + renderUserImpressionObject(null);
+        renderUserImpressionEditorCard();
         return;
     }
     el.innerHTML = '<div style="display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:12px;">' +
         '<div><div style="font-weight:800;">当前画像</div><div style="font-size:12px;color:var(--text-muted);margin-top:2px;">更新时间：' + uiEsc(_userImpressionCurrent.updated_at || '') + ' · 来源：' + uiEsc(_userImpressionCurrent.source_mode || '') + '</div></div>' +
         '<div style="display:flex;gap:8px;flex-wrap:wrap;"><button class="btn btn-secondary" onclick="openUserImpressionEditor()">编辑画像</button></div>' +
         '</div>' +
-        renderUserImpressionObject(_userImpressionCurrent.impression) +
-        (_userImpressionEditOpen ? renderUserImpressionEditor(_userImpressionCurrent.impression) : '');
+        renderUserImpressionObject(_userImpressionCurrent.impression);
+    renderUserImpressionEditorCard();
 }
 
 async function loadUserImpression() {

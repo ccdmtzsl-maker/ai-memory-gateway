@@ -102,6 +102,9 @@ function switchSection(name) {
     if (name === 'threads') {
         loadThreads();
     }
+    if (name === 'user-impression') {
+        loadUserImpression();
+    }
     if (name === 'logs') {
         loadDashboardLogs();
     }
@@ -2046,6 +2049,219 @@ function showSettingsMsg(type, text) {
     setTimeout(() => { el.style.display = 'none'; }, 5000);
 }
 
+
+
+// ============================================
+// 用户画像 / 印象档案
+// ============================================
+
+let _userImpressionCurrent = null;
+let _userImpressionPreview = null;
+
+function uiEsc(v) {
+    return String(v === undefined || v === null ? '' : v)
+        .replace(/&/g, '&')
+        .replace(/</g, '<')
+        .replace(/>/g, '>')
+        .replace(/"/g, '"')
+        .replace(/'/g, '&#39;');
+}
+
+function showUserImpressionMsg(type, text) {
+    const el = document.getElementById('ui-msg');
+    if (!el) return;
+    el.innerHTML = '<div class="msg-box msg-' + type + '">' + uiEsc(text) + '</div>';
+    setTimeout(() => { if (el) el.innerHTML = ''; }, 5000);
+}
+
+function uiListHtml(items) {
+    const arr = Array.isArray(items) ? items.filter(x => String(x || '').trim()) : [];
+    if (!arr.length) return '<span style="color:var(--text-muted);font-size:13px;">暂无</span>';
+    return '<div style="display:flex;flex-wrap:wrap;gap:6px;">' + arr.map(t => '<span style="padding:4px 8px;border-radius:999px;background:var(--bg-muted);font-size:12px;">' + uiEsc(t) + '</span>').join('') + '</div>';
+}
+
+function uiTextBlock(title, text) {
+    return '<div class="card" style="box-shadow:none;border:1px solid var(--border-color);padding:14px;margin:0;">' +
+        '<div style="font-weight:800;font-size:13px;margin-bottom:8px;">' + uiEsc(title) + '</div>' +
+        '<div style="font-size:14px;line-height:1.7;white-space:pre-wrap;">' + uiEsc(text || '暂无') + '</div>' +
+        '</div>';
+}
+
+function renderUserImpressionObject(imp) {
+    if (!imp) {
+        return '<div style="color:var(--text-muted);padding:10px;">尚未生成用户画像。可以点击“生成画像”先生成预览。</div>';
+    }
+    const value = imp.value_map || {};
+    const behavior = imp.behavior_profile || {};
+    const emotion = imp.emotion_schema || {};
+    const triggers = emotion.triggers || {};
+    const core = imp.personality_core || {};
+    const mbti = imp.mbti_analysis || null;
+    const dims = (mbti && mbti.dimensions) || {};
+    const changes = imp.observed_changes || [];
+    let html = '';
+
+    html += '<div style="display:grid;grid-template-columns:minmax(0,1.2fr) minmax(260px,0.8fr);gap:14px;align-items:start;">';
+    html += '<div style="padding:18px;border-radius:16px;background:linear-gradient(135deg,#6366f1,#a855f7);color:white;">' +
+        '<div style="font-size:12px;opacity:.75;font-weight:800;margin-bottom:8px;">核心印象</div>' +
+        '<div style="font-size:18px;line-height:1.8;font-style:italic;">“' + uiEsc(core.summary || '暂无') + '”</div>' +
+        '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:16px;padding-top:14px;border-top:1px solid rgba(255,255,255,.22);">' +
+        '<div><div style="font-size:11px;opacity:.7;">互动模式</div><div style="font-size:13px;">' + uiEsc(core.interaction_style || '暂无') + '</div></div>' +
+        '<div><div style="font-size:11px;opacity:.7;">语气感知</div><div style="font-size:13px;">' + uiEsc(behavior.tone_style || '暂无') + '</div></div>' +
+        '</div></div>';
+
+    html += '<div class="card" style="box-shadow:none;border:1px solid var(--border-color);padding:16px;margin:0;">' +
+        '<div style="display:flex;justify-content:space-between;gap:8px;align-items:center;margin-bottom:10px;">' +
+        '<div style="font-weight:800;">MBTI 侧写</div>' +
+        '<div style="font-size:22px;font-weight:900;color:var(--primary);">' + uiEsc((mbti && mbti.type) || 'XXXX') + '</div>' +
+        '</div>' +
+        '<div style="font-size:12px;color:var(--text-muted);line-height:1.6;margin-bottom:10px;">' + uiEsc((mbti && mbti.reasoning) || '暂无') + '</div>' +
+        '<div style="font-size:12px;line-height:1.8;">E/I: ' + uiEsc(dims.e_i ?? 50) + ' · S/N: ' + uiEsc(dims.s_n ?? 50) + ' · T/F: ' + uiEsc(dims.t_f ?? 50) + ' · J/P: ' + uiEsc(dims.j_p ?? 50) + '</div>' +
+        '</div>';
+    html += '</div>';
+
+    html += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:14px;margin-top:14px;">';
+    html += uiTextBlock('核心价值观', value.core_values);
+    html += uiTextBlock('情绪状态总结', behavior.emotion_summary);
+    html += uiTextBlock('回应模式', behavior.response_patterns);
+    html += uiTextBlock('舒适区', emotion.comfort_zone);
+    html += '</div>';
+
+    html += '<div class="card" style="box-shadow:none;border:1px solid var(--border-color);padding:16px;margin-top:14px;">' +
+        '<div style="font-weight:800;margin-bottom:12px;">价值地图</div>' +
+        '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px;">' +
+        '<div><div style="font-size:12px;font-weight:800;margin-bottom:8px;">观察到的特质</div>' + uiListHtml(core.observed_traits) + '</div>' +
+        '<div><div style="font-size:12px;font-weight:800;margin-bottom:8px;">喜欢</div>' + uiListHtml(value.likes) + '</div>' +
+        '<div><div style="font-size:12px;font-weight:800;margin-bottom:8px;">讨厌/排斥</div>' + uiListHtml(value.dislikes) + '</div>' +
+        '</div></div>';
+
+    html += '<div class="card" style="box-shadow:none;border:1px solid var(--border-color);padding:16px;margin-top:14px;">' +
+        '<div style="font-weight:800;margin-bottom:12px;">行为与情绪</div>' +
+        '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px;">' +
+        '<div><div style="font-size:12px;font-weight:800;margin-bottom:8px;">正向触发器</div>' + uiListHtml(triggers.positive) + '</div>' +
+        '<div><div style="font-size:12px;font-weight:800;margin-bottom:8px;">压力/雷区</div>' + uiListHtml(triggers.negative) + '</div>' +
+        '<div><div style="font-size:12px;font-weight:800;margin-bottom:8px;">压力信号</div>' + uiListHtml(emotion.stress_signals) + '</div>' +
+        '</div></div>';
+
+    html += '<div class="card" style="box-shadow:none;border:1px solid var(--border-color);padding:16px;margin-top:14px;">' +
+        '<div style="font-weight:800;margin-bottom:12px;">最近变化</div>' +
+        uiListHtml(changes) +
+        '</div>';
+
+    html += '<div style="font-size:12px;color:var(--text-muted);margin-top:12px;">Version ' + uiEsc(imp.version || 3.0) + ' · lastUpdated ' + uiEsc(imp.lastUpdated || '') + '</div>';
+    return html;
+}
+
+function renderUserImpression() {
+    const el = document.getElementById('uiCurrentImpression');
+    if (!el) return;
+    if (!_userImpressionCurrent) {
+        el.innerHTML = '<div style="font-weight:800;margin-bottom:8px;">当前画像</div>' + renderUserImpressionObject(null);
+        return;
+    }
+    el.innerHTML = '<div style="display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:12px;">' +
+        '<div><div style="font-weight:800;">当前画像</div><div style="font-size:12px;color:var(--text-muted);margin-top:2px;">更新时间：' + uiEsc(_userImpressionCurrent.updated_at || '') + ' · 来源：' + uiEsc(_userImpressionCurrent.source_mode || '') + '</div></div>' +
+        '</div>' +
+        renderUserImpressionObject(_userImpressionCurrent.impression);
+}
+
+async function loadUserImpression() {
+    const el = document.getElementById('uiCurrentImpression');
+    if (el) el.innerHTML = '加载中...';
+    try {
+        const resp = await fetch('/api/user-impression?character_id=default');
+        const data = await resp.json();
+        if (data.status === 'not_found') {
+            _userImpressionCurrent = null;
+        } else if (data.status === 'ok') {
+            _userImpressionCurrent = data;
+        } else if (data.error) {
+            throw new Error(data.error);
+        } else {
+            _userImpressionCurrent = null;
+        }
+        renderUserImpression();
+    } catch (e) {
+        if (el) el.innerHTML = '<div class="msg-box msg-error">加载失败：' + uiEsc(e.message) + '</div>';
+    }
+}
+
+async function generateUserImpressionPreview(mode) {
+    const card = document.getElementById('uiPreviewCard');
+    const content = document.getElementById('uiPreviewContent');
+    const meta = document.getElementById('uiPreviewMeta');
+    if (card) card.style.display = 'block';
+    if (content) content.innerHTML = '正在生成画像预览，可能需要一会儿...';
+    if (meta) meta.textContent = mode === 'update' ? '追加/更新模式' : '初始生成模式';
+    try {
+        const resp = await fetch('/api/user-impression/generate-preview', {
+            method: 'POST',
+            headers: {'Content-Type':'application/json'},
+            body: JSON.stringify({character_id:'default', mode: mode || 'initial'})
+        });
+        const data = await resp.json();
+        if (data.status !== 'ok') throw new Error(data.error || '生成失败');
+        _userImpressionPreview = data;
+        if (meta) {
+            const ms = data.material_summary || {};
+            meta.textContent = '模式：' + data.mode + ' · 记忆 ' + (ms.memory_count || 0) + ' 条 · 近期聊天 ' + (ms.recent_message_count || 0) + ' 条 · prompt ' + (ms.prompt_chars || 0) + ' 字';
+        }
+        if (content) content.innerHTML = renderUserImpressionObject(data.impression);
+        showUserImpressionMsg('success', '画像预览已生成，确认后才会保存。');
+    } catch (e) {
+        if (content) content.innerHTML = '<div class="msg-box msg-error">生成失败：' + uiEsc(e.message) + '</div>';
+    }
+}
+
+async function confirmUserImpressionPreview() {
+    if (!_userImpressionPreview || !_userImpressionPreview.impression) {
+        showUserImpressionMsg('error', '没有可保存的预览。');
+        return;
+    }
+    try {
+        const resp = await fetch('/api/user-impression/confirm', {
+            method: 'POST',
+            headers: {'Content-Type':'application/json'},
+            body: JSON.stringify({
+                character_id: _userImpressionPreview.character_id || 'default',
+                mode: _userImpressionPreview.mode || 'manual',
+                source_message_count: _userImpressionPreview.source_message_count || 0,
+                impression: _userImpressionPreview.impression
+            })
+        });
+        const data = await resp.json();
+        if (data.status !== 'ok') throw new Error(data.error || '保存失败');
+        _userImpressionCurrent = data;
+        clearUserImpressionPreview();
+        renderUserImpression();
+        showUserImpressionMsg('success', '画像已保存。');
+    } catch (e) {
+        showUserImpressionMsg('error', '保存失败：' + e.message);
+    }
+}
+
+function clearUserImpressionPreview() {
+    _userImpressionPreview = null;
+    const card = document.getElementById('uiPreviewCard');
+    const content = document.getElementById('uiPreviewContent');
+    if (card) card.style.display = 'none';
+    if (content) content.innerHTML = '';
+}
+
+async function deleteUserImpression() {
+    if (!confirm('确定删除当前用户画像吗？删除后可以重新生成。')) return;
+    try {
+        const resp = await fetch('/api/user-impression?character_id=default', {method:'DELETE'});
+        const data = await resp.json();
+        if (data.status !== 'ok') throw new Error(data.error || '删除失败');
+        _userImpressionCurrent = null;
+        clearUserImpressionPreview();
+        renderUserImpression();
+        showUserImpressionMsg('success', '画像已删除。');
+    } catch (e) {
+        showUserImpressionMsg('error', '删除失败：' + e.message);
+    }
+}
 
 // ============================================================
 // 聊天记录提取

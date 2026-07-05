@@ -2425,7 +2425,7 @@ def extract_environment_bundle_from_text(text: str) -> tuple[str, str, str]:
         filename_match = re.search(r'filename="([^"]+)"', attrs)
         filename = filename_match.group(1) if filename_match else ""
 
-        markers = ("【当前时间】", "【当前电量】", "【当前天气】", "【应用使用时长】")
+        markers = ("【当前时间】", "【当前电量】", "【当前天气】", "【应用使用时长】", "【当前屏幕应用】")
         if not any(m in body for m in markers) and not filename.startswith("Time:"):
             return match.group(0)
 
@@ -2458,6 +2458,22 @@ def extract_environment_bundle_from_text(text: str) -> tuple[str, str, str]:
                     break
             if apps:
                 env_lines.append("应用使用: " + "，".join(apps))
+
+        screen_block = re.search(r'【当前屏幕应用】(.*?)(?:【|$)', body, re.S)
+        if screen_block:
+            sb = screen_block.group(1)
+            screen_app = re.search(r'应用:\s*([^\n]+)', sb)
+            screen_pkg = re.search(r'包名:\s*([^\n]+)', sb)
+            screen_activity = re.search(r'Activity:\s*([^\n]+)', sb)
+            screen_parts = []
+            if screen_app and screen_app.group(1).strip():
+                screen_parts.append(screen_app.group(1).strip())
+            if screen_pkg and screen_pkg.group(1).strip():
+                screen_parts.append(f"包名 {screen_pkg.group(1).strip()}")
+            if screen_activity and screen_activity.group(1).strip():
+                screen_parts.append(f"Activity {screen_activity.group(1).strip()}")
+            if screen_parts:
+                env_lines.append("当前屏幕: " + "，".join(screen_parts))
 
         return ""
 

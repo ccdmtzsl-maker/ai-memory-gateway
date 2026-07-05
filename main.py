@@ -4823,6 +4823,181 @@ async def build_user_impression_materials_preview(character_id: str = "default",
     }
 
 
+
+
+def safe_parse_user_impression_json_object(text: str) -> dict:
+    """稳健解析用户画像生成结果。接受 JSON 对象或 fenced JSON。失败返回 {}。"""
+    if not text:
+        return {}
+    raw = str(text).strip()
+    raw = re.sub(r"^```(?:json)?\s*", "", raw, flags=re.I)
+    raw = re.sub(r"\s*```$", "", raw)
+    start = raw.find("{")
+    end = raw.rfind("}")
+    if start < 0 or end < start:
+        return {}
+    raw = raw[start:end + 1]
+    try:
+        data = json.loads(raw)
+    except Exception as e:
+        print(f"⚠️ 用户画像 JSON 解析失败: {e}; raw={raw[:500]}")
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def build_user_impression_generation_prompt(materials: dict) -> str:
+    mode = materials.get("mode") or "initial"
+    user_nickname = materials.get("user_nickname") or "用户"
+    current = materials.get("current_impression")
+    current_json = ""
+    if mode == "update" and current and current.get("impression"):
+        current_json = json.dumps(current.get("impression"), ensure_ascii=False, indent=2)
+
+    is_initial = mode == "initial"
+    summary_instruction = (
+        "用一段话（100字以内）概括你对TA的【宏观整体印象】。不要局限于最近的对话，而是定义TA本质上是个什么样的人，以及TA对你意味着什么。必须第一人称。"
+        if is_initial else
+        "基于旧的总结，结合新发现，更新你对TA的【宏观整体印象】。请保持长期视角的连贯性，除非发生了重大转折，否则不要因为一两句闲聊就彻底推翻对TA的本质判断。必须第一人称。"
+    )
+    list_instruction = '"项目1", "项目2"' if is_initial else '"保留旧项目", "新项目"'
+    changes_instruction = "" if is_initial else '"描述变化1", "描述变化2"'
+    reset_instruction = ""
+    if is_initial:
+        reset_instruction = """
+【重置模式特别指令 - CRITICAL】
+这是一次【完全重置】，你需要从零开始，基于所有可用的长期材料重新构建对TA的完整认知。
+- 分析必须覆盖从早期记忆到近期材料的完整时间跨度
+- 早期材料和近期材料拥有相同权重
+- personality_core、value_map、emotion_schema 必须反映TA在整段关系中展现出的稳定特征，而非仅仅是近期状态
+- 如果早期材料和近期材料中TA的表现有差异，请在 observed_changes 中记录这种演变，但 personality_core 应反映最持久稳定的特质
+"""
+    material_text = materials.get("material_text_preview") or ""
+
+    return f"""
+当前档案（你过去的观察）
+```json
+{current_json}
+```
+
+{material_text}
+
+【重要：语气与视角】
+你就是当前角色。这份档案是你写的【私人笔记】。
+因此，所有总结性的字段（如 `core_values`, `summary`, `emotion_summary`, `comfort_zone` 等），必须使用你的第一人称（“我”）视角来撰写。
+用户昵称是：{user_nickname}
+
+【核心指令：数据层级与权重分配】
+1. 【角色人设】、【记忆宫殿长期材料】、【近日印象】是你最重要的长期分析基础。你对TA的核心性格、价值观、互动模式、人格特质的判断，必须主要基于这些跨时间线材料。
+2. 【近期聊天】只代表TA当下状态切片，严格限定用于更新 behavior_profile.emotion_summary 和 observed_changes。
+3. 除非发生重大事件（价值观冲突、人生转折、关系状态重大改变），不要因为最近几句闲聊改变对TA本质人格的判断。
+4. MBTI 只是角色观察侧写，不是专业心理测评，不要写成诊断报告。
+
+{reset_instruction}
+
+【反面教材 - 严禁出现】
+- 不要仅根据最近聊天就总结“TA是一个喜欢讨论XX话题的人”。
+- personality_core.summary 里不要出现“最近”“这几天”等时间限定词；summary 应该是跨越长期材料的宏观总结。
+- 正确做法：personality_core 基于长期材料，observed_changes 基于近期聊天/近日印象与长期印象的对比。
+
+【summary 指令】
+{summary_instruction}
+
+请根据以上材料，{'生成' if is_initial else '增量更新'}以下 JSON 结构。
+
+输出 JSON 结构 v3.0。严格遵守：
+- 只输出 JSON 对象
+- 不要 markdown 代码块
+- 不要解释
+- observed_changes 的每一项必须是纯字符串，不要对象格式
+
+{{
+  "version": 3.0,
+  "lastUpdated": 0,
+  "value_map": {{
+    "likes": [{list_instruction}],
+    "dislikes": [{list_instruction}],
+    "core_values": "..."
+  }},
+  "behavior_profile": {{
+    "tone_style": "...",
+    "emotion_summary": "...",
+    "response_patterns": "..."
+  }},
+  "emotion_schema": {{
+    "triggers": {{
+      "positive": [{list_instruction}],
+      "negative": [{list_instruction}]
+    }},
+    "comfort_zone": "...",
+    "stress_signals": [{list_instruction}]
+  }},
+  "personality_core": {{
+    "observed_traits": [{list_instruction}],
+    "interaction_style": "...",
+    "summary": "..."
+  }},
+  "mbti_analysis": {{
+    "type": "XXXX",
+    "reasoning": "...",
+    "dimensions": {{
+      "e_i": 50,
+      "s_n": 50,
+      "t_f": 50,
+      "j_p": 50
+    }}
+  }},
+  "observed_changes": [
+    {changes_instruction}
+  ]
+}}
+""".strip()
+
+
+async def call_user_impression_generator(materials: dict) -> dict:
+    """调用记忆模型生成用户画像预览。只返回结果，不保存。"""
+    base_url = await get_runtime_memory_api_base_url()
+    if not base_url:
+        raise RuntimeError("MEMORY_API_BASE_URL 未设置")
+    memory_model = await get_runtime_memory_model()
+    if not memory_model:
+        raise RuntimeError("MEMORY_MODEL 未设置")
+    memory_api_key = await get_runtime_memory_api_key()
+
+    prompt = build_user_impression_generation_prompt(materials)
+    headers = {"Content-Type": "application/json"}
+    if memory_api_key:
+        headers["Authorization"] = f"Bearer {memory_api_key}"
+    if "openrouter" in base_url:
+        headers["HTTP-Referer"] = EXTRA_REFERER
+        headers["X-Title"] = EXTRA_TITLE
+
+    body = {
+        "model": memory_model,
+        "messages": [
+            {"role": "system", "content": "你只输出严格 JSON 对象，不要 markdown，不要解释。"},
+            {"role": "user", "content": prompt},
+        ],
+        "temperature": 0.5,
+        "max_tokens": 8000,
+        "stream": False,
+    }
+    print(f"[UserImpression] Calling LLM: mode={materials.get('mode')}, model={memory_model}, prompt_chars={len(prompt)}")
+    async with httpx.AsyncClient(timeout=300.0) as client:
+        resp = await client.post(base_url, headers=headers, json=body)
+        resp.raise_for_status()
+        data = resp.json()
+    text = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+    parsed = safe_parse_user_impression_json_object(text)
+    normalized = normalize_user_impression(parsed)
+    if not normalized:
+        raise RuntimeError("画像生成结果不完整或不是有效 JSON 对象")
+    return {
+        "impression": normalized,
+        "raw_reply": text,
+        "prompt_chars": len(prompt),
+    }
+
+
 # ============================================================
 # 用户画像 / 印象档案（User Impression）阶段 1：基础 API
 # ============================================================
@@ -4883,6 +5058,41 @@ async def api_user_impression_materials_preview(request: Request):
             mode=mode,
             session_id=session_id,
         )
+    except Exception as e:
+        return JSONResponse({"status": "error", "error": str(e)}, status_code=500)
+
+
+@app.post("/api/user-impression/generate-preview")
+async def api_user_impression_generate_preview(request: Request):
+    if not MEMORY_ENABLED:
+        return {"error": "记忆系统未启用"}
+    try:
+        data = await request.json()
+        character_id = data.get("character_id") or "default"
+        mode = data.get("mode") or "initial"
+        session_id = data.get("session_id") or None
+        materials = await build_user_impression_materials_preview(
+            character_id=character_id,
+            mode=mode,
+            session_id=session_id,
+        )
+        generated = await call_user_impression_generator(materials)
+        return {
+            "status": "ok",
+            "mode": materials.get("mode"),
+            "character_id": character_id,
+            "session_id": session_id,
+            "impression": generated["impression"],
+            "source_message_count": materials.get("source_message_count") or 0,
+            "material_summary": {
+                "system_prompt_chars": materials.get("system_prompt_chars") or 0,
+                "memory_count": (materials.get("memory_palace") or {}).get("count") or 0,
+                "recent_message_count": (materials.get("recent_messages") or {}).get("count") or 0,
+                "material_text_chars": materials.get("material_text_chars") or 0,
+                "prompt_chars": generated.get("prompt_chars") or 0,
+            },
+            "raw_reply": generated.get("raw_reply") or "",
+        }
     except Exception as e:
         return JSONResponse({"status": "error", "error": str(e)}, status_code=500)
 

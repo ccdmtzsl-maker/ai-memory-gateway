@@ -118,6 +118,9 @@ REASONING_EFFORT = os.getenv("REASONING_EFFORT", "")
 # 记忆宫殿提取中称呼用户用的昵称；留空则使用“用户”
 USER_NICKNAME = os.getenv("USER_NICKNAME", "用户")
 
+# 当前角色名称；用于用户画像等需要明确角色视角的提示词
+CHARACTER_NAME = os.getenv("CHARACTER_NAME", "澈")
+
 # 记忆宫殿默认注入数量；是否启用跟随 MEMORY_ENABLED 总开关
 MEMORY_PALACE_DEFAULT_LIMIT = int(os.getenv("MEMORY_PALACE_DEFAULT_LIMIT", "5"))
 
@@ -184,6 +187,17 @@ async def get_runtime_user_nickname() -> str:
     except Exception as e:
         print(f"[memory_config] 读取 USER_NICKNAME 配置失败，回退到运行时变量: {e}")
     return str(USER_NICKNAME or "用户").strip() or "用户"
+
+
+async def get_runtime_character_name() -> str:
+    """获取当前角色名称：优先读设置页配置，留空时使用 CHARACTER_NAME / 澈。"""
+    try:
+        db_value = await get_gateway_config("CHARACTER_NAME", "")
+        if db_value and str(db_value).strip():
+            return str(db_value).strip()
+    except Exception as e:
+        print(f"[memory_config] 读取 CHARACTER_NAME 配置失败，回退到运行时变量: {e}")
+    return str(CHARACTER_NAME or "澈").strip() or "澈"
 
 
 async def get_runtime_memory_palace_enabled() -> bool:
@@ -4775,6 +4789,7 @@ async def build_user_impression_materials_preview(character_id: str = "default",
     mode = mode if mode in ("initial", "update") else "initial"
     system_prompt = (await get_system_prompt()).strip()
     user_nickname = await get_runtime_user_nickname() or "用户"
+    character_name = await get_runtime_character_name() or "澈"
     memory_material = await _collect_user_impression_memory_material(character_id)
     daily_impressions_text = await format_daily_impressions_for_prompt(limit=10)
     recent_messages = await _collect_user_impression_recent_messages(mode=mode, session_id=session_id)
@@ -4782,6 +4797,7 @@ async def build_user_impression_materials_preview(character_id: str = "default",
 
     sections = []
     sections.append(f"【角色人设】\n{_ui_preview_text(system_prompt, 3000) if system_prompt else '（空）'}")
+    sections.append(f"【当前角色名称】\n{character_name}")
     sections.append(f"【当前用户昵称】\n{user_nickname}")
     if memory_material["items"]:
         lines = []
@@ -4812,6 +4828,7 @@ async def build_user_impression_materials_preview(character_id: str = "default",
         "character_id": character_id,
         "session_id": session_id,
         "user_nickname": user_nickname,
+        "character_name": character_name,
         "system_prompt_chars": len(system_prompt),
         "memory_palace": memory_material,
         "daily_impressions_text": daily_impressions_text,
@@ -4848,6 +4865,7 @@ def safe_parse_user_impression_json_object(text: str) -> dict:
 def build_user_impression_generation_prompt(materials: dict) -> str:
     mode = materials.get("mode") or "initial"
     user_nickname = materials.get("user_nickname") or "用户"
+    character_name = materials.get("character_name") or "当前角色"
     current = materials.get("current_impression")
     current_json = ""
     if mode == "update" and current and current.get("impression"):
@@ -4882,7 +4900,7 @@ def build_user_impression_generation_prompt(materials: dict) -> str:
 {material_text}
 
 【重要：语气与视角】
-你就是当前角色。这份档案是你写的【私人笔记】。
+你就是「{character_name}」。这份档案是你写的【私人笔记】。
 因此，所有总结性的字段（如 `core_values`, `summary`, `emotion_summary`, `comfort_zone` 等），必须使用你的第一人称（“我”）视角来撰写。
 用户昵称是：{user_nickname}
 
@@ -7797,6 +7815,7 @@ async def get_settings():
             "RESPONSE_TRANSFORM_RULES": db.get("RESPONSE_TRANSFORM_RULES") or str(RESPONSE_TRANSFORM_RULES),
             "REASONING_EFFORT":   db.get("REASONING_EFFORT") or str(REASONING_EFFORT),
             "USER_NICKNAME":      db.get("USER_NICKNAME") or str(USER_NICKNAME),
+            "CHARACTER_NAME":      db.get("CHARACTER_NAME") or str(CHARACTER_NAME),
             "MEMORY_PALACE_DEFAULT_LIMIT": int(db.get("MEMORY_PALACE_DEFAULT_LIMIT") or MEMORY_PALACE_DEFAULT_LIMIT),
             "KEYWORD_CONTEXT_ENABLED": _parse_bool(db.get("KEYWORD_CONTEXT_ENABLED"), KEYWORD_CONTEXT_ENABLED),
             "KEYWORD_CONTEXT_RULES": db.get("KEYWORD_CONTEXT_RULES") or str(KEYWORD_CONTEXT_RULES),
@@ -7905,6 +7924,7 @@ async def save_settings(request: Request):
             "RESPONSE_TRANSFORM_RULES": str,
             "REASONING_EFFORT":      str,
             "USER_NICKNAME":         str,
+            "CHARACTER_NAME":         str,
             "MEMORY_PALACE_DEFAULT_LIMIT": int,
             "KEYWORD_CONTEXT_ENABLED": lambda v: _parse_bool(v),
             "KEYWORD_CONTEXT_RULES": str,

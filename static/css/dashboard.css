@@ -1579,11 +1579,9 @@ body {
         white-space: nowrap;
     }
 }\n\n
-/* 记忆宫殿：房间网格在手机端保持多列布局，不依赖工具栏按钮撑宽 */
-@media (max-width: 640px) {
-    #section-memory-palace .mp-rooms-grid {
-        min-width: 760px;
-        grid-template-columns: repeat(3, minmax(220px, 1fr)) !important;
-    }
+/* 记忆宫殿：房间网格保持多列布局，不依赖工具栏按钮撑宽或移动端 media 命中 */
+#section-memory-palace .mp-rooms-grid {
+    min-width: 760px;
+    grid-template-columns: repeat(3, minmax(220px, 1fr)) !important;
 }
 \n

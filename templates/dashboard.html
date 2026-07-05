@@ -60,6 +60,10 @@
                     <span class="nav-icon">🏛️</span>
                     <span class="nav-label">记忆宫殿</span>
                 </a>
+                <a href="#" class="nav-item" data-section="user-impression">
+                    <span class="nav-icon">🧭</span>
+                    <span class="nav-label">用户画像</span>
+                </a>
                 <a href="#" class="nav-item" data-section="threads">
                     <span class="nav-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg></span>
                     <span class="nav-label">对话线</span>
@@ -379,6 +383,42 @@
 
                 <div id="mpNodeList" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:14px;margin-top:14px;">
                     加载中...
+                </div>
+            </section>
+
+            <!-- 用户画像 Section -->
+            <section id="section-user-impression" class="section">
+                <div class="section-header">
+                    <h1>用户画像</h1>
+                    <p class="section-desc">角色视角下对用户形成的长期观察笔记。生成结果会先预览，确认后才保存。</p>
+                </div>
+
+                <div id="ui-msg" class="msg-container"></div>
+
+                <div class="card toolbar-card">
+                    <div class="toolbar">
+                        <button class="btn btn-secondary" onclick="loadUserImpression()">刷新</button>
+                        <button class="btn btn-primary" onclick="generateUserImpressionPreview('initial')">生成画像</button>
+                        <button class="btn btn-secondary" onclick="generateUserImpressionPreview('update')">追加/更新</button>
+                        <button class="btn btn-danger" onclick="deleteUserImpression()">删除画像</button>
+                    </div>
+                    <div class="hint" style="margin-top:10px;">initial 会从零生成；update 会带入旧画像并读取更多近期聊天。两者都会先生成预览，不会自动覆盖。</div>
+                </div>
+
+                <div id="uiCurrentImpression" class="card" style="padding:18px;">加载中...</div>
+
+                <div id="uiPreviewCard" class="card" style="display:none;padding:18px;">
+                    <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:12px;">
+                        <div>
+                            <div style="font-weight:800;">生成预览</div>
+                            <div id="uiPreviewMeta" style="font-size:12px;color:var(--text-muted);margin-top:2px;"></div>
+                        </div>
+                        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+                            <button class="btn btn-primary" onclick="confirmUserImpressionPreview()">确认保存</button>
+                            <button class="btn btn-secondary" onclick="clearUserImpressionPreview()">取消预览</button>
+                        </div>
+                    </div>
+                    <div id="uiPreviewContent"></div>
                 </div>
             </section>
 

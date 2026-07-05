@@ -6,6 +6,7 @@ let _mpEventBoxes = [];
 let _mpCurrentEventBoxId = null;
 let _mpShowNodeIds = false;
 let _mpEventBoxesExpanded = false;
+let _mpToolsExpanded = false;
 
 function mpEsc(s) {
     return String(s == null ? '' : s)
@@ -87,6 +88,7 @@ async function loadMemoryPalace() {
         _mpRooms = data.rooms || [];
         renderMemoryPalaceRooms();
         renderMemoryPalaceEventBoxCollapseState();
+        renderMemoryPalaceToolsState();
         await loadMemoryPalaceNodes(_mpCurrentRoom);
         await loadMemoryPalaceEventBoxes();
     } catch (e) {
@@ -136,11 +138,30 @@ async function selectMemoryPalaceRoom(room) {
     await loadMemoryPalaceNodes(_mpCurrentRoom);
 }
 
+function currentMemoryPalaceRoomTitleText() {
+    const room = mpRoomMeta(_mpCurrentRoom);
+    const label = _mpCurrentRoom ? (room.label + (room.description ? ' · ' + room.description : '')) : '全部房间';
+    return label + (_mpToolsExpanded ? ' ▴' : ' ▾');
+}
+
 function updateMemoryPalaceRoomTitle() {
     const el = document.getElementById('mpCurrentRoomTitle');
     if (!el) return;
-    const room = mpRoomMeta(_mpCurrentRoom);
-    el.textContent = _mpCurrentRoom ? (room.label + ' · ' + room.description) : '全部房间';
+    el.textContent = currentMemoryPalaceRoomTitleText();
+}
+
+function renderMemoryPalaceToolsState() {
+    document.querySelectorAll('.mp-advanced-action').forEach(el => {
+        el.style.display = _mpToolsExpanded ? '' : 'none';
+    });
+    const debugCard = document.getElementById('mpRecallDebugCard');
+    if (debugCard) debugCard.style.display = _mpToolsExpanded ? '' : 'none';
+    updateMemoryPalaceRoomTitle();
+}
+
+function toggleMemoryPalaceTools() {
+    _mpToolsExpanded = !_mpToolsExpanded;
+    renderMemoryPalaceToolsState();
 }
 
 async function loadMemoryPalaceNodes(room) {
@@ -980,4 +1001,4 @@ async function backfillMemoryPalaceEmbeddings() {
         setMemoryPalaceBackfillButton(false);
     }
 }
-window.toggleMemoryPalaceEventBoxes = toggleMemoryPalaceEventBoxes;
+window.toggleMemoryPalaceEventBoxes = toggleMemoryPalaceEventBoxes;\nwindow.toggleMemoryPalaceTools = toggleMemoryPalaceTools;\n

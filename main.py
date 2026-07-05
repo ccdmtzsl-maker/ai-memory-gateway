@@ -4643,6 +4643,181 @@ async def api_delete_daily_impression(date_str: str):
 
 
 
+
+
+def _ui_preview_text(value, limit: int = 500) -> str:
+    text = value if isinstance(value, str) else str(value or "")
+    text = text.strip()
+    if len(text) > limit:
+        return text[:limit].rstrip() + "..."
+    return text
+
+
+def _ui_iso(value):
+    if not value:
+        return None
+    try:
+        return value.isoformat()
+    except Exception:
+        return str(value)
+
+
+async def _collect_user_impression_memory_material(character_id: str = "default") -> dict:
+    """收集用户画像生成用的记忆宫殿长期材料。只读，不修改任何记忆。"""
+    room_limits = {
+        "user_room": 80,
+        "bedroom": 40,
+        "study": 30,
+        "attic": 20,
+        "windowsill": 20,
+    }
+    room_labels = {
+        "user_room": "用户房间",
+        "bedroom": "卧室",
+        "study": "书房",
+        "attic": "阁楼",
+        "windowsill": "窗台",
+    }
+    pool = await get_pool()
+    items = []
+    by_room = {}
+    async with pool.acquire() as conn:
+        for room, limit in room_limits.items():
+            rows = await conn.fetch("""
+                SELECT id, room, content, tags, importance, mood, date, created_at, updated_at, access_count
+                FROM memory_palace_nodes
+                WHERE character_id = $1
+                  AND room = $2
+                  AND archived = FALSE
+                  AND COALESCE(is_box_summary, FALSE) = FALSE
+                ORDER BY
+                  importance DESC NULLS LAST,
+                  access_count DESC NULLS LAST,
+                  date DESC NULLS LAST,
+                  updated_at DESC NULLS LAST,
+                  created_at DESC NULLS LAST
+                LIMIT $3
+            """, character_id, room, limit)
+            room_items = []
+            for r in rows:
+                item = {
+                    "id": r.get("id"),
+                    "room": r.get("room"),
+                    "room_label": room_labels.get(r.get("room"), r.get("room")),
+                    "importance": int(r.get("importance") or 5),
+                    "tags": r.get("tags") or "",
+                    "mood": r.get("mood") or "",
+                    "date": _ui_iso(r.get("date")),
+                    "access_count": int(r.get("access_count") or 0),
+                    "content": _ui_preview_text(r.get("content"), 500),
+                }
+                room_items.append(item)
+                items.append(item)
+            by_room[room] = {
+                "label": room_labels.get(room, room),
+                "limit": limit,
+                "count": len(room_items),
+            }
+    return {
+        "count": len(items),
+        "by_room": by_room,
+        "items": items,
+    }
+
+
+async def _collect_user_impression_recent_messages(mode: str = "initial", session_id: str = None) -> dict:
+    """收集用户画像生成用近期聊天。initial=15, update=50。"""
+    limit = 15 if mode == "initial" else 50
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        if session_id:
+            rows = await conn.fetch("""
+                SELECT id, session_id, role, content, created_at
+                FROM conversations
+                WHERE session_id = $1
+                  AND role IN ('user', 'assistant')
+                  AND content IS NOT NULL
+                  AND content <> ''
+                ORDER BY created_at DESC, id DESC
+                LIMIT $2
+            """, session_id, limit)
+        else:
+            rows = await conn.fetch("""
+                SELECT id, session_id, role, content, created_at
+                FROM conversations
+                WHERE role IN ('user', 'assistant')
+                  AND content IS NOT NULL
+                  AND content <> ''
+                ORDER BY created_at DESC, id DESC
+                LIMIT $1
+            """, limit)
+    ordered = list(reversed(rows))
+    items = []
+    for r in ordered:
+        items.append({
+            "id": r.get("id"),
+            "session_id": r.get("session_id"),
+            "role": r.get("role"),
+            "created_at": _ui_iso(r.get("created_at")),
+            "content": _ui_preview_text(r.get("content"), 800),
+        })
+    return {
+        "limit": limit,
+        "count": len(items),
+        "session_id": session_id,
+        "items": items,
+    }
+
+
+async def build_user_impression_materials_preview(character_id: str = "default", mode: str = "initial", session_id: str = None) -> dict:
+    """用户画像阶段 2：材料预览。只收集材料，不调用 LLM，不保存画像。"""
+    character_id = character_id or "default"
+    mode = mode if mode in ("initial", "update") else "initial"
+    system_prompt = (await get_system_prompt()).strip()
+    user_nickname = await get_runtime_user_nickname() or "用户"
+    memory_material = await _collect_user_impression_memory_material(character_id)
+    recent_messages = await _collect_user_impression_recent_messages(mode=mode, session_id=session_id)
+    current = await get_user_impression(character_id=character_id) if mode == "update" else None
+
+    sections = []
+    sections.append(f"【角色人设】\n{_ui_preview_text(system_prompt, 3000) if system_prompt else '（空）'}")
+    sections.append(f"【当前用户昵称】\n{user_nickname}")
+    if memory_material["items"]:
+        lines = []
+        for i, item in enumerate(memory_material["items"], 1):
+            date = item.get("date") or ""
+            tags = f" tags={item.get('tags')}" if item.get("tags") else ""
+            lines.append(f"{i}. [{item.get('room_label')}] importance={item.get('importance')} {date}{tags}: {item.get('content')}")
+        sections.append("【记忆宫殿长期材料】\n" + "\n".join(lines))
+    else:
+        sections.append("【记忆宫殿长期材料】\n（暂无）")
+    if recent_messages["items"]:
+        msg_lines = []
+        for m in recent_messages["items"]:
+            msg_lines.append(f"{m.get('role')}({m.get('session_id')}#{m.get('id')}): {m.get('content')}")
+        sections.append("【近期聊天】\n" + "\n".join(msg_lines))
+    else:
+        sections.append("【近期聊天】\n（暂无）")
+    if mode == "update":
+        sections.append("【当前画像】\n" + (json.dumps(current.get("impression"), ensure_ascii=False, indent=2) if current and current.get("impression") else ""))
+
+    material_text = "\n\n".join(sections)
+    return {
+        "status": "ok",
+        "mode": mode,
+        "character_id": character_id,
+        "session_id": session_id,
+        "user_nickname": user_nickname,
+        "system_prompt_chars": len(system_prompt),
+        "memory_palace": memory_material,
+        "recent_messages": recent_messages,
+        "current_impression": current if mode == "update" else None,
+        "source_message_count": recent_messages["count"],
+        "material_text_chars": len(material_text),
+        "material_text_preview": _ui_preview_text(material_text, 12000),
+    }
+
+
 # ============================================================
 # 用户画像 / 印象档案（User Impression）阶段 1：基础 API
 # ============================================================
@@ -4687,6 +4862,24 @@ async def api_delete_user_impression(character_id: str = "default"):
         return {"error": "记忆系统未启用"}
     result = await delete_user_impression(character_id=character_id or "default")
     return {"status": "ok", "character_id": character_id or "default", "deleted": result}
+
+
+@app.post("/api/user-impression/materials-preview")
+async def api_user_impression_materials_preview(request: Request):
+    if not MEMORY_ENABLED:
+        return {"error": "记忆系统未启用"}
+    try:
+        data = await request.json()
+        character_id = data.get("character_id") or "default"
+        mode = data.get("mode") or "initial"
+        session_id = data.get("session_id") or None
+        return await build_user_impression_materials_preview(
+            character_id=character_id,
+            mode=mode,
+            session_id=session_id,
+        )
+    except Exception as e:
+        return JSONResponse({"status": "error", "error": str(e)}, status_code=500)
 
 # ============================================================
 # 记忆宫殿（Memory Palace）阶段 1：基础管理 API

@@ -2464,16 +2464,11 @@ def extract_environment_bundle_from_text(text: str) -> tuple[str, str, str]:
             sb = screen_block.group(1)
             screen_app = re.search(r'应用:\s*([^\n]+)', sb)
             screen_pkg = re.search(r'包名:\s*([^\n]+)', sb)
-            screen_activity = re.search(r'Activity:\s*([^\n]+)', sb)
-            screen_parts = []
-            if screen_app and screen_app.group(1).strip():
-                screen_parts.append(screen_app.group(1).strip())
-            if screen_pkg and screen_pkg.group(1).strip():
-                screen_parts.append(f"包名 {screen_pkg.group(1).strip()}")
-            if screen_activity and screen_activity.group(1).strip():
-                screen_parts.append(f"Activity {screen_activity.group(1).strip()}")
-            if screen_parts:
-                env_lines.append("当前屏幕: " + "，".join(screen_parts))
+            app_name = screen_app.group(1).strip() if screen_app and screen_app.group(1).strip() else ""
+            pkg_name = screen_pkg.group(1).strip() if screen_pkg and screen_pkg.group(1).strip() else ""
+            screen_label = app_name or pkg_name
+            if screen_label:
+                env_lines.append(f"屏幕应用: {screen_label}")
 
         return ""
 

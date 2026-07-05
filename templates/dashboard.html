@@ -358,11 +358,13 @@
                         </div>
                         <div style="display:flex;gap:8px;flex-wrap:wrap;">
                             <button class="btn btn-secondary" id="mpToggleEventBoxesBtn" onclick="toggleMemoryPalaceEventBoxes()">展开事件盒</button>
-                            <button class="btn btn-secondary" onclick="compressMemoryPalaceEventBoxes()">压缩可压缩事件盒</button>
-                            <button class="btn btn-secondary" onclick="loadMemoryPalaceEventBoxes()">刷新事件盒</button>
                         </div>
                     </div>
                     <div id="mpEventBoxBody" style="display:none;">
+                        <div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end;margin-bottom:12px;">
+                            <button class="btn btn-secondary" onclick="compressMemoryPalaceEventBoxes()">压缩可压缩事件盒</button>
+                            <button class="btn btn-secondary" onclick="loadMemoryPalaceEventBoxes()">刷新事件盒</button>
+                        </div>
                         <div style="display:grid;grid-template-columns:minmax(220px,320px) minmax(0,1fr);gap:14px;align-items:start;">
                             <div id="mpEventBoxList" style="display:flex;flex-direction:column;gap:8px;max-height:520px;overflow:auto;">
                             加载中...
@@ -802,6 +804,6 @@
     });
 
     </script>
-    <script src="/static/js/memory_palace.js?v=4.0"></script>
+    <script src="/static/js/memory_palace.js?v=4.1"></script>
 </body>
 </html>

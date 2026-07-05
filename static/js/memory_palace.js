@@ -5,6 +5,7 @@ let _mpEditingId = null;
 let _mpEventBoxes = [];
 let _mpCurrentEventBoxId = null;
 let _mpShowNodeIds = false;
+let _mpEventBoxesExpanded = false;
 
 function mpEsc(s) {
     return String(s == null ? '' : s)
@@ -50,6 +51,29 @@ function mpPinnedText(value) {
     return '📌 便利贴剩余 ' + days + ' 天';
 }
 
+function renderMemoryPalaceEventBoxCollapseState() {
+    const body = document.getElementById('mpEventBoxBody');
+    const btn = document.getElementById('mpToggleEventBoxesBtn');
+    if (body) body.style.display = _mpEventBoxesExpanded ? 'block' : 'none';
+    if (btn) btn.textContent = _mpEventBoxesExpanded ? '收起事件盒' : '展开事件盒';
+}
+
+function toggleMemoryPalaceEventBoxes() {
+    _mpEventBoxesExpanded = !_mpEventBoxesExpanded;
+    renderMemoryPalaceEventBoxCollapseState();
+    if (_mpEventBoxesExpanded && !_mpEventBoxes.length) {
+        loadMemoryPalaceEventBoxes();
+    }
+}
+
+function closeMemoryPalaceEventBoxDetail() {
+    _mpCurrentEventBoxId = null;
+    renderMemoryPalaceEventBoxes();
+    const detailEl = document.getElementById('mpEventBoxDetail');
+    if (detailEl) detailEl.innerHTML = '<div style="color:var(--text-muted);padding:16px;border:1px dashed var(--border-color);border-radius:10px;">选择一个事件盒查看详情。</div>';
+}
+
+
 async function loadMemoryPalace() {
     const root = document.getElementById('section-memory-palace');
     if (!root) return;
@@ -62,6 +86,7 @@ async function loadMemoryPalace() {
         if (data.error) throw new Error(data.error);
         _mpRooms = data.rooms || [];
         renderMemoryPalaceRooms();
+        renderMemoryPalaceEventBoxCollapseState();
         await loadMemoryPalaceNodes(_mpCurrentRoom);
         await loadMemoryPalaceEventBoxes();
     } catch (e) {
@@ -589,6 +614,7 @@ async function loadMemoryPalaceEventBoxDetail(id) {
                 '<div style="min-width:220px;">' +
                     '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">' +
                         '<div style="font-weight:900;font-size:18px;">' + mpEsc(box.name || '未命名事件') + '</div>' + statusBadge +
+                        '<button class="btn btn-secondary btn-sm mp-close-event-box-detail" style="margin-left:6px;">关闭详情</button>' +
                     '</div>' +
                     '<div style="font-size:12px;color:var(--text-muted);margin-top:6px;line-height:1.6;white-space:pre-wrap;">' + mpEsc(metaLines.join('\n')) + '</div>' +
                     '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;">' +
@@ -768,6 +794,8 @@ function initMemoryPalaceInteractions() {
         if (unbindLiveBtn) { unbindMemoryPalaceEventBoxLive(unbindLiveBtn.dataset.id || ''); return; }
         const reviveBtn = event.target.closest('.mp-revive-archived-node');
         if (reviveBtn) { reviveMemoryPalaceArchivedNode(reviveBtn.dataset.id || ''); return; }
+        const closeDetailBtn = event.target.closest('.mp-close-event-box-detail');
+        if (closeDetailBtn) { closeMemoryPalaceEventBoxDetail(); return; }
         const eventBoxBtn = event.target.closest('.mp-event-box-card');
         if (eventBoxBtn) {
             selectMemoryPalaceEventBox(eventBoxBtn.dataset.id || '');

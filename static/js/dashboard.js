@@ -2342,8 +2342,10 @@ function renderUserImpression() {
     }
     el.innerHTML = '<div style="display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:12px;">' +
         '<div><div style="font-weight:800;">当前画像</div><div style="font-size:12px;color:var(--text-muted);margin-top:2px;">更新时间：' + uiEsc(_userImpressionCurrent.updated_at || '') + ' · 来源：' + uiEsc(_userImpressionCurrent.source_mode || '') + '</div></div>' +
+        '<div style="display:flex;gap:8px;flex-wrap:wrap;"><button class="btn btn-secondary" onclick="openUserImpressionEditor()">编辑画像</button></div>' +
         '</div>' +
-        renderUserImpressionObject(_userImpressionCurrent.impression);
+        renderUserImpressionObject(_userImpressionCurrent.impression) +
+        (_userImpressionEditOpen ? renderUserImpressionEditor(_userImpressionCurrent.impression) : '');
 }
 
 async function loadUserImpression() {

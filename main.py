@@ -29,7 +29,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from database import init_tables, close_pool, save_message, get_pool, get_gateway_config, set_gateway_config, get_all_gateway_config, get_conversation_messages, get_session_cache_state, save_session_cache_state, delete_session_cache_state, save_token_usage, ensure_token_usage_table, get_conversations_paginated, delete_conversation, batch_delete_conversations, merge_sessions_to_target, list_all_session_cache_states, export_all_conversations, import_conversations, get_last_user_content, update_last_assistant_message, db_row_to_message, search_conversations, update_message_content, rename_session_id, get_conversation_messages_by_date, upsert_daily_impression, get_daily_impression, list_daily_impressions
-from database import list_memory_palace_rooms, list_memory_palace_nodes, get_memory_palace_node, create_memory_palace_node, update_memory_palace_node, delete_memory_palace_node, clear_expired_memory_palace_pins
+from database import list_memory_palace_rooms, list_memory_palace_nodes, get_memory_palace_node, create_memory_palace_node, update_memory_palace_node, delete_memory_palace_node, clear_expired_memory_palace_pins, get_user_impression, upsert_user_impression, delete_user_impression, normalize_user_impression
 import database as _db_module  # 用于 /api/settings 热更新 database.py 全局变量
 from memory_extractor import get_extraction_prompt, set_extraction_prompt, _DEFAULT_EXTRACTION_PROMPT
 
@@ -4640,6 +4640,53 @@ async def api_delete_daily_impression(date_str: str):
 
 
 
+
+
+
+# ============================================================
+# 用户画像 / 印象档案（User Impression）阶段 1：基础 API
+# ============================================================
+
+@app.get("/api/user-impression")
+async def api_get_user_impression(character_id: str = "default"):
+    if not MEMORY_ENABLED:
+        return {"error": "记忆系统未启用"}
+    item = await get_user_impression(character_id=character_id or "default")
+    if not item:
+        return {"status": "not_found", "character_id": character_id or "default", "impression": None}
+    return {"status": "ok", **item}
+
+
+@app.post("/api/user-impression/confirm")
+async def api_confirm_user_impression(request: Request):
+    if not MEMORY_ENABLED:
+        return {"error": "记忆系统未启用"}
+    try:
+        data = await request.json()
+        character_id = data.get("character_id") or "default"
+        impression = data.get("impression")
+        mode = data.get("mode") or data.get("source_mode") or "manual"
+        source_message_count = int(data.get("source_message_count") or 0)
+        normalized = normalize_user_impression(impression)
+        if not normalized:
+            return JSONResponse({"status": "error", "error": "画像内容不完整"}, status_code=400)
+        saved = await upsert_user_impression(
+            character_id=character_id,
+            impression=normalized,
+            source_mode=mode,
+            source_message_count=source_message_count,
+        )
+        return {"status": "ok", **saved}
+    except Exception as e:
+        return JSONResponse({"status": "error", "error": str(e)}, status_code=500)
+
+
+@app.delete("/api/user-impression")
+async def api_delete_user_impression(character_id: str = "default"):
+    if not MEMORY_ENABLED:
+        return {"error": "记忆系统未启用"}
+    result = await delete_user_impression(character_id=character_id or "default")
+    return {"status": "ok", "character_id": character_id or "default", "deleted": result}
 
 # ============================================================
 # 记忆宫殿（Memory Palace）阶段 1：基础管理 API

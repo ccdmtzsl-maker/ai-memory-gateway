@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Memory Gateway</title>
-    <link rel="stylesheet" href="/static/css/dashboard.css?v=4.0">
+    <link rel="stylesheet" href="/static/css/dashboard.css?v=3.9">
 </head>
 <body>
 <!-- 模型预设切换按钮（右上角固定） -->
@@ -305,7 +305,7 @@
 
                 <div id="mp-msg" class="msg-container"></div>
 
-                <div id="mpRooms" class="mp-rooms-grid">
+                <div id="mpRooms" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:14px;margin-bottom:16px;">
                     加载中...
                 </div>
 
@@ -804,6 +804,6 @@
     });
 
     </script>
-    <script src="/static/js/memory_palace.js?v=4.4"></script>
+    <script src="/static/js/memory_palace.js?v=4.3"></script>
 </body>
 </html>

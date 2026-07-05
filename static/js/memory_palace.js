@@ -1001,4 +1001,5 @@ async function backfillMemoryPalaceEmbeddings() {
         setMemoryPalaceBackfillButton(false);
     }
 }
-window.toggleMemoryPalaceEventBoxes = toggleMemoryPalaceEventBoxes;\nwindow.toggleMemoryPalaceTools = toggleMemoryPalaceTools;\n
+window.toggleMemoryPalaceEventBoxes = toggleMemoryPalaceEventBoxes;
+window.toggleMemoryPalaceTools = toggleMemoryPalaceTools;

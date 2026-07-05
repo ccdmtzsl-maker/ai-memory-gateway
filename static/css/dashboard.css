@@ -1580,3 +1580,18 @@ body {
     }
 }
 
+
+/* 记忆宫殿：手机端房间卡片固定两列，避免 auto-fill 在窄内容区退成单列 */
+@media (max-width: 768px) {
+    #section-memory-palace #mpRooms {
+        grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+        gap: 12px !important;
+    }
+}
+
+@media (max-width: 360px) {
+    #section-memory-palace #mpRooms {
+        grid-template-columns: 1fr !important;
+    }
+}
+

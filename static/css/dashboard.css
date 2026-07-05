@@ -1541,32 +1541,38 @@ body {
 }
 
 
-/* 记忆宫殿：房间操作按钮移动端自适应 */
+/* 记忆宫殿：房间操作按钮移动端自适应
+   手机端改为横向滑动按钮条，避免按钮竖排占满屏幕。 */
 @media (max-width: 640px) {
     .mp-room-actions {
-        display: grid;
-        grid-template-columns: repeat(2, minmax(0, 1fr));
-        gap: 10px;
-        align-items: stretch !important;
+        display: flex;
+        flex-wrap: nowrap;
+        gap: 8px;
+        align-items: center !important;
+        overflow-x: auto;
+        overflow-y: hidden;
+        -webkit-overflow-scrolling: touch;
+        padding-bottom: 4px;
+        scrollbar-width: none;
+    }
+
+    .mp-room-actions::-webkit-scrollbar {
+        display: none;
     }
 
     .mp-room-actions #mpCurrentRoomTitle {
-        grid-column: 1 / -1;
-        margin-bottom: 2px;
+        flex: 0 0 auto;
+        margin-right: 4px;
+        white-space: nowrap;
     }
 
     .mp-room-actions .btn {
-        width: 100%;
-        min-width: 0;
-        padding-left: 10px;
-        padding-right: 10px;
+        flex: 0 0 auto;
+        width: auto;
+        min-width: auto;
+        padding: 8px 12px;
+        font-size: 13px;
         white-space: nowrap;
-    }
-}
-
-@media (max-width: 360px) {
-    .mp-room-actions {
-        grid-template-columns: 1fr;
     }
 }
 

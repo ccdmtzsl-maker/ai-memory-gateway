@@ -4852,7 +4852,6 @@ async def build_user_impression_materials_preview(character_id: str = "default",
 
     sections = []
     sections.append(f"【角色人设】\n{_ui_preview_text(system_prompt, 3000) if system_prompt else '（空）'}")
-    sections.append(f"【当前角色名称】\n{character_name}")
     sections.append(f"【用户昵称】\n{user_nickname}")
     if memory_material["items"]:
         lines = []
@@ -4957,8 +4956,6 @@ def build_user_impression_generation_prompt(materials: dict) -> str:
 【重要：语气与视角】
 你就是「{character_name}」。这份档案是你写的【私人笔记】。
 因此，所有总结性的字段（如 `core_values`, `summary`, `emotion_summary`, `comfort_zone` 等），必须使用你的第一人称（“我”）视角来撰写。
-用户昵称是：{user_nickname}
-
 【核心指令：数据层级与权重分配】
 1. 【角色人设】、【记忆宫殿长期材料】、【近日印象】是你【最重要的分析基础】。它们包含你的人设、长期记忆、近日印象和关系脉络。你对TA的核心性格、核心价值观、互动模式、人格特质的判断，必须主要基于这些跨越完整时间线的宏观数据。你必须【平等对待】早期记忆和近期记忆，从整段关系的完整弧线中提炼人格特征。
 2. 【近期聊天】这【仅仅】代表TA当下的状态切片。它的作用【严格限定】在更新 [behavior_profile.emotion_summary] 和 [observed_changes] 两个字段。
@@ -4984,7 +4981,6 @@ def build_user_impression_generation_prompt(materials: dict) -> str:
 - observed_changes 的每一项必须是纯字符串，不要对象格式
 
 {{
-  "version": 3.0,
   "lastUpdated": 0,
   "value_map": {{
     "likes": [{list_instruction}],

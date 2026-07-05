@@ -8,6 +8,8 @@
 """
 
 import os
+import time
+import json
 import re
 from typing import Optional, List
 from datetime import datetime, timedelta, timezone as dt_timezone
@@ -453,6 +455,25 @@ async def init_tables():
             );
         """)
 
+        # 用户画像 / 印象档案：每个角色一份当前画像
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS user_impressions (
+                id BIGSERIAL PRIMARY KEY,
+                character_id TEXT NOT NULL DEFAULT 'default',
+                version DOUBLE PRECISION DEFAULT 3.0,
+                impression JSONB NOT NULL DEFAULT '{}'::jsonb,
+                source_mode TEXT DEFAULT 'initial',
+                source_message_count INTEGER DEFAULT 0,
+                created_at TIMESTAMPTZ DEFAULT NOW(),
+                updated_at TIMESTAMPTZ DEFAULT NOW(),
+                UNIQUE(character_id)
+            );
+        """)
+        await conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_user_impressions_updated
+            ON user_impressions (updated_at DESC);
+        """)
+
     print("✅ 数据库表结构已就绪")
 
 
@@ -842,6 +863,179 @@ async def save_session_cache_state(session_id: str, summary_parts: list, a_start
             ON CONFLICT (session_id) 
             DO UPDATE SET summary = $2, a_start_round = $3, updated_at = NOW()
         """, session_id, summary_json, a_start_round)
+
+
+
+
+# ============================================================
+# 用户画像 / 印象档案（User Impression）阶段 1：基础存取
+# ============================================================
+
+def _ui_to_string(value, fallback: str = "") -> str:
+    return value if isinstance(value, str) else fallback
+
+
+def _ui_to_number(value, fallback):
+    try:
+        if isinstance(value, bool):
+            return fallback
+        if isinstance(value, (int, float)) and value == value:
+            return value
+    except Exception:
+        pass
+    return fallback
+
+
+def _ui_to_string_list(value) -> list:
+    if not isinstance(value, list):
+        return []
+    result = []
+    for item in value:
+        text = ""
+        if isinstance(item, str):
+            text = item.strip()
+        elif isinstance(item, dict):
+            desc = _ui_to_string(item.get("description")).strip()
+            period = _ui_to_string(item.get("period")).strip()
+            if desc:
+                text = f"[{period}] {desc}" if period else desc
+        if text:
+            result.append(text)
+    return result
+
+
+def normalize_user_impression(raw):
+    """Python 版 UserImpression 兜底归一化。返回 dict；无有效内容时返回 None。"""
+    if not isinstance(raw, dict):
+        return None
+
+    has_meaningful = any(raw.get(k) is not None for k in (
+        "value_map",
+        "behavior_profile",
+        "emotion_schema",
+        "personality_core",
+        "mbti_analysis",
+        "observed_changes",
+    ))
+    if not has_meaningful:
+        return None
+
+    value_map = raw.get("value_map") if isinstance(raw.get("value_map"), dict) else {}
+    behavior_profile = raw.get("behavior_profile") if isinstance(raw.get("behavior_profile"), dict) else {}
+    emotion_schema = raw.get("emotion_schema") if isinstance(raw.get("emotion_schema"), dict) else {}
+    triggers = emotion_schema.get("triggers") if isinstance(emotion_schema.get("triggers"), dict) else {}
+    personality_core = raw.get("personality_core") if isinstance(raw.get("personality_core"), dict) else {}
+    mbti_source = raw.get("mbti_analysis") if isinstance(raw.get("mbti_analysis"), dict) else None
+    mbti_dims = mbti_source.get("dimensions") if isinstance(mbti_source, dict) and isinstance(mbti_source.get("dimensions"), dict) else {}
+
+    normalized = {
+        "version": _ui_to_number(raw.get("version"), 3.0),
+        "lastUpdated": _ui_to_number(raw.get("lastUpdated"), int(time.time() * 1000)),
+        "value_map": {
+            "likes": _ui_to_string_list(value_map.get("likes")),
+            "dislikes": _ui_to_string_list(value_map.get("dislikes")),
+            "core_values": _ui_to_string(value_map.get("core_values")),
+        },
+        "behavior_profile": {
+            "tone_style": _ui_to_string(behavior_profile.get("tone_style")),
+            "emotion_summary": _ui_to_string(behavior_profile.get("emotion_summary")),
+            "response_patterns": _ui_to_string(behavior_profile.get("response_patterns")),
+        },
+        "emotion_schema": {
+            "triggers": {
+                "positive": _ui_to_string_list(triggers.get("positive")),
+                "negative": _ui_to_string_list(triggers.get("negative")),
+            },
+            "comfort_zone": _ui_to_string(emotion_schema.get("comfort_zone")),
+            "stress_signals": _ui_to_string_list(emotion_schema.get("stress_signals")),
+        },
+        "personality_core": {
+            "observed_traits": _ui_to_string_list(personality_core.get("observed_traits")),
+            "interaction_style": _ui_to_string(personality_core.get("interaction_style")),
+            "summary": _ui_to_string(personality_core.get("summary")),
+        },
+        "observed_changes": _ui_to_string_list(raw.get("observed_changes")),
+    }
+
+    if mbti_source:
+        normalized["mbti_analysis"] = {
+            "type": _ui_to_string(mbti_source.get("type")),
+            "reasoning": _ui_to_string(mbti_source.get("reasoning")),
+            "dimensions": {
+                "e_i": _ui_to_number(mbti_dims.get("e_i"), 50),
+                "s_n": _ui_to_number(mbti_dims.get("s_n"), 50),
+                "t_f": _ui_to_number(mbti_dims.get("t_f"), 50),
+                "j_p": _ui_to_number(mbti_dims.get("j_p"), 50),
+            },
+        }
+
+    return normalized
+
+
+def _serialize_user_impression_row(row):
+    if not row:
+        return None
+    impression = row.get("impression")
+    if isinstance(impression, str):
+        try:
+            impression = json.loads(impression)
+        except Exception:
+            impression = {}
+    return {
+        "character_id": row.get("character_id") or "default",
+        "version": row.get("version"),
+        "impression": impression or {},
+        "source_mode": row.get("source_mode") or "initial",
+        "source_message_count": int(row.get("source_message_count") or 0),
+        "created_at": row["created_at"].isoformat() if row.get("created_at") else None,
+        "updated_at": row["updated_at"].isoformat() if row.get("updated_at") else None,
+    }
+
+
+async def get_user_impression(character_id: str = "default"):
+    character_id = character_id or "default"
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow("""
+            SELECT character_id, version, impression, source_mode, source_message_count, created_at, updated_at
+            FROM user_impressions
+            WHERE character_id = $1
+        """, character_id)
+    return _serialize_user_impression_row(row)
+
+
+async def upsert_user_impression(character_id: str, impression: dict, source_mode: str = "initial", source_message_count: int = 0):
+    character_id = character_id or "default"
+    source_mode = source_mode if source_mode in ("initial", "update", "manual") else "manual"
+    normalized = normalize_user_impression(impression)
+    if not normalized:
+        raise ValueError("画像内容不完整")
+    version = float(normalized.get("version") or 3.0)
+    payload = json.dumps(normalized, ensure_ascii=False)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow("""
+            INSERT INTO user_impressions (
+                character_id, version, impression, source_mode, source_message_count, updated_at
+            )
+            VALUES ($1, $2, $3::jsonb, $4, $5, NOW())
+            ON CONFLICT (character_id) DO UPDATE SET
+                version = EXCLUDED.version,
+                impression = EXCLUDED.impression,
+                source_mode = EXCLUDED.source_mode,
+                source_message_count = EXCLUDED.source_message_count,
+                updated_at = NOW()
+            RETURNING character_id, version, impression, source_mode, source_message_count, created_at, updated_at
+        """, character_id, version, payload, source_mode, int(source_message_count or 0))
+    return _serialize_user_impression_row(row)
+
+
+async def delete_user_impression(character_id: str = "default"):
+    character_id = character_id or "default"
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        result = await conn.execute("DELETE FROM user_impressions WHERE character_id = $1", character_id)
+    return result
 
 
 # ============================================================

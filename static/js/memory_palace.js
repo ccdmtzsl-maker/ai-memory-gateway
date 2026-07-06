@@ -601,7 +601,7 @@ function mpEventBoxTimeText(value) {
 }
 
 function mpEventBoxSectionHtml(title, nodes, emptyText, collapsed) {
-    const body = (nodes || []).map(n => { const acts = []; if (!n.is_box_summary) acts.push('<button class=\"btn btn-secondary btn-sm mp-remove-node-from-box\" data-id=\"' + mpEsc(n.id || '') + '\">移出盒</button>'); if (collapsed && n.archived) acts.push('<button class=\"btn btn-secondary btn-sm mp-revive-archived-node\" data-id=\"' + mpEsc(n.id || '') + '\">复活</button>'); return mpEventBoxNodeHtml(n, {actions: acts.length ? '<div style=\"margin-top:8px;display:flex;justify-content:flex-end;gap:8px;flex-wrap:wrap;\">' + acts.join('') + '</div>' : ''}); }).join('') || '<div style="color:var(--text-muted);padding:12px;border:1px dashed var(--border-color);border-radius:10px;">' + mpEsc(emptyText || '暂无节点') + '</div>';
+    const body = (nodes || []).map(n => { const acts = []; if (!n.is_box_summary) acts.push('<button class=\"btn btn-secondary btn-sm mp-remove-node-from-box\" data-id=\"' + mpEsc(n.id || '') + '\" data-box-id=\"' + mpEsc(_mpCurrentEventBoxId || '') + '\">移出盒</button>'); if (collapsed && n.archived) acts.push('<button class=\"btn btn-secondary btn-sm mp-revive-archived-node\" data-id=\"' + mpEsc(n.id || '') + '\">复活</button>'); return mpEventBoxNodeHtml(n, {actions: acts.length ? '<div style=\"margin-top:8px;display:flex;justify-content:flex-end;gap:8px;flex-wrap:wrap;\">' + acts.join('') + '</div>' : ''}); }).join('') || '<div style="color:var(--text-muted);padding:12px;border:1px dashed var(--border-color);border-radius:10px;">' + mpEsc(emptyText || '暂无节点') + '</div>';
     if (collapsed) {
         return '<details style="margin-top:12px;border:1px solid var(--border-color);border-radius:12px;background:#fff;">' +
             '<summary style="cursor:pointer;padding:12px 14px;font-weight:800;">' + mpEsc(title) + ' <span style="color:var(--text-muted);font-weight:500;">(' + Number((nodes || []).length) + ')</span></summary>' +
@@ -678,6 +678,7 @@ async function loadMemoryPalaceEventBoxDetail(id) {
                         '<button class="btn btn-secondary btn-sm mp-undo-compress-box" data-id="' + mpEsc(box.id || '') + '">撤回上次压缩</button>' +
                         '<button class="btn btn-secondary btn-sm mp-toggle-sealed-box" data-id="' + mpEsc(box.id || '') + '" data-sealed="' + (box.sealed ? 'false' : 'true') + '">' + (box.sealed ? '解除封盒' : '封盒') + '</button>' +
                         '<button class="btn btn-secondary btn-sm mp-unbind-live-box" data-id="' + mpEsc(box.id || '') + '">清空 live</button>' +
+                        '<button class="btn btn-secondary btn-sm mp-delete-event-box" data-id="' + mpEsc(box.id || '') + '" style="border-color:#dc2626;color:#dc2626;">删除事件盒</button>' +
                     '</div>' +
                 '</div>' +
                 '<div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end;">' + stats + '</div>' +
@@ -800,19 +801,45 @@ async function addMemoryPalaceNodeToCurrentBox(nodeId) {
     } catch (e) { mpMsg('加入事件盒失败：' + e.message, 'error'); }
 }
 
-async function removeMemoryPalaceNodeFromBox(nodeId) {
-    if (!nodeId) return;
-    if (!confirm('将这条记忆移出事件盒，恢复为独立记忆。继续吗？')) return;
+async function removeMemoryPalaceNodeFromBox(nodeId, boxId) {
+    boxId = boxId || _mpCurrentEventBoxId;
+    if (!nodeId || !boxId) return;
+    if (!confirm('将这条记忆从当前事件盒移出，恢复为独立记忆。继续吗？')) return;
     try {
-        const resp = await fetch('/api/memory-palace/nodes/' + encodeURIComponent(nodeId) + '/remove-from-box', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({})});
+        const resp = await fetch('/api/memory-palace/event-boxes/' + encodeURIComponent(boxId) + '/remove-node', {
+            method:'POST',
+            headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({node_id: nodeId})
+        });
         const data = await resp.json();
         if (data.error || data.status === 'error') throw new Error(data.error || '移出失败');
-        mpMsg('已移出事件盒');
+        mpMsg(data.removed ? '已从当前事件盒移出' : '这条记忆不在当前事件盒中');
         if (data.deleted) _mpCurrentEventBoxId = null;
         await loadMemoryPalaceEventBoxes();
         if (_mpCurrentEventBoxId) await loadMemoryPalaceEventBoxDetail(_mpCurrentEventBoxId);
         await loadMemoryPalaceNodes(_mpCurrentRoom);
     } catch (e) { mpMsg('移出事件盒失败：' + e.message, 'error'); }
+}
+
+async function deleteMemoryPalaceEventBox(id) {
+    id = id || _mpCurrentEventBoxId;
+    if (!id) return;
+    if (!confirm('删除这个事件盒？不会删除盒内记忆；普通记忆会恢复为独立记忆，summary 会归档。继续吗？')) return;
+    try {
+        const resp = await fetch('/api/memory-palace/event-boxes/' + encodeURIComponent(id), {
+            method:'DELETE',
+            headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({})
+        });
+        const data = await resp.json();
+        if (data.error || data.status === 'error') throw new Error(data.error || '删除失败');
+        mpMsg('事件盒已删除');
+        if (_mpCurrentEventBoxId === id) _mpCurrentEventBoxId = null;
+        await loadMemoryPalaceEventBoxes();
+        const detail = document.getElementById('mpEventBoxDetail');
+        if (detail) detail.innerHTML = '<div style="color:var(--text-muted);padding:16px;">事件盒已删除。</div>';
+        await loadMemoryPalaceNodes(_mpCurrentRoom);
+    } catch (e) { mpMsg('删除事件盒失败：' + e.message, 'error'); }
 }
 
 function resolveMemoryPalaceNodeIdInput(value) {
@@ -866,7 +893,9 @@ function initMemoryPalaceInteractions() {
         const manualBindBtn = event.target.closest('.mp-manual-bind-node');
         if (manualBindBtn) { manualBindMemoryPalaceNode(manualBindBtn.dataset.id || ''); return; }
         const removeFromBoxBtn = event.target.closest('.mp-remove-node-from-box');
-        if (removeFromBoxBtn) { removeMemoryPalaceNodeFromBox(removeFromBoxBtn.dataset.id || ''); return; }
+        if (removeFromBoxBtn) { removeMemoryPalaceNodeFromBox(removeFromBoxBtn.dataset.id || '', removeFromBoxBtn.dataset.boxId || ''); return; }
+        const deleteEventBoxBtn = event.target.closest('.mp-delete-event-box');
+        if (deleteEventBoxBtn) { deleteMemoryPalaceEventBox(deleteEventBoxBtn.dataset.id || ''); return; }
         const editBtn = event.target.closest('.mp-edit-node');
         if (editBtn) {
             editMemoryPalaceNode(editBtn.dataset.id || '');

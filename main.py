@@ -7063,12 +7063,8 @@ async def import_memory_palace_preview_items(items: list, character_id: str = "d
             await build_memory_palace_links_for_node(node)
         except Exception as e:
             print(f"⚠️ 记忆宫殿预览导入自动关联失败 {node_id}: {e}")
-        try:
-            if await save_memory_palace_embedding(node_id, norm["content"]):
-                embedded_count += 1
-                node["embedded"] = True
-        except Exception as e:
-            print(f"⚠️ 记忆宫殿预览导入 embedding 失败 {node_id}: {e}")
+        # 手动预览导入不再同步等待 embedding，避免向量接口失败/超时时拖慢导入。
+        # 缺失向量可通过“补全向量”后台任务异步补齐。
         created.append(node)
     related_ref_ids = []
     for item in items or []:

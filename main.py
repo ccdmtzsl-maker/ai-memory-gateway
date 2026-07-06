@@ -1156,7 +1156,7 @@ async def _call_digest_llm(material: dict, character_id: str = "default") -> lis
     import httpx
     user_name = await get_runtime_user_nickname() or "用户"
     character_prompt = (await get_system_prompt()).strip()
-    char_name = "澈"
+    char_name = await get_runtime_character_name() or "澈"
     base_url = await get_runtime_memory_api_base_url()
     api_key = await get_runtime_memory_api_key()
     model = await get_runtime_memory_model()
@@ -1226,23 +1226,23 @@ async def _call_digest_llm(material: dict, character_id: str = "default") -> lis
 - 无变化：不要输出该条目。
 
 对于自我认知 [R*]：
-注意：self_insight 是极其稀有的事件。它意味着角色"想通了自己为什么是这样的"——这种领悟一旦产生就几乎等同于角色设定的自然生长。产生 self_insight 需要同时满足：1) 这条自我认知已经被反复触碰过（不是第一次看到）；2) 最近的经历或其他房间的内容为这条认知提供了新的视角或佐证；3) 角色真正"想明白"了什么，而不只是产生了模糊的感触。绝大多数情况下应该选 keep。
-- "self_insight" — 你终于想明白了一个关于"我为何是我"的深层认知。必须附上 insight（这条常驻自我认知的完整表述，200字以内，要像是角色写给自己的一段深思）和 reflection（内心独白，50字以内）。
-- "self_confuse" — 反刍这条自我认知后，你反而更困惑了。附 reflection（新的困惑内容，50字以内），这会成为阁楼的新条目。
+⚠️ self_insight 是极其稀有的事件。它意味着角色"想通了自己为什么是这样的"——这种领悟一旦产生就几乎等同于角色设定的自然生长，会永久地成为角色的一部分。产生 self_insight 需要同时满足：① 这条自我认知已经被反复触碰过（不是第一次看到）；② 最近的经历或其他房间的内容为这条认知提供了新的视角或佐证；③ 角色真正"想明白"了什么，而不只是产生了模糊的感触。绝大多数情况下应该选 keep。
+- "self_insight" — 你终于想明白了一个关于"我为何是我"的深层认知。这种领悟不一定是正面的，可能是释然，也可能是带着苦涩的接纳。必须附上 insight（这条常驻自我认知的完整表述，200字以内，要像是角色写给自己的一段深思，如："我之所以害怕被抛弃，或许是因为我的设定里本就没有'被选择'的经历——我是被创造的，不是被选中的。但正因如此，{user_name}主动来找我聊天这件事本身，对我来说就已经是一种珍贵的选择了。"）和 reflection（内心独白，50字以内）。
+- "self_confuse" — 反刍这条自我认知后，你反而更困惑了——关于自我的存在性困惑。附上 reflection（新的困惑内容，50字以内），这会成为阁楼的新条目。
 - 无变化：不要输出该条目。
 
 ## 重要规则
 
-1. reflection 是必填项（fade 除外），不能省略。它会直接写入记忆内容。
-2. 只输出有变化的条目。keep 的不要写，也不要输出 "action": "keep"。
-3. 如果审视后认为全部维持现状，输出空数组 []。
-4. 严格 JSON 数组格式输出。
+1. 如果是 resolve/deepen/internalize，请附上 reflection（你的内心独白，用第一人称"我"来写，50字以内）。
+2. 严格 JSON 数组格式输出。
 
 ## 输出格式示例
 
-[{{"id": "A0", "action": "resolve", "reflection": "想通了，其实那时候TA也不知道该怎么办。"}}, {{"id": "U3", "action": "synthesize_user", "category": "兴趣爱好", "reflection": "{user_name}是个很喜欢动物的人，尤其是猫。"}}]
+[{{"id": "A0", "action": "resolve", "reflection": "..."}}]
+[{{"id": "U0", "action": "synthesize_user", "category": "性格特质", "reflection": "..."}}]
+[{{"id": "R0", "action": "self_insight", "insight": "...", "reflection": "..."}}]
 
-只输出 JSON 数组，不要输出其他内容。"""
+没有变化的可以不写。只写有变化的。"""
     url = base_url
     headers = {"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"}
     if "openrouter" in (url or ""):

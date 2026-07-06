@@ -1185,6 +1185,46 @@ function renderConvMemoryPalacePreview(groups) {
 function toggleConvMemoryPreviewChecks(v){document.querySelectorAll('.conv-mp-preview-check').forEach(cb=>cb.checked=v);}
 function closeConvMemoryPreview(){const p=document.getElementById('conv-memory-preview-panel');if(p)p.style.display='none';_convMemoryPalacePreviewItems=[];}
 
+async function importSelectedConvMemoryPreview() {
+    const p = convMpPanel();
+    const checks = Array.from(document.querySelectorAll('.conv-mp-preview-check:checked'));
+    const items = checks
+        .map(cb => _convMemoryPalacePreviewItems[parseInt(cb.value, 10)])
+        .filter(Boolean);
+
+    if (!items.length) {
+        setConvPlainMessage(p, '请先勾选要导入的记忆。', {style:'color:var(--error);padding:12px;'});
+        return;
+    }
+
+    const btn = Array.from(p.querySelectorAll('button')).find(b => (b.textContent || '').includes('导入选中'));
+    const oldText = btn ? btn.textContent : '';
+    if (btn) { btn.disabled = true; btn.textContent = '导入中...'; }
+
+    try {
+        const r = await fetch('/api/memory-palace/import-preview', {
+            method: 'POST',
+            headers: {'Content-Type':'application/json'},
+            body: JSON.stringify({items, character_id:'default'})
+        });
+        const d = await r.json();
+        if (!r.ok || d.error || d.status === 'error') {
+            throw new Error(d.error || ('HTTP ' + r.status));
+        }
+        const msg = '导入完成：新增' + (d.created || 0) + '条，embedding ' + (d.embedded || 0) +
+            '条，事件盒' + (d.event_boxes || 0) + '个，纠错' + (d.corrected || 0) +
+            '条，摘除便利贴' + (d.unpinned || 0) + '条，标记' + (d.marked || 0) + '条。';
+        setConvPlainMessage(p, msg, {style:'color:var(--success);padding:12px;'});
+        _convMemoryPalacePreviewItems = [];
+        try { loadConversationList(convCurrentPage); } catch(_e) {}
+        try { loadMemoryPalace(); } catch(_e) {}
+    } catch(e) {
+        setConvPlainMessage(p, '导入失败：' + e.message, {style:'color:var(--error);padding:12px;'});
+    } finally {
+        if (btn) { btn.disabled = false; btn.textContent = oldText || '导入选中'; }
+    }
+}
+
 // 工具函数
 function escapeHtml(str) {
     const div = document.createElement('div');

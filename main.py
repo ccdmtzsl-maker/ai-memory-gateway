@@ -71,6 +71,7 @@ CACHE_PARTITION_TRIGGER = os.getenv("CACHE_PARTITION_TRIGGER", "rounds")  # roun
 CACHE_PARTITION_WINDOW = int(os.getenv("CACHE_PARTITION_WINDOW", "30"))  # 时间窗口（分钟），仅 trigger=time 时生效
 CACHE_PARTITION_KEEP_A_TOOLS = os.getenv("CACHE_PARTITION_KEEP_A_TOOLS", "false").lower() == "true"  # A区是否保留tool/tool_calls
 PARTITION_SESSION_ID = os.getenv("PARTITION_SESSION_ID", "")
+TOOL_CHAIN_DEBUG = os.getenv("TOOL_CHAIN_DEBUG", "false").lower() == "true"  # 工具链结构诊断日志
 
 def get_active_session_id() -> str:
     return PARTITION_SESSION_ID
@@ -2127,6 +2128,66 @@ def _normalize_tool_chains_by_id(messages: list) -> list:
 
 
 
+
+def _log_tool_chain_snapshot(label: str, messages: list, session_id: str = "", enabled: bool = False, extra: str = ""):
+    """向 Dashboard 输出工具链结构快照；只记录结构和短 head，不记录完整内容。"""
+    if not enabled:
+        return
+    try:
+        lines = []
+        for idx, msg in enumerate(messages or []):
+            role = msg.get("role")
+            content = msg.get("content")
+            if isinstance(content, str):
+                content_len = len(content)
+                head = content.replace("\n", "\\n")[:60]
+            elif content is None:
+                content_len = 0
+                head = ""
+            else:
+                content_len = len(str(content))
+                head = str(content).replace("\n", "\\n")[:60]
+
+            parts = [f"{idx}:{role}"]
+            if msg.get("tool_calls"):
+                ids = []
+                names = []
+                for tc in msg.get("tool_calls") or []:
+                    ids.append(str(tc.get("id") or "?"))
+                    fn = tc.get("function") or {}
+                    names.append(str(fn.get("name") or tc.get("name") or "?"))
+                parts.append("tc=[" + ",".join(ids[:6]) + "]")
+                parts.append("fn=[" + ",".join(names[:6]) + "]")
+            if msg.get("tool_call_id"):
+                parts.append("id=" + str(msg.get("tool_call_id")))
+            if msg.get("name"):
+                parts.append("name=" + str(msg.get("name")))
+            if isinstance(content, str):
+                stripped = content.strip()
+                if stripped.startswith("<tool_result"):
+                    parts.append("xml_tool_result")
+                elif stripped.startswith("<tool"):
+                    parts.append("xml_tool")
+            parts.append(f"len={content_len}")
+            if head:
+                parts.append(f'head="{head}"')
+            lines.append(" ".join(parts))
+
+        preview = "\n".join(lines[:80])
+        if len(lines) > 80:
+            preview += f"\n... ({len(lines)-80} more)"
+        msg = f"🔧 tool_chain[{label}] n={len(messages or [])}" + (f" {extra}" if extra else "") + "\n" + preview
+        try:
+            add_dashboard_log("info", msg, category="chat", session_id=session_id)
+        except Exception:
+            print(msg)
+    except Exception as e:
+        try:
+            add_dashboard_log("error", f"⚠️ tool_chain[{label}] 日志生成失败: {e}", category="chat", session_id=session_id)
+        except Exception:
+            print(f"⚠️ tool_chain[{label}] 日志生成失败: {e}")
+
+
 def _repair_tool_call_ids_by_adjacency(messages: list, session_id: str = "", reason: str = "") -> list:
     """
     修复同一条历史链里 assistant(tool_calls).id 与紧随其后的 tool.tool_call_id 不一致的问题。
@@ -3490,6 +3551,7 @@ async def chat_completions(request: Request):
     # ---------- 检测是否应跳过对话存储 ----------
     # 客户端通过header显式声明（如标题生成等辅助请求）
     skip_conversation_log = request.headers.get("X-Skip-Conversation-Log", "").lower() == "true"
+    tool_chain_debug = TOOL_CHAIN_DEBUG or request.headers.get("X-Tool-Chain-Debug", "").lower() == "true"
     
     # ---------- 提取用户最新消息 ----------
     user_message = ""
@@ -3546,6 +3608,9 @@ async def chat_completions(request: Request):
         if active_sid:
             session_id = active_sid
         
+        _log_tool_chain_snapshot("entry_raw", original_messages, session_id=session_id, enabled=tool_chain_debug)
+        _log_tool_chain_snapshot("after_tool_extract", messages, session_id=session_id, enabled=tool_chain_debug, extra=f"tool_messages={len(tool_messages) if tool_messages else 0}")
+
         # 从DB读取历史
         try:
             db_history = await get_conversation_messages(session_id, limit=10000)
@@ -3660,6 +3725,8 @@ async def chat_completions(request: Request):
             if dangling_count:
                 print(f"🔧 分区模式: 清理{dangling_count}条末尾悬空assistant(tool_calls)")
 
+        _log_tool_chain_snapshot("after_client_trim", client_new_msgs, session_id=session_id, enabled=tool_chain_debug, extra=f"client_tools={len(client_tools) if client_tools else 0}")
+
         if client_tools:
             # 判断DB是否处于"等待tool结果"状态（最后一条是assistant(tool_calls)）
             db_last = db_msgs[-1] if db_msgs else None
@@ -3720,6 +3787,7 @@ async def chat_completions(request: Request):
                     print(f"❌ 工具配对失败诊断: client_tool_ids={stale_ids}, 原始messages中的assistant tool_calls ids={all_ast_in_messages}, db_msgs末尾role={db_msgs[-1].get('role') if db_msgs else 'empty'}")
                     print(f"🔧 去重: DB未在等待tool结果且客户端无匹配assistant，丢弃{len(client_tools)}条客户端tool (ids: {stale_ids})")
                     client_new_msgs = [m for m in client_new_msgs if m.get("role") != "tool"]
+                    _log_tool_chain_snapshot("after_tool_persist_reload", db_msgs, session_id=session_id, enabled=tool_chain_debug, extra=f"persisted_tools={persisted_tools}")
             else:
                 # DB在等待tool → 只保留匹配当前轮次assistant(tool_calls)的tool
                 expected_tool_ids = {tc.get("id") for tc in db_last.get("tool_calls", []) if tc.get("id")}
@@ -3885,9 +3953,11 @@ async def chat_completions(request: Request):
             client_increment = [last_user_msg] if last_user_msg else []
 
         all_msgs = db_msgs + client_increment
+        _log_tool_chain_snapshot("all_msgs_before_repair", all_msgs, session_id=session_id, enabled=tool_chain_debug)
         all_msgs = _repair_tool_call_ids_by_adjacency(all_msgs, session_id=session_id, reason="all_msgs")
 
         all_msgs = _normalize_tool_chains_by_id(all_msgs)
+        _log_tool_chain_snapshot("all_msgs_after_normalize", all_msgs, session_id=session_id, enabled=tool_chain_debug)
 
         # 后台保存仍只接收本轮真实tool；已同步写过的会被tool_call_id查重跳过
         tool_messages = [m for m in tool_messages if m.get("role") == "tool"]
@@ -3897,9 +3967,11 @@ async def chat_completions(request: Request):
         messages = await build_partitioned_messages(
             session_id, all_msgs, partition_base_prompt, user_message
         )
+        _log_tool_chain_snapshot("final_after_build_partition", messages, session_id=session_id, enabled=tool_chain_debug)
         messages = _repair_tool_call_ids_by_adjacency(messages, session_id=session_id, reason="final_messages")
         messages = _normalize_tool_chains_by_id(messages)
         messages = _drop_orphan_tool_messages(messages)
+        _log_tool_chain_snapshot("final_after_drop_orphan", messages, session_id=session_id, enabled=tool_chain_debug)
 
         await inject_memory_palace_auto_context(messages, query=user_message, recent_messages=messages, explicit_present=partition_has_explicit_memory_palace, session_id=session_id)
         body["messages"] = messages

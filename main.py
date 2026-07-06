@@ -2122,77 +2122,6 @@ def _normalize_tool_chains_by_id(messages: list) -> list:
     return normalized
 
 
-def _interleave_consecutive_tool_call_runs(messages: list, session_id: str = "", reason: str = "") -> list:
-    """
-    修复历史 XML 工具链被保存/构造为：
-        assistant(call1), assistant(call2), tool(result1), tool(result2)
-    的形态。按原始顺序配对为：
-        assistant(call1), tool(result1), assistant(call2), tool(result2)
-
-    只处理“连续多个单工具 assistant 后紧跟连续 tool”的保守场景。
-    """
-    if not messages:
-        return messages
-
-    out = []
-    i = 0
-    fixed = 0
-    n = len(messages)
-
-    def _single_call_id(m):
-        if m.get("role") != "assistant":
-            return None
-        calls = m.get("tool_calls") or []
-        if len(calls) != 1:
-            return None
-        return calls[0].get("id")
-
-    while i < n:
-        first_call_id = _single_call_id(messages[i])
-        if not first_call_id:
-            out.append(messages[i])
-            i += 1
-            continue
-
-        ast_run = []
-        j = i
-        while j < n and _single_call_id(messages[j]):
-            ast_run.append(messages[j])
-            j += 1
-
-        tool_run = []
-        k = j
-        while k < n and messages[k].get("role") == "tool":
-            tool_run.append(messages[k])
-            k += 1
-
-        if len(ast_run) >= 2 and len(tool_run) >= len(ast_run):
-            pair_count = len(ast_run)
-            for idx in range(pair_count):
-                ast = ast_run[idx]
-                tool = dict(tool_run[idx])
-                call_id = _single_call_id(ast)
-                if call_id and tool.get("tool_call_id") != call_id:
-                    tool["tool_call_id"] = call_id
-                out.append(ast)
-                out.append(tool)
-            out.extend(tool_run[pair_count:])
-            fixed += pair_count
-            i = k
-            continue
-
-        out.extend(ast_run)
-        i = j
-
-    if fixed:
-        log_msg = f"🔧 工具链顺序修复{f'({reason})' if reason else ''}: 交错恢复{fixed}组 assistant(tool_calls)+tool"
-        try:
-            add_dashboard_log("info", log_msg, category="chat", session_id=session_id)
-        except Exception:
-            print(log_msg)
-    return out
-
-
 
 
 
@@ -3013,7 +2942,6 @@ def _prepend_timestamp_to_user_messages(messages: list) -> list:
                 last_date = local_dt.date()
         m.pop('id', None)
         m.pop('created_at', None)
-        m.pop('metadata', None)
         stamped.append(m)
     return stamped
 
@@ -3960,7 +3888,6 @@ async def chat_completions(request: Request):
         all_msgs = _repair_tool_call_ids_by_adjacency(all_msgs, session_id=session_id, reason="all_msgs")
 
         all_msgs = _normalize_tool_chains_by_id(all_msgs)
-        all_msgs = _interleave_consecutive_tool_call_runs(all_msgs, session_id=session_id, reason="all_msgs")
 
         # 后台保存仍只接收本轮真实tool；已同步写过的会被tool_call_id查重跳过
         tool_messages = [m for m in tool_messages if m.get("role") == "tool"]
@@ -3972,7 +3899,6 @@ async def chat_completions(request: Request):
         )
         messages = _repair_tool_call_ids_by_adjacency(messages, session_id=session_id, reason="final_messages")
         messages = _normalize_tool_chains_by_id(messages)
-        messages = _interleave_consecutive_tool_call_runs(messages, session_id=session_id, reason="final_messages")
         messages = _drop_orphan_tool_messages(messages)
 
         await inject_memory_palace_auto_context(messages, query=user_message, recent_messages=messages, explicit_present=partition_has_explicit_memory_palace, session_id=session_id)

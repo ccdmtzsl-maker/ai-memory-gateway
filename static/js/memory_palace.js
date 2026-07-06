@@ -675,6 +675,7 @@ async function loadMemoryPalaceEventBoxDetail(id) {
                     '<div style="font-size:12px;color:var(--text-muted);margin-top:6px;line-height:1.6;white-space:pre-wrap;">' + mpEsc(metaLines.join('\n')) + '</div>' +
                     '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;">' +
                         '<button class="btn btn-secondary btn-sm mp-compress-current-box" data-id="' + mpEsc(box.id || '') + '">压缩此盒</button>' +
+                        '<button class="btn btn-secondary btn-sm mp-undo-compress-box" data-id="' + mpEsc(box.id || '') + '">撤回上次压缩</button>' +
                         '<button class="btn btn-secondary btn-sm mp-toggle-sealed-box" data-id="' + mpEsc(box.id || '') + '" data-sealed="' + (box.sealed ? 'false' : 'true') + '">' + (box.sealed ? '解除封盒' : '封盒') + '</button>' +
                         '<button class="btn btn-secondary btn-sm mp-unbind-live-box" data-id="' + mpEsc(box.id || '') + '">清空 live</button>' +
                     '</div>' +
@@ -711,6 +712,34 @@ async function compressCurrentMemoryPalaceEventBox(id) {
         _mpCompressRunning = false;
     }
 }
+
+async function undoMemoryPalaceEventBoxCompression(id) {
+    id = id || _mpCurrentEventBoxId;
+    if (!id || _mpCompressRunning) return;
+    if (!confirm('撤回这个事件盒的上次压缩？会把上次压缩的 archived 节点恢复为 live。继续吗？')) return;
+    _mpCompressRunning = true;
+    try {
+        mpMsg('正在撤回上次压缩...');
+        const resp = await fetch('/api/memory-palace/event-boxes/' + encodeURIComponent(id) + '/undo-compress', {
+            method: 'POST',
+            headers: {'Content-Type':'application/json'},
+            body: JSON.stringify({})
+        });
+        const data = await resp.json();
+        if (data.error || data.status === 'error') throw new Error(data.error || '撤回失败');
+        let msg = '已撤回上次压缩：恢复 ' + Number(data.restored || 0) + ' 条';
+        if (data.summary_restored) msg += '，已恢复旧 summary';
+        if (data.warning) msg += '；' + data.warning;
+        mpMsg(msg);
+        await loadMemoryPalaceEventBoxes();
+        await loadMemoryPalaceEventBoxDetail(id);
+    } catch (e) {
+        mpMsg('撤回压缩失败：' + e.message, 'error');
+    } finally {
+        _mpCompressRunning = false;
+    }
+}
+
 
 async function setMemoryPalaceEventBoxSealed(id, sealed) {
     id = id || _mpCurrentEventBoxId;
@@ -850,6 +879,8 @@ function initMemoryPalaceInteractions() {
         }
         const compressBoxBtn = event.target.closest('.mp-compress-current-box');
         if (compressBoxBtn) { compressCurrentMemoryPalaceEventBox(compressBoxBtn.dataset.id || ''); return; }
+        const undoCompressBtn = event.target.closest('.mp-undo-compress-box');
+        if (undoCompressBtn) { undoMemoryPalaceEventBoxCompression(undoCompressBtn.dataset.id || ''); return; }
         const toggleSealedBtn = event.target.closest('.mp-toggle-sealed-box');
         if (toggleSealedBtn) { setMemoryPalaceEventBoxSealed(toggleSealedBtn.dataset.id || '', toggleSealedBtn.dataset.sealed === 'true'); return; }
         const unbindLiveBtn = event.target.closest('.mp-unbind-live-box');

@@ -1295,6 +1295,13 @@ async def _execute_digest_actions(actions: list, material: dict, character_id: s
             """, character_id, room)
             return _digest_find_near_duplicate([dict(r) for r in rows], room, content)
 
+        async def _current_node_room(node_id: str) -> str:
+            row = await conn.fetchrow(
+                "SELECT room FROM memory_palace_nodes WHERE id=$1 AND character_id=$2 AND archived=FALSE",
+                node_id, character_id
+            )
+            return (row["room"] if row else "") or ""
+
         for act in actions:
             try:
                 aid = act["id"]
@@ -1302,34 +1309,34 @@ async def _execute_digest_actions(actions: list, material: dict, character_id: s
                 reflection = act.get("reflection","")
                 if action == "resolve":
                     node = next((n for n in material["attic_nodes"] if n["id"]==aid), None)
-                    if node:
+                    if node and await _current_node_room(aid) == "attic":
                         content = reflection or node["content"]
-                        await conn.execute("UPDATE memory_palace_nodes SET room='bedroom', mood='peaceful', content=$2, updated_at=NOW() WHERE id=$1 AND character_id=$3", aid, content, character_id)
+                        await conn.execute("UPDATE memory_palace_nodes SET room='bedroom', mood='peaceful', content=$2, updated_at=NOW() WHERE id=$1 AND character_id=$3 AND room='attic'", aid, content, character_id)
                         result["resolved"].append({"id":aid,"content":content})
                 elif action == "deepen":
                     node = next((n for n in material["attic_nodes"] if n["id"]==aid), None)
-                    if node:
+                    if node and await _current_node_room(aid) == "attic":
                         new_imp = min(10, (node.get("importance") or 5)+1)
                         content = reflection or node["content"]
-                        await conn.execute("UPDATE memory_palace_nodes SET importance=$2, content=$3, updated_at=NOW() WHERE id=$1 AND character_id=$4", aid, new_imp, content, character_id)
+                        await conn.execute("UPDATE memory_palace_nodes SET importance=$2, content=$3, updated_at=NOW() WHERE id=$1 AND character_id=$4 AND room='attic'", aid, new_imp, content, character_id)
                         result["deepened"].append({"id":aid,"content":content})
                 elif action == "fade":
                     node = next((n for n in material["attic_nodes"] if n["id"]==aid), None)
-                    if node:
+                    if node and await _current_node_room(aid) == "attic":
                         new_imp = max(1, (node.get("importance") or 5)-2)
-                        await conn.execute("UPDATE memory_palace_nodes SET importance=$2, updated_at=NOW() WHERE id=$1 AND character_id=$3", aid, new_imp, character_id)
+                        await conn.execute("UPDATE memory_palace_nodes SET importance=$2, updated_at=NOW() WHERE id=$1 AND character_id=$3 AND room='attic'", aid, new_imp, character_id)
                         result["faded"].append({"id":aid,"content":node.get("content","")})
                 elif action == "fulfill":
                     node = next((n for n in material.get("windowsill_nodes",[]) if n["id"]==aid), None)
-                    if node:
+                    if node and await _current_node_room(aid) == "windowsill":
                         content = reflection or node.get("content","")
-                        await conn.execute("UPDATE memory_palace_nodes SET room='bedroom', mood='happy', content=$2, updated_at=NOW() WHERE id=$1 AND character_id=$3", aid, content, character_id)
+                        await conn.execute("UPDATE memory_palace_nodes SET room='bedroom', mood='happy', content=$2, updated_at=NOW() WHERE id=$1 AND character_id=$3 AND room='windowsill'", aid, content, character_id)
                         result.setdefault("fulfilled",[]).append({"id":aid,"content":content})
                 elif action == "disappoint":
                     node = next((n for n in material.get("windowsill_nodes",[]) if n["id"]==aid), None)
-                    if node:
+                    if node and await _current_node_room(aid) == "windowsill":
                         content = reflection or node.get("content","")
-                        await conn.execute("UPDATE memory_palace_nodes SET room='attic', mood='sad', content=$2, updated_at=NOW() WHERE id=$1 AND character_id=$3", aid, content, character_id)
+                        await conn.execute("UPDATE memory_palace_nodes SET room='attic', mood='sad', content=$2, updated_at=NOW() WHERE id=$1 AND character_id=$3 AND room='windowsill'", aid, content, character_id)
                         result.setdefault("disappointed",[]).append({"id":aid,"content":content})
                 elif action == "internalize":
                     node = next((n for n in material["study_nodes"] if n["id"]==aid), None)

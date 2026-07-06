@@ -4,6 +4,7 @@ let _mpCurrentRoom = '';
 let _mpEditingId = null;
 let _mpEventBoxes = [];
 let _mpCurrentEventBoxId = null;
+let _mpCompressRunning = false;
 let _mpShowNodeIds = false;
 let _mpEventBoxesExpanded = false;
 let _mpToolsExpanded = false;
@@ -563,7 +564,9 @@ function renderMemoryPalaceEventBoxes() {
 }
 
 async function compressMemoryPalaceEventBoxes() {
+    if (_mpCompressRunning) return;
     if (!confirm('将调用记忆模型压缩达到阈值的事件盒，压缩后的 live 节点会归档并生成 summary。继续吗？')) return;
+    _mpCompressRunning = true;
     try {
         mpMsg('正在压缩可压缩事件盒...');
         const resp = await fetch('/api/memory-palace/event-boxes/compress', {
@@ -577,6 +580,8 @@ async function compressMemoryPalaceEventBoxes() {
         await loadMemoryPalace();
     } catch (e) {
         mpMsg('事件盒压缩失败：' + e.message, 'error');
+    } finally {
+        _mpCompressRunning = false;
     }
 }
 
@@ -689,16 +694,22 @@ async function loadMemoryPalaceEventBoxDetail(id) {
 
 async function compressCurrentMemoryPalaceEventBox(id) {
     id = id || _mpCurrentEventBoxId;
-    if (!id) return;
+    if (!id || _mpCompressRunning) return;
     if (!confirm('将立即压缩这个事件盒的 live 节点。继续吗？')) return;
+    _mpCompressRunning = true;
     try {
+        mpMsg('正在压缩此事件盒...');
         const resp = await fetch('/api/memory-palace/event-boxes/compress', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({box_ids:[id], threshold:2})});
         const data = await resp.json();
         if (data.error || data.status === 'error') throw new Error(data.error || '压缩失败');
         mpMsg('事件盒压缩完成：压缩 ' + Number(data.compressed || 0) + ' 个');
         await loadMemoryPalaceEventBoxes();
         await loadMemoryPalaceEventBoxDetail(id);
-    } catch (e) { mpMsg('压缩此盒失败：' + e.message, 'error'); }
+    } catch (e) {
+        mpMsg('压缩此盒失败：' + e.message, 'error');
+    } finally {
+        _mpCompressRunning = false;
+    }
 }
 
 async function setMemoryPalaceEventBoxSealed(id, sealed) {

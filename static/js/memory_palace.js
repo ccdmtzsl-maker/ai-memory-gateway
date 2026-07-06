@@ -449,9 +449,10 @@ async function saveMemoryPalaceNode() {
         importance: Number(document.getElementById('mpEditImportance')?.value || 5),
         mood: document.getElementById('mpEditMood')?.value?.trim() || 'neutral',
         valence: valenceText === '' ? null : Number(valenceText),
-        arousal: arousalText === '' ? null : Number(arousalText),
-        pinned_until: document.getElementById('mpEditPinnedUntil')?.value || null
+        arousal: arousalText === '' ? null : Number(arousalText)
     };
+    const pinnedInput = document.getElementById('mpEditPinnedUntil');
+    if (pinnedInput) payload.pinned_until = pinnedInput.value || null;
 
     try {
         const url = _mpEditingId ? '/api/memory-palace/nodes/' + encodeURIComponent(_mpEditingId) : '/api/memory-palace/nodes';

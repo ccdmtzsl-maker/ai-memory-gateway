@@ -5710,6 +5710,113 @@ async def api_memory_palace_add_node_to_event_box(box_id: str, request: Request)
         return {"status": "error", "error": str(e), "added": 0}
 
 
+
+@app.post("/api/memory-palace/event-boxes/{box_id}/remove-node")
+async def api_memory_palace_remove_node_from_specific_event_box(box_id: str, request: Request):
+    if not MEMORY_ENABLED:
+        return {"error": "记忆系统未启用"}
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    character_id = data.get("character_id") or "default"
+    node_id = str(data.get("node_id") or "").strip()
+    if not node_id:
+        return {"status": "error", "error": "node_id 不能为空", "removed": 0}
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            box = await conn.fetchrow("""
+                SELECT id, summary_node_id, live_memory_ids, archived_memory_ids
+                FROM memory_palace_event_boxes
+                WHERE character_id = $1 AND id = $2
+            """, character_id, box_id)
+            if not box:
+                return JSONResponse({"error": "事件盒不存在"}, status_code=404)
+            node = await conn.fetchrow("""
+                SELECT id, event_box_id, is_box_summary
+                FROM memory_palace_nodes
+                WHERE character_id = $1 AND id = $2
+            """, character_id, node_id)
+            if not node:
+                return JSONResponse({"error": "记忆节点不存在"}, status_code=404)
+            if node.get("is_box_summary"):
+                return {"status": "error", "error": "summary 节点不能从盒内直接移出", "removed": 0, "box_id": box_id}
+
+            live_ids_old = [str(x) for x in (box.get("live_memory_ids") or []) if x]
+            archived_ids_old = [str(x) for x in (box.get("archived_memory_ids") or []) if x]
+            was_member = node_id in live_ids_old or node_id in archived_ids_old
+            live_ids = [x for x in live_ids_old if x != node_id]
+            archived_ids = [x for x in archived_ids_old if x != node_id]
+            empty = not box.get("summary_node_id") and not live_ids and not archived_ids
+
+            if node.get("event_box_id") == box_id:
+                await conn.execute("""
+                    UPDATE memory_palace_nodes
+                    SET event_box_id = NULL, archived = FALSE, is_box_summary = FALSE, updated_at = NOW()
+                    WHERE character_id = $1 AND id = $2
+                """, character_id, node_id)
+            else:
+                # It was a stale cross-box reference. Only clean this box membership; do not touch node ownership.
+                await conn.execute("""
+                    UPDATE memory_palace_nodes
+                    SET archived = FALSE, updated_at = NOW()
+                    WHERE character_id = $1 AND id = $2 AND event_box_id IS NULL
+                """, character_id, node_id)
+
+            if empty:
+                await conn.execute("DELETE FROM memory_palace_event_boxes WHERE character_id = $1 AND id = $2", character_id, box_id)
+                deleted = True
+            else:
+                await conn.execute("""
+                    UPDATE memory_palace_event_boxes
+                    SET live_memory_ids = $3::text[], archived_memory_ids = $4::text[], updated_at = NOW()
+                    WHERE character_id = $1 AND id = $2
+                """, character_id, box_id, live_ids, archived_ids)
+                deleted = False
+        return {"status": "ok", "removed": 1 if was_member else 0, "box_id": box_id, "node_id": node_id, "deleted": deleted}
+    except Exception as e:
+        return {"status": "error", "error": str(e), "removed": 0}
+
+
+@app.delete("/api/memory-palace/event-boxes/{box_id}")
+async def api_memory_palace_delete_event_box(box_id: str, request: Request):
+    if not MEMORY_ENABLED:
+        return {"error": "记忆系统未启用"}
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    character_id = data.get("character_id") or "default"
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            box = await conn.fetchrow("""
+                SELECT id, summary_node_id, live_memory_ids, archived_memory_ids
+                FROM memory_palace_event_boxes
+                WHERE character_id = $1 AND id = $2
+            """, character_id, box_id)
+            if not box:
+                return JSONResponse({"error": "事件盒不存在"}, status_code=404)
+            member_ids = list(dict.fromkeys([str(x) for x in [*((box.get("live_memory_ids") or [])), *((box.get("archived_memory_ids") or []))] if x]))
+            if member_ids:
+                await conn.execute("""
+                    UPDATE memory_palace_nodes
+                    SET event_box_id = NULL, archived = FALSE, is_box_summary = FALSE, updated_at = NOW()
+                    WHERE character_id = $1 AND id = ANY($2::text[]) AND event_box_id = $3
+                """, character_id, member_ids, box_id)
+            if box.get("summary_node_id"):
+                await conn.execute("""
+                    UPDATE memory_palace_nodes
+                    SET archived = TRUE, updated_at = NOW()
+                    WHERE character_id = $1 AND id = $2 AND is_box_summary = TRUE
+                """, character_id, box.get("summary_node_id"))
+            await conn.execute("DELETE FROM memory_palace_event_boxes WHERE character_id = $1 AND id = $2", character_id, box_id)
+        return {"status": "ok", "deleted": 1, "memory_ids": member_ids}
+    except Exception as e:
+        return {"status": "error", "error": str(e), "deleted": 0}
+
+
 @app.post("/api/memory-palace/nodes/{node_id}/remove-from-box")
 async def api_memory_palace_remove_node_from_event_box(node_id: str, request: Request):
     if not MEMORY_ENABLED:
@@ -6449,12 +6556,23 @@ async def bind_memory_palace_event_boxes(event_links: list, event_hints: dict, c
                 box = {"id": box_id, "live_memory_ids": [new_id], "tags": tags, "name": name}
             live_ids = list((box or {}).get("live_memory_ids") or [])
             closed_ids = {b.get("id") for b in closed_boxes}
+            target_node_ids = []
             for nid in (existing_id, new_id):
                 node_box_id = by_id[nid].get("event_box_id")
                 if node_box_id in closed_ids and nid == existing_id:
                     continue
+                target_node_ids.append(nid)
                 if nid not in live_ids:
                     live_ids.append(nid)
+            # A node should belong to one active EventBox only. Remove these nodes from other boxes first.
+            if target_node_ids:
+                await conn.execute("""
+                    UPDATE memory_palace_event_boxes
+                    SET live_memory_ids = array_remove(array_remove(live_memory_ids, $3), $4),
+                        archived_memory_ids = array_remove(array_remove(archived_memory_ids, $3), $4),
+                        updated_at = NOW()
+                    WHERE character_id = $1 AND id <> $2
+                """, character_id, box_id, target_node_ids[0], target_node_ids[1] if len(target_node_ids) > 1 else target_node_ids[0])
             tags = _merge_text_tags((box or {}).get("tags"), hint.get("eventTags") or [], by_id[existing_id].get("tags"), by_id[new_id].get("tags"))
             name = (box or {}).get("name") or hint.get("eventName") or "未命名事件"
             if hint.get("eventName") and name == "未命名事件":

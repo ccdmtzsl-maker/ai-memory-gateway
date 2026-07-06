@@ -2137,6 +2137,15 @@ def _normalize_incoming_xml_tool_messages(messages: list) -> tuple:
 
     normalized = []
     converted = 0
+    pending_xml_call_indexes = []
+
+    def _set_pending_call_id(call_index: int, call_id: str):
+        try:
+            calls = normalized[call_index].get("tool_calls") or []
+            if calls:
+                calls[0]["id"] = call_id
+        except Exception:
+            pass
 
     for idx, msg in enumerate(messages):
         if not isinstance(msg, dict):
@@ -2161,7 +2170,8 @@ def _normalize_incoming_xml_tool_messages(messages: list) -> tuple:
             param_re = re.compile(r'<param\s+name="([^"]+)"\s*>([\s\S]*?)' + re.escape(param_close))
             for pm in param_re.finditer(body_text or ""):
                 params[pm.group(1)] = pm.group(2) or ""
-            call_id = "xml_tool_" + re.sub(r'[^\w-]', "_", str(msg.get("id") or msg.get("created_at") or idx))
+            # XML tool 调用本身没有可靠 id；先放占位，等后续 tool_result_xxx 出现时回填为同一个 id。
+            call_id = "xml_tool_pending_" + re.sub(r'[^\w-]', "_", str(msg.get("id") or msg.get("created_at") or idx))
             tool_calls = [{
                 "id": call_id,
                 "type": "function",
@@ -2177,6 +2187,7 @@ def _normalize_incoming_xml_tool_messages(messages: list) -> tuple:
             m.pop("name", None)
             m.pop("tool_call_id", None)
             normalized.append(m)
+            pending_xml_call_indexes.append(len(normalized) - 1)
             converted += 1
             continue
 
@@ -2192,7 +2203,13 @@ def _normalize_incoming_xml_tool_messages(messages: list) -> tuple:
                 if body_text.startswith(content_open) and body_text.endswith(content_close):
                     body_text = body_text[len(content_open): -len(content_close)]
                 suffix = suffix_raw.lstrip("_")
-                tool_call_id = attrs.get("tool_call_id") or attrs.get("id") or suffix or ("xml_tool_result_" + re.sub(r'[^\w-]', "_", str(msg.get("id") or idx)))
+                result_id = attrs.get("tool_call_id") or attrs.get("id") or suffix or ("xml_tool_result_" + re.sub(r'[^\w-]', "_", str(msg.get("id") or idx)))
+                if pending_xml_call_indexes:
+                    call_index = pending_xml_call_indexes.pop(0)
+                    _set_pending_call_id(call_index, result_id)
+                    tool_call_id = result_id
+                else:
+                    tool_call_id = result_id
                 tool_name = attrs.get("name") or "工具结果"
                 m = dict(msg)
                 m["role"] = "tool"
@@ -2206,6 +2223,7 @@ def _normalize_incoming_xml_tool_messages(messages: list) -> tuple:
         normalized.append(msg)
 
     return normalized, converted
+
 
 
 def _log_tool_chain_snapshot(label: str, messages: list, session_id: str = "", enabled: bool = False, extra: str = ""):

@@ -278,7 +278,7 @@ function renderDigestPreview(actions) {
         if (room) html += ' <span style="color:var(--text-muted);font-size:12px;">[' + room + ']</span>';
         html += '<div style="margin-top:6px;font-size:13px;color:var(--text-muted);">原文：' + ((a.source_content || '').substring(0, 100) || '?') + '</div>';
         if (a.reflection) html += '<div style="margin-top:4px;font-size:13px;">→ ' + a.reflection + '</div>';
-        if (a.insight) html += '<div style="margin-top:4px;font-size:13px;color:var(--primary);">💡 ' + a.insight.substring(0, 150) + '</div>';
+        if (a.insight) html += '<div style="margin-top:4px;font-size:13px;color:var(--primary);">💡 ' + a.insight + '</div>';
         if (a.category) html += '<div style="margin-top:4px;font-size:12px;color:var(--text-muted);">分类：' + a.category + '</div>';
         html += '</label>';
     }

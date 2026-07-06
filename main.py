@@ -6613,7 +6613,18 @@ async def maybe_compress_memory_palace_event_boxes(box_ids=None, character_id: s
             valence = _memory_palace_float_or_none(summary.get("valence"))
             arousal = _memory_palace_float_or_none(summary.get("arousal"))
             summary_id = box.get("summary_node_id") or f"mn_{int(datetime.now(timezone.utc).timestamp() * 1000)}_{uuid.uuid4().hex[:6]}"
-            first_date = str(live_nodes[0].get("date") or live_nodes[0].get("created_at") or "")[:10] or None
+            first_date = None
+            raw_first_date = live_nodes[0].get("date") or live_nodes[0].get("created_at")
+            if raw_first_date:
+                try:
+                    if hasattr(raw_first_date, "date"):
+                        first_date = raw_first_date.date()
+                    elif hasattr(raw_first_date, "toordinal"):
+                        first_date = raw_first_date
+                    else:
+                        first_date = datetime.strptime(str(raw_first_date)[:10], "%Y-%m-%d").date()
+                except Exception:
+                    first_date = None
             metadata = json.dumps({"event_box_id": box.get("id"), "source_live_memory_ids": [n["id"] for n in live_nodes], "previous_summary_node_id": (old_summary or {}).get("id"), "summary_kind": "event_box", "compression_mode": "rewrite_with_previous_summary" if old_summary else "initial"}, ensure_ascii=False)
 
             async with pool.acquire() as conn:

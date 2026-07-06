@@ -236,15 +236,15 @@ async function runCognitiveDigestion() {
         if (data.status === 'empty') { mpMsg('没有待消化的内容'); return; }
         if (data.status === 'no_actions') {
             var raw = (data.raw_preview || '').trim();
-            mpMsg((data.message || '没有解析出需要执行的动作') + (raw ? '：' + raw.substring(0, 500) : ''));
+            mpMsg((data.message || '没有解析出需要执行的动作') + (raw ? '：' + raw : ''));
             return;
         }
-        if (data.status === 'parse_empty') { mpMsg((data.message || 'LLM 返回了内容，但没有解析出有效动作') + (data.raw_preview ? '：' + data.raw_preview.substring(0, 500) : ''), 'error'); return; }
+        if (data.status === 'parse_empty') { mpMsg((data.message || 'LLM 返回了内容，但没有解析出有效动作') + (data.raw_preview ? '：' + data.raw_preview : ''), 'error'); return; }
         _digestPreviewActions = data.actions || [];
         mpMsg('');
         if (_digestPreviewActions.length === 0) {
             var raw2 = (data.raw_preview || '').trim();
-            mpMsg('没有解析出需要执行的动作' + (raw2 ? '：' + raw2.substring(0, 500) : ''));
+            mpMsg('没有解析出需要执行的动作' + (raw2 ? '：' + raw2 : ''));
             return;
         }
         renderDigestPreview(_digestPreviewActions);

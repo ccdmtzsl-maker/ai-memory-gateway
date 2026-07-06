@@ -6524,7 +6524,7 @@ async def call_memory_palace_event_box_summarizer(box: dict, live_nodes: list, c
     if "openrouter" in base_url:
         headers["HTTP-Referer"] = EXTRA_REFERER
         headers["X-Title"] = EXTRA_TITLE
-    body = {"model": memory_model, "messages": [{"role": "system", "content": "你只输出 JSON 对象。"}, {"role": "user", "content": prompt}], "temperature": 0.3, "max_tokens": 1200}
+    body = {"model": memory_model, "messages": [{"role": "system", "content": "你只输出 JSON 对象。"}, {"role": "user", "content": prompt}], "temperature": 0.3, "max_tokens": 8000}
     async with httpx.AsyncClient(timeout=60.0) as client:
         resp = await client.post(base_url, headers=headers, json=body)
         resp.raise_for_status()

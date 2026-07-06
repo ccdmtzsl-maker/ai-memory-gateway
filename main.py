@@ -2131,9 +2131,38 @@ def _normalize_tool_chains_by_id(messages: list) -> list:
 
 
 def _normalize_incoming_xml_tool_messages(messages: list) -> tuple:
-    """把客户端入口里的 XML 工具文本转成 OpenAI 标准 tool_calls/tool 消息。"""
+    """只把入口尾部当前轮 XML 工具窗口转成 OpenAI 标准 tool_calls/tool 消息。"""
     if not isinstance(messages, list):
         return messages, 0
+
+    def _is_xml_tool_msg(msg):
+        if not isinstance(msg, dict):
+            return False
+        content = msg.get("content")
+        if not isinstance(content, str):
+            return False
+        text = content.strip()
+        return bool(re.match(r'^<tool\s+name="[^"]+"\s*>', text) or re.match(r'^<tool_result[\w-]*\s+[^>]*>', text))
+
+    # 只处理尾部当前工具窗口：从末尾跳过重复 user，再取连续 XML 工具消息。
+    end_idx = len(messages)
+    while end_idx > 0:
+        m = messages[end_idx - 1]
+        if isinstance(m, dict) and m.get("role") == "user" and isinstance(m.get("content"), str) and _is_xml_tool_msg(m):
+            end_idx -= 1
+            continue
+        break
+
+    start_idx = end_idx
+    while start_idx > 0 and _is_xml_tool_msg(messages[start_idx - 1]):
+        start_idx -= 1
+
+    if start_idx == end_idx:
+        return messages, 0
+
+    prefix = list(messages[:start_idx])
+    window = messages[start_idx:end_idx]
+    suffix = list(messages[end_idx:])
 
     normalized = []
     converted = 0
@@ -2147,19 +2176,9 @@ def _normalize_incoming_xml_tool_messages(messages: list) -> tuple:
         except Exception:
             pass
 
-    for idx, msg in enumerate(messages):
-        if not isinstance(msg, dict):
-            normalized.append(msg)
-            continue
+    for local_idx, msg in enumerate(window):
         content = msg.get("content")
-        if not isinstance(content, str):
-            normalized.append(msg)
-            continue
-
         text = content.strip()
-        if not text.startswith("<tool"):
-            normalized.append(msg)
-            continue
 
         call_open = re.match(r'^<tool\s+name="([^"]+)"\s*>', text)
         call_close = "<" + "/tool>"
@@ -2170,9 +2189,11 @@ def _normalize_incoming_xml_tool_messages(messages: list) -> tuple:
             param_re = re.compile(r'<param\s+name="([^"]+)"\s*>([\s\S]*?)' + re.escape(param_close))
             for pm in param_re.finditer(body_text or ""):
                 params[pm.group(1)] = pm.group(2) or ""
-            # XML tool 调用本身没有可靠 id；先放占位，等后续 tool_result_xxx 出现时回填为同一个 id。
-            call_id = "xml_tool_pending_" + re.sub(r'[^\w-]', "_", str(msg.get("id") or msg.get("created_at") or idx))
-            tool_calls = [{
+            call_id = "xml_tool_pending_" + re.sub(r'[^\w-]', "_", str(msg.get("id") or msg.get("created_at") or (start_idx + local_idx)))
+            m = dict(msg)
+            m["role"] = "assistant"
+            m["content"] = None
+            m["tool_calls"] = [{
                 "id": call_id,
                 "type": "function",
                 "function": {
@@ -2180,10 +2201,6 @@ def _normalize_incoming_xml_tool_messages(messages: list) -> tuple:
                     "arguments": json.dumps(params, ensure_ascii=False, indent=2)
                 }
             }]
-            m = dict(msg)
-            m["role"] = "assistant"
-            m["content"] = None
-            m["tool_calls"] = tool_calls
             m.pop("name", None)
             m.pop("tool_call_id", None)
             normalized.append(m)
@@ -2202,27 +2219,21 @@ def _normalize_incoming_xml_tool_messages(messages: list) -> tuple:
                 content_close = "<" + "/content>"
                 if body_text.startswith(content_open) and body_text.endswith(content_close):
                     body_text = body_text[len(content_open): -len(content_close)]
-                suffix = suffix_raw.lstrip("_")
-                result_id = attrs.get("tool_call_id") or attrs.get("id") or suffix or ("xml_tool_result_" + re.sub(r'[^\w-]', "_", str(msg.get("id") or idx)))
+                result_id = attrs.get("tool_call_id") or attrs.get("id") or suffix_raw.lstrip("_") or ("xml_tool_result_" + re.sub(r'[^\w-]', "_", str(msg.get("id") or (start_idx + local_idx))))
                 if pending_xml_call_indexes:
-                    call_index = pending_xml_call_indexes.pop(0)
-                    _set_pending_call_id(call_index, result_id)
-                    tool_call_id = result_id
-                else:
-                    tool_call_id = result_id
-                tool_name = attrs.get("name") or "工具结果"
+                    _set_pending_call_id(pending_xml_call_indexes.pop(0), result_id)
                 m = dict(msg)
                 m["role"] = "tool"
                 m["content"] = body_text
-                m["tool_call_id"] = tool_call_id
-                m["name"] = tool_name
+                m["tool_call_id"] = result_id
+                m["name"] = attrs.get("name") or "工具结果"
                 normalized.append(m)
                 converted += 1
                 continue
 
         normalized.append(msg)
 
-    return normalized, converted
+    return prefix + normalized + suffix, converted
 
 
 

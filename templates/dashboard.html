@@ -597,6 +597,11 @@
                         <label class="toggle"><input type="checkbox" id="set-CACHE_PARTITION_KEEP_A_TOOLS"><span class="toggle-slider"></span></label>
                         <small class="form-hint">开启后 A 区不再剥离 tool/tool_calls；更稳但会增加上下文长度。</small>
                     </div>
+                    <div class="settings-field settings-toggle-row">
+                        <label>工具链诊断日志</label>
+                        <label class="toggle"><input type="checkbox" id="set-TOOL_CHAIN_DEBUG"><span class="toggle-slider"></span></label>
+                        <small class="form-hint">开启后在后台日志输出 tool_calls/tool_result 的结构快照；只记录结构和短片段，不记录完整工具结果。</small>
+                    </div>
                     <div class="settings-field">
                         <label>轮转周期 (CACHE_PARTITION_X)</label>
                         <input type="number" id="set-CACHE_PARTITION_X" class="input" min="5" max="100">
@@ -686,7 +691,7 @@
         </main>
     </div>
 
-    <script src="/static/js/dashboard.js?v=5.5"></script>
+    <script src="/static/js/dashboard.js?v=5.6"></script>
 <script src="/static/js/daily_impressions.js?v=1.4"></script>
 <script>
     // --- 模型预设管理（右上角切换面板） ---

@@ -326,7 +326,7 @@ async def lifespan(app: FastAPI):
                         "MEMORY_ENABLED": lambda v: _parse_bool(v),
                         "CACHE_PARTITION_ENABLED": lambda v: _parse_bool(v),
                         "CACHE_PARTITION_X": int, "CACHE_PARTITION_EXTRACT_LIMIT": int, "CACHE_PARTITION_TRIGGER": str,
-                        "CACHE_PARTITION_WINDOW": int, "CACHE_PARTITION_KEEP_A_TOOLS": lambda v: _parse_bool(v), "CACHE_SUMMARY_MODEL": str,
+                        "CACHE_PARTITION_WINDOW": int, "CACHE_PARTITION_KEEP_A_TOOLS": lambda v: _parse_bool(v), "TOOL_CHAIN_DEBUG": lambda v: _parse_bool(v), "CACHE_SUMMARY_MODEL": str,
                         "FORCE_STREAM": lambda v: _parse_bool(v),
                         "RESPONSE_TRANSFORM_ENABLED": lambda v: _parse_bool(v),
                         "RESPONSE_TRANSFORM_RULES": str,
@@ -8231,6 +8231,7 @@ async def get_settings():
             "CACHE_PARTITION_TRIGGER": db.get("CACHE_PARTITION_TRIGGER") or CACHE_PARTITION_TRIGGER,
             "CACHE_PARTITION_WINDOW":  int(db.get("CACHE_PARTITION_WINDOW") or CACHE_PARTITION_WINDOW),
             "CACHE_PARTITION_KEEP_A_TOOLS": _parse_bool(db.get("CACHE_PARTITION_KEEP_A_TOOLS"), CACHE_PARTITION_KEEP_A_TOOLS),
+            "TOOL_CHAIN_DEBUG":        _parse_bool(db.get("TOOL_CHAIN_DEBUG"), TOOL_CHAIN_DEBUG),
             "CACHE_SUMMARY_MODEL":     db.get("CACHE_SUMMARY_MODEL") or str(CACHE_SUMMARY_MODEL),
 
             # 向量搜索（开源版用 EMBEDDING_API_KEY + EMBEDDING_BASE_URL）
@@ -8350,6 +8351,7 @@ async def save_settings(request: Request):
             "CACHE_PARTITION_TRIGGER": str,
             "CACHE_PARTITION_WINDOW": int,
             "CACHE_PARTITION_KEEP_A_TOOLS": lambda v: _parse_bool(v),
+            "TOOL_CHAIN_DEBUG":      lambda v: _parse_bool(v),
             "CACHE_SUMMARY_MODEL":   str,
             "FORCE_STREAM":          lambda v: _parse_bool(v),
             "RESPONSE_TRANSFORM_ENABLED": lambda v: _parse_bool(v),

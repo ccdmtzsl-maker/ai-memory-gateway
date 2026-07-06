@@ -3551,7 +3551,7 @@ async def chat_completions(request: Request):
     # ---------- 检测是否应跳过对话存储 ----------
     # 客户端通过header显式声明（如标题生成等辅助请求）
     skip_conversation_log = request.headers.get("X-Skip-Conversation-Log", "").lower() == "true"
-    tool_chain_debug = TOOL_CHAIN_DEBUG or request.headers.get("X-Tool-Chain-Debug", "").lower() == "true"
+    tool_chain_debug = TOOL_CHAIN_DEBUG
     
     # ---------- 提取用户最新消息 ----------
     user_message = ""

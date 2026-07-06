@@ -1253,10 +1253,10 @@ def db_row_to_message(row: dict) -> dict:
     # 兼容 XML 文本格式工具调用/工具结果：把历史纯文本还原为标准 tool_calls/tool 消息。
     if not meta_str and isinstance(msg.get("content"), str):
         _xml_text = msg.get("content", "").strip()
-        _tool_call_match = re.match(r'^<tool\\s+name="([^"]+)"\\s*>([\\s\\S]*?)<\\/tool>$', _xml_text)
+        _tool_call_match = re.match(r'^<tool\s+name="([^"]+)"\s*>([\s\S]*?)</tool>$', _xml_text)
         if _tool_call_match:
             _params = {}
-            for _pm in re.finditer(r'<param\\s+name="([^"]+)"\\s*>([\\s\\S]*?)<\\/param>', _tool_call_match.group(2) or ""):
+            for _pm in re.finditer(r'<param\s+name="([^"]+)"\s*>([\s\S]*?)</param>', _tool_call_match.group(2) or ""):
                 _params[_pm.group(1)] = _pm.group(2) or ""
             _row_id = str(row.get("id") or row.get("created_at") or int(time.time() * 1000))
             _call_id = "xml_tool_" + re.sub(r'[^\\w-]', "_", _row_id)
@@ -1275,11 +1275,11 @@ def db_row_to_message(row: dict) -> dict:
                 "metadata": {"tool_calls": _tool_calls}
             }
         else:
-            _tool_result_match = re.match(r'^<tool_result([\\w-]*)\\s+([^>]*)>([\\s\\S]*?)<\\/tool_result[\\w-]*>$', _xml_text)
+            _tool_result_match = re.match(r'^<tool_result([\w-]*)\s+([^>]*)>([\s\S]*?)</tool_result[\w-]*>$', _xml_text)
             if _tool_result_match:
                 _attrs = dict(re.findall(r'([A-Za-z_][\\w-]*)="([^"]*)"', _tool_result_match.group(2) or ""))
                 _body = _tool_result_match.group(3) or ""
-                _content_match = re.match(r'^<content>([\\s\\S]*?)<\\/content>$', _body)
+                _content_match = re.match(r'^<content>([\s\S]*?)</content>$', _body)
                 if _content_match:
                     _body = _content_match.group(1) or ""
                 _suffix = (_tool_result_match.group(1) or "").lstrip("_")

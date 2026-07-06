@@ -7050,6 +7050,11 @@ async def import_memory_palace_preview_items(items: list, character_id: str = "d
         norm = _normalize_memory_palace_item(item)
         if not norm:
             continue
+        # 预览导入链路中 pinned_until 是后端已由 pinDays 计算出的结果。
+        # 二次 normalize 只认 pinDays，会把预览里的 pinned_until 清空；这里恢复它，避免便利贴丢失。
+        preview_pinned_until = _memory_palace_aware_dt(item.get("pinned_until"))
+        if preview_pinned_until:
+            norm["pinned_until"] = preview_pinned_until
         node_id = f"mn_{int(datetime.now(timezone.utc).timestamp() * 1000)}_{uuid.uuid4().hex[:6]}"
         source_session = item.get("session_id") or "conversation-preview"
         metadata = json.dumps({"extract_source": "conversation_preview", "source_session": source_session, "source_date": norm.get("date", "")}, ensure_ascii=False)

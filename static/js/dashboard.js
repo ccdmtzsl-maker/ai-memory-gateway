@@ -818,7 +818,10 @@ function createConvMessageElement(msg) {
     const bgColor = isUser ? 'var(--bg-user, rgba(59,130,246,0.08))' : (isTool ? 'rgba(245,158,11,0.08)' : 'var(--bg-assistant, rgba(0,0,0,0.02))');
     const timeStr = msg.created_at ? formatConvTime(msg.created_at) : '';
     const msgId = msg.id || '';
-    const meta = msg.metadata || {};
+    const meta = Object.assign({}, msg.metadata || {});
+    if (msg.tool_call_id && !meta.tool_call_id) meta.tool_call_id = msg.tool_call_id;
+    if (msg.name && !meta.name) meta.name = msg.name;
+    if (msg.tool_calls && !meta.tool_calls) meta.tool_calls = msg.tool_calls;
     let displayContent = msg.content || '';
     if (!displayContent && meta.tool_calls && Array.isArray(meta.tool_calls)) {
         displayContent = ' ';

@@ -1240,7 +1240,7 @@ async def _call_digest_llm(material: dict, character_id: str = "default") -> lis
 
 ## 输出格式示例
 
-[{{"id": "A0", "action": "resolve", "reflection": "想通了，其实那时候TA也不知道该怎么办。"}}, {{"id": "U3", "action": "synthesize_user", "category": "兴趣爱好", "reflection": "{user_name}是个很喜欢动物的人，尤其是猫。"}}, {{"id": "R1", "action": "keep"}}]
+[{{"id": "A0", "action": "resolve", "reflection": "想通了，其实那时候TA也不知道该怎么办。"}}, {{"id": "U3", "action": "synthesize_user", "category": "兴趣爱好", "reflection": "{user_name}是个很喜欢动物的人，尤其是猫。"}}]
 
 只输出 JSON 数组，不要输出其他内容。"""
     url = base_url
@@ -1411,12 +1411,12 @@ async def preview_cognitive_digestion(character_id: str = "default") -> dict:
     parsed_count = llm_result.get("parsed_count") or 0
     if not actions:
         if raw_reply.strip() and parsed_count == 0:
-            return {"status": "parse_empty", "message": "LLM 返回了内容，但没有解析出有效动作", "actions": [], "raw_preview": raw_reply[:1200]}
+            return {"status": "parse_empty", "message": "LLM 返回了内容，但没有解析出有效动作", "actions": [], "raw_preview": raw_reply}
         return {
             "status": "no_actions",
             "message": "没有解析出需要执行的动作",
             "actions": [],
-            "raw_preview": raw_reply[:1200] if raw_reply else "",
+            "raw_preview": raw_reply if raw_reply else "",
             "parsed_count": parsed_count,
         }
     # Enrich actions with source content for preview

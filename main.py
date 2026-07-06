@@ -2144,14 +2144,15 @@ def _normalize_incoming_xml_tool_messages(messages: list) -> tuple:
         text = content.strip()
         return bool(re.match(r'^<tool\s+name="[^"]+"\s*>', text) or re.match(r'^<tool_result[\w-]*\s+[^>]*>', text))
 
-    # 只处理尾部当前工具窗口：从末尾跳过重复 user，再取连续 XML 工具消息。
+    # 只处理尾部当前工具窗口。
+    # 兼容尾部最后一条是普通重复 user、倒数第二条才是 XML tool_result 的请求。
     end_idx = len(messages)
-    while end_idx > 0:
-        m = messages[end_idx - 1]
-        if isinstance(m, dict) and m.get("role") == "user" and isinstance(m.get("content"), str) and _is_xml_tool_msg(m):
-            end_idx -= 1
-            continue
-        break
+    if end_idx > 0:
+        last = messages[end_idx - 1]
+        if isinstance(last, dict) and last.get("role") == "user" and not _is_xml_tool_msg(last):
+            prev = messages[end_idx - 2] if end_idx >= 2 else None
+            if _is_xml_tool_msg(prev):
+                end_idx -= 1
 
     start_idx = end_idx
     while start_idx > 0 and _is_xml_tool_msg(messages[start_idx - 1]):
@@ -2321,6 +2322,12 @@ def _repair_tool_call_ids_by_adjacency(messages: list, session_id: str = "", rea
     if not messages:
         return messages
 
+    def _is_synthetic_xml_tool_id(value):
+        return isinstance(value, str) and value.startswith("xml_tool")
+
+    def _is_real_short_tool_id(value):
+        return isinstance(value, str) and value and not value.startswith("xml_tool")
+
     repaired = []
     pending_ids = []
     pending_set = set()
@@ -2343,8 +2350,11 @@ def _repair_tool_call_ids_by_adjacency(messages: list, session_id: str = "", rea
                         pending_ids.remove(old_id)
                 else:
                     new_id = pending_ids.pop(0)
-                    m["tool_call_id"] = new_id
-                    repairs.append(f"{old_id or 'MISSING'}->{new_id}")
+                    if _is_real_short_tool_id(old_id) and _is_synthetic_xml_tool_id(new_id):
+                        pending_ids.insert(0, new_id)
+                    else:
+                        m["tool_call_id"] = new_id
+                        repairs.append(f"{old_id or 'MISSING'}->{new_id}")
                 repaired.append(m)
                 continue
 

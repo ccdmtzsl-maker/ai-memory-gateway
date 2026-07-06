@@ -146,6 +146,59 @@ function escHtml(s) {
     return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
+function normalizeXmlToolMessageForExistingRenderer(msg) {
+    const text = String((msg && msg.content) || '').trim();
+    if (!text.startsWith('<tool')) return null;
+
+    const callMatch = text.match(/^<tool\s+name="([^"]+)"\s*>([\s\S]*?)<\/tool>$/);
+    if (callMatch) {
+        const params = {};
+        const body = callMatch[2] || '';
+        const re = /<param\s+name="([^"]+)"\s*>([\s\S]*?)<\/param>/g;
+        let m;
+        while ((m = re.exec(body)) !== null) params[m[1]] = m[2] || '';
+        const rowId = msg.id || msg.created_at || msg.timestamp || Math.random().toString(36).slice(2);
+        return {
+            role: 'assistant',
+            content: '',
+            metadata: {
+                tool_calls: [{
+                    id: 'xml_tool_' + String(rowId).replace(/[^\w-]/g, '_'),
+                    type: 'function',
+                    function: {
+                        name: callMatch[1],
+                        arguments: JSON.stringify(params, null, 2)
+                    }
+                }]
+            }
+        };
+    }
+
+    const resultMatch = text.match(/^<tool_result([\w-]*)\s+([^>]*)>([\s\S]*?)<\/tool_result[\w-]*>$/);
+    if (resultMatch) {
+        const attrs = {};
+        const attrRe = /([A-Za-z_][\w-]*)="([^"]*)"/g;
+        let a;
+        while ((a = attrRe.exec(resultMatch[2] || '')) !== null) attrs[a[1]] = a[2];
+        let body = resultMatch[3] || '';
+        const contentMatch = body.match(/^<content>([\s\S]*?)<\/content>$/);
+        if (contentMatch) body = contentMatch[1] || '';
+        const suffix = (resultMatch[1] || '').replace(/^_/, '');
+        return {
+            role: 'tool',
+            content: body,
+            metadata: {
+                name: attrs.name || '工具结果',
+                status: attrs.status || '',
+                tool_call_id: attrs.tool_call_id || attrs.id || suffix || ('xml_tool_result_' + String(msg.id || '').replace(/[^\w-]/g, '_'))
+            }
+        };
+    }
+
+    return null;
+}
+
+
 // ============================================
 // 导入功能
 // ============================================
@@ -757,6 +810,8 @@ async function loadConvMessages(sessionId, append = false) {
 }
 
 function createConvMessageElement(msg) {
+    const xmlNormalized = normalizeXmlToolMessageForExistingRenderer(msg);
+    if (xmlNormalized) msg = Object.assign({}, msg, xmlNormalized);
     const isUser = msg.role === 'user';
     const isTool = msg.role === 'tool';
     const roleLabel = isUser ? '👤 用户' : (isTool ? '🧰 工具结果' : '🤖 助手');

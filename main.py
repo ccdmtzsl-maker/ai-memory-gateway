@@ -69,6 +69,7 @@ CACHE_PARTITION_EXTRACT_LIMIT = int(os.getenv("CACHE_PARTITION_EXTRACT_LIMIT", "
 CACHE_SUMMARY_MODEL = os.getenv("CACHE_SUMMARY_MODEL", "anthropic/claude-haiku-4.5")
 CACHE_PARTITION_TRIGGER = os.getenv("CACHE_PARTITION_TRIGGER", "rounds")  # rounds=按轮次 | time=按时间窗口
 CACHE_PARTITION_WINDOW = int(os.getenv("CACHE_PARTITION_WINDOW", "30"))  # 时间窗口（分钟），仅 trigger=time 时生效
+CACHE_PARTITION_KEEP_A_TOOLS = os.getenv("CACHE_PARTITION_KEEP_A_TOOLS", "false").lower() == "true"  # A区是否保留tool/tool_calls
 PARTITION_SESSION_ID = os.getenv("PARTITION_SESSION_ID", "")
 
 def get_active_session_id() -> str:
@@ -324,7 +325,7 @@ async def lifespan(app: FastAPI):
                         "MEMORY_ENABLED": lambda v: _parse_bool(v),
                         "CACHE_PARTITION_ENABLED": lambda v: _parse_bool(v),
                         "CACHE_PARTITION_X": int, "CACHE_PARTITION_EXTRACT_LIMIT": int, "CACHE_PARTITION_TRIGGER": str,
-                        "CACHE_PARTITION_WINDOW": int, "CACHE_SUMMARY_MODEL": str,
+                        "CACHE_PARTITION_WINDOW": int, "CACHE_PARTITION_KEEP_A_TOOLS": lambda v: _parse_bool(v), "CACHE_SUMMARY_MODEL": str,
                         "FORCE_STREAM": lambda v: _parse_bool(v),
                         "RESPONSE_TRANSFORM_ENABLED": lambda v: _parse_bool(v),
                         "RESPONSE_TRANSFORM_RULES": str,
@@ -3031,15 +3032,20 @@ async def build_partitioned_messages(
     
     # 摘要区已架空：不再把历史 summary_parts 注入上下文。
     
-    # A区：剥离tool消息和tool_calls，只保留有文本的user/assistant（节省上下文）
+    # A区：默认剥离tool消息和tool_calls以节省上下文；可在设置页开启保留。
     cleaned_a = []
-    for msg in a_msgs:
-        if msg.get('role') == 'tool':
-            continue
-        m = {k: v for k, v in msg.items() if k not in ('id', 'created_at', 'tool_calls')}
-        if m.get('role') == 'assistant' and not (m.get('content') or '').strip():
-            continue
-        cleaned_a.append(m)
+    if CACHE_PARTITION_KEEP_A_TOOLS:
+        for msg in a_msgs:
+            m = {k: v for k, v in msg.items() if k not in ('id', 'created_at')}
+            cleaned_a.append(m)
+    else:
+        for msg in a_msgs:
+            if msg.get('role') == 'tool':
+                continue
+            m = {k: v for k, v in msg.items() if k not in ('id', 'created_at', 'tool_calls')}
+            if m.get('role') == 'assistant' and not (m.get('content') or '').strip():
+                continue
+            cleaned_a.append(m)
     
     # A区：从末尾往前找第一条非tool消息打BP
     for j in range(len(cleaned_a) - 1, -1, -1):
@@ -8152,6 +8158,7 @@ async def get_settings():
             "CACHE_PARTITION_EXTRACT_LIMIT": int(db.get("CACHE_PARTITION_EXTRACT_LIMIT") or CACHE_PARTITION_EXTRACT_LIMIT),
             "CACHE_PARTITION_TRIGGER": db.get("CACHE_PARTITION_TRIGGER") or CACHE_PARTITION_TRIGGER,
             "CACHE_PARTITION_WINDOW":  int(db.get("CACHE_PARTITION_WINDOW") or CACHE_PARTITION_WINDOW),
+            "CACHE_PARTITION_KEEP_A_TOOLS": _parse_bool(db.get("CACHE_PARTITION_KEEP_A_TOOLS"), CACHE_PARTITION_KEEP_A_TOOLS),
             "CACHE_SUMMARY_MODEL":     db.get("CACHE_SUMMARY_MODEL") or str(CACHE_SUMMARY_MODEL),
 
             # 向量搜索（开源版用 EMBEDDING_API_KEY + EMBEDDING_BASE_URL）
@@ -8270,6 +8277,7 @@ async def save_settings(request: Request):
             "CACHE_PARTITION_EXTRACT_LIMIT": int,
             "CACHE_PARTITION_TRIGGER": str,
             "CACHE_PARTITION_WINDOW": int,
+            "CACHE_PARTITION_KEEP_A_TOOLS": lambda v: _parse_bool(v),
             "CACHE_SUMMARY_MODEL":   str,
             "FORCE_STREAM":          lambda v: _parse_bool(v),
             "RESPONSE_TRANSFORM_ENABLED": lambda v: _parse_bool(v),

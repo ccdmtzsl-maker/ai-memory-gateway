@@ -1313,6 +1313,12 @@ async function loadDashboardLogs() {
         list.innerHTML = logs.map(log => {
             const colors = colorMap[log.level] || ['var(--primary)', 'rgba(231,90,124,.08)'];
             const sid = log.session_id ? `<span style="font-size:12px; color:var(--text-muted);">session: ${escapeHtml(log.session_id)}</span>` : '';
+            const message = String(log.message || '');
+            const isMultiLine = message.includes('\n');
+            const isToolChain = message.startsWith('🔧 tool_chain[') || message.startsWith('🔧 tool_call_id');
+            const msgHtml = (isMultiLine || isToolChain)
+                ? `<pre style="margin:0; padding:10px 12px; border-radius:8px; background:rgba(255,255,255,.55); color:var(--text); white-space:pre-wrap; word-break:break-word; overflow:auto; font-size:12px; line-height:1.55; font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,'Liberation Mono',monospace;">${escapeHtml(message)}</pre>`
+                : `<div style="font-size:14px; line-height:1.6; color:var(--text); word-break:break-word;">${escapeHtml(message)}</div>`;
             return `<div class="card" style="padding:14px 16px; border-left:4px solid ${colors[0]}; background:${colors[1]};">
                 <div style="display:flex; justify-content:space-between; gap:12px; align-items:flex-start; margin-bottom:6px;">
                     <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
@@ -1321,7 +1327,7 @@ async function loadDashboardLogs() {
                     </div>
                     <span style="font-size:12px; color:var(--text-muted); white-space:nowrap;">${escapeHtml(log.time || '')}</span>
                 </div>
-                <div style="font-size:14px; line-height:1.6; color:var(--text); word-break:break-word;">${escapeHtml(log.message || '')}</div>
+                ${msgHtml}
             </div>`;
         }).join('');
     } catch (e) {

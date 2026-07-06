@@ -344,30 +344,51 @@ async function runMemoryPalaceConsolidation() {
     } catch (e) { mpMsg('巩固失败：' + e.message, 'error'); }
 }
 
-async function clearMemoryPalacePins() {
-    if (!confirm('将清除所有当前便利贴，只取消置顶，不删除任何记忆。继续吗？')) return;
-    const btn = document.getElementById('mpClearPinsBtn');
+async function modifyMemoryPalacePin() {
+    const rawId = prompt('输入要修改的记忆短ID或完整ID，例如 #02 / 02 / mn_xxx');
+    if (!rawId) return;
+    const nodeId = resolveMemoryPalaceNodeIdInput(rawId);
+    if (!nodeId) {
+        mpMsg('没有找到这个记忆ID', 'error');
+        return;
+    }
+    const rawDays = prompt('输入 pinDays：0=取消便利贴，1-30=从现在起置顶 N 天', '0');
+    if (rawDays === null) return;
+    const pinDays = parseInt(String(rawDays).trim(), 10);
+    if (!Number.isFinite(pinDays) || pinDays < 0 || pinDays > 30) {
+        mpMsg('pinDays 必须是 0-30 的整数', 'error');
+        return;
+    }
+
+    let pinnedUntil = null;
+    if (pinDays > 0) {
+        const d = new Date();
+        d.setDate(d.getDate() + pinDays);
+        pinnedUntil = d.toISOString();
+    }
+
+    const btn = document.getElementById('mpModifyPinBtn');
     const oldText = btn ? btn.textContent : '';
     if (btn) {
         btn.disabled = true;
-        btn.textContent = '清除中...';
+        btn.textContent = '修改中...';
     }
     try {
-        const resp = await fetch('/api/memory-palace/pins/clear', {
-            method: 'POST',
+        const resp = await fetch('/api/memory-palace/nodes/' + encodeURIComponent(nodeId), {
+            method: 'PUT',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({})
+            body: JSON.stringify({pinned_until: pinnedUntil})
         });
         const data = await resp.json();
-        if (data.error || data.status === 'error') throw new Error(data.error || '清除失败');
-        mpMsg('已清除便利贴：' + Number(data.cleared || 0) + ' 条');
+        if (data.error || data.status === 'error') throw new Error(data.error || '修改失败');
+        mpMsg(pinDays > 0 ? ('已设置便利贴：' + pinDays + ' 天') : '已取消便利贴');
         await loadMemoryPalace();
     } catch (e) {
-        mpMsg('清除便利贴失败：' + e.message, 'error');
+        mpMsg('修改便利贴失败：' + e.message, 'error');
     } finally {
         if (btn) {
             btn.disabled = false;
-            btn.textContent = oldText || '清除便利贴';
+            btn.textContent = oldText || '修改便利贴';
         }
     }
 }

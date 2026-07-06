@@ -5421,6 +5421,119 @@ async def api_memory_palace_compress_event_boxes(request: Request):
     except Exception as e:
         return {"status": "error", "error": str(e), "compressed": 0}
 
+
+@app.post("/api/memory-palace/event-boxes/{box_id}/undo-compress")
+async def api_memory_palace_undo_event_box_compression(box_id: str, request: Request):
+    if not MEMORY_ENABLED:
+        return {"error": "记忆系统未启用"}
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    character_id = data.get("character_id") or "default"
+    pool = await get_pool()
+    lock_key = f"mp_event_box_undo_compress:{character_id}:{box_id}"
+    lock_acquired = False
+    try:
+        async with pool.acquire() as conn:
+            lock_acquired = bool(await conn.fetchval("SELECT pg_try_advisory_lock(hashtext($1))", lock_key))
+        if not lock_acquired:
+            return {"status": "error", "error": "这个事件盒正在撤回/压缩中，请稍后再试", "restored": 0}
+
+        async with pool.acquire() as conn:
+            box = await conn.fetchrow("""
+                SELECT id, character_id, name, tags, summary_node_id, live_memory_ids, archived_memory_ids, compression_count, sealed, created_at, updated_at, last_compressed_at
+                FROM memory_palace_event_boxes
+                WHERE character_id = $1 AND id = $2
+            """, character_id, box_id)
+            if not box:
+                return {"status": "error", "error": "事件盒不存在", "restored": 0}
+            box = dict(box)
+            summary_id = box.get("summary_node_id")
+            if not summary_id:
+                return {"status": "error", "error": "这个事件盒没有 summary，无法撤回压缩", "restored": 0}
+            summary = await conn.fetchrow("""
+                SELECT id, content, tags, importance, mood, valence, arousal, date, metadata
+                FROM memory_palace_nodes
+                WHERE character_id = $1 AND id = $2 AND is_box_summary = TRUE
+            """, character_id, summary_id)
+            if not summary:
+                return {"status": "error", "error": "summary 节点不存在，无法撤回压缩", "restored": 0}
+            summary = dict(summary)
+            meta = summary.get("metadata") or {}
+            if isinstance(meta, str):
+                try:
+                    meta = json.loads(meta)
+                except Exception:
+                    meta = {}
+            source_ids = [str(x) for x in (meta.get("source_live_memory_ids") or []) if str(x or "").strip()]
+            if not source_ids:
+                return {"status": "error", "error": "summary 没有记录上次压缩的源节点，无法撤回", "restored": 0}
+
+            rows = await conn.fetch("""
+                SELECT id
+                FROM memory_palace_nodes
+                WHERE character_id = $1 AND id = ANY($2::text[])
+            """, character_id, source_ids)
+            existing_ids = [str(r["id"]) for r in rows]
+            if not existing_ids:
+                return {"status": "error", "error": "上次压缩的源节点不存在，无法撤回", "restored": 0}
+
+            await conn.execute("""
+                UPDATE memory_palace_nodes
+                SET archived = FALSE, updated_at = NOW()
+                WHERE character_id = $1 AND id = ANY($2::text[])
+            """, character_id, existing_ids)
+
+            live_ids = [str(x) for x in (box.get("live_memory_ids") or []) if x]
+            archived_ids = [str(x) for x in (box.get("archived_memory_ids") or []) if x]
+            new_live_ids = list(dict.fromkeys([*live_ids, *existing_ids]))
+            new_archived_ids = [x for x in archived_ids if x not in set(existing_ids)]
+
+            snapshot = meta.get("previous_summary_snapshot") or None
+            warning = ""
+            if snapshot and snapshot.get("content"):
+                snap_date = None
+                if snapshot.get("date"):
+                    try:
+                        snap_date = datetime.strptime(str(snapshot.get("date"))[:10], "%Y-%m-%d").date()
+                    except Exception:
+                        snap_date = None
+                await conn.execute("""
+                    UPDATE memory_palace_nodes
+                    SET content=$3,tags=$4,importance=$5,mood=$6,valence=$7,arousal=$8,date=COALESCE($9::date,date),metadata=COALESCE($10::jsonb, '{}'::jsonb),archived=FALSE,is_box_summary=TRUE,updated_at=NOW()
+                    WHERE character_id=$1 AND id=$2
+                """, character_id, summary_id, snapshot.get("content"), snapshot.get("tags") or "", max(1, min(int(snapshot.get("importance") or 5), 10)), snapshot.get("mood") or "neutral", _memory_palace_float_or_none(snapshot.get("valence")), _memory_palace_float_or_none(snapshot.get("arousal")), snap_date, json.dumps(snapshot.get("metadata") or {}, ensure_ascii=False))
+                new_summary_id = summary_id
+            else:
+                await conn.execute("""
+                    UPDATE memory_palace_nodes
+                    SET archived=TRUE, updated_at=NOW()
+                    WHERE character_id=$1 AND id=$2
+                """, character_id, summary_id)
+                new_summary_id = None
+                if int(box.get("compression_count") or 0) > 1:
+                    warning = "已恢复源节点；但旧 summary 没有快照，无法完整回退旧 summary 内容。"
+
+            await conn.execute("""
+                UPDATE memory_palace_event_boxes
+                SET summary_node_id=$3, live_memory_ids=$4::text[], archived_memory_ids=$5::text[],
+                    compression_count=GREATEST(compression_count - 1, 0), sealed=FALSE, updated_at=NOW()
+                WHERE character_id=$1 AND id=$2
+            """, character_id, box_id, new_summary_id, new_live_ids, new_archived_ids)
+
+        return {"status": "ok", "restored": len(existing_ids), "summary_restored": bool(snapshot and snapshot.get("content")), "warning": warning}
+    except Exception as e:
+        return {"status": "error", "error": str(e), "restored": 0}
+    finally:
+        if lock_acquired:
+            try:
+                async with pool.acquire() as conn:
+                    await conn.execute("SELECT pg_advisory_unlock(hashtext($1))", lock_key)
+            except Exception as e:
+                print(f"⚠️ 事件盒撤回压缩解锁失败 {box_id}: {e}")
+
+
 @app.patch("/api/memory-palace/event-boxes/{box_id}")
 async def api_memory_palace_update_event_box(box_id: str, request: Request):
     if not MEMORY_ENABLED:
@@ -6588,7 +6701,7 @@ async def maybe_compress_memory_palace_event_boxes(box_ids=None, character_id: s
                 old_summary_row = None
                 if box.get("summary_node_id"):
                     old_summary_row = await conn.fetchrow("""
-                        SELECT id, content, room, tags, importance, mood, valence, arousal, date, created_at
+                        SELECT id, content, room, tags, importance, mood, valence, arousal, date, created_at, metadata
                         FROM memory_palace_nodes
                         WHERE character_id = $1 AND id = $2 AND is_box_summary = TRUE
                     """, character_id, box.get("summary_node_id"))
@@ -6625,7 +6738,20 @@ async def maybe_compress_memory_palace_event_boxes(box_ids=None, character_id: s
                         first_date = datetime.strptime(str(raw_first_date)[:10], "%Y-%m-%d").date()
                 except Exception:
                     first_date = None
-            metadata = json.dumps({"event_box_id": box.get("id"), "source_live_memory_ids": [n["id"] for n in live_nodes], "previous_summary_node_id": (old_summary or {}).get("id"), "summary_kind": "event_box", "compression_mode": "rewrite_with_previous_summary" if old_summary else "initial"}, ensure_ascii=False)
+            previous_summary_snapshot = None
+            if old_summary:
+                previous_summary_snapshot = {
+                    "id": old_summary.get("id"),
+                    "content": old_summary.get("content"),
+                    "tags": old_summary.get("tags"),
+                    "importance": old_summary.get("importance"),
+                    "mood": old_summary.get("mood"),
+                    "valence": old_summary.get("valence"),
+                    "arousal": old_summary.get("arousal"),
+                    "date": str(old_summary.get("date") or "")[:10] or None,
+                    "metadata": old_summary.get("metadata") or {},
+                }
+            metadata = json.dumps({"event_box_id": box.get("id"), "source_live_memory_ids": [n["id"] for n in live_nodes], "previous_summary_node_id": (old_summary or {}).get("id"), "previous_summary_snapshot": previous_summary_snapshot, "summary_kind": "event_box", "compression_mode": "rewrite_with_previous_summary" if old_summary else "initial"}, ensure_ascii=False)
 
             async with pool.acquire() as conn:
                 current_live_ids = await conn.fetchval("""

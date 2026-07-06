@@ -2129,6 +2129,85 @@ def _normalize_tool_chains_by_id(messages: list) -> list:
 
 
 
+
+def _normalize_incoming_xml_tool_messages(messages: list) -> tuple:
+    """把客户端入口里的 XML 工具文本转成 OpenAI 标准 tool_calls/tool 消息。"""
+    if not isinstance(messages, list):
+        return messages, 0
+
+    normalized = []
+    converted = 0
+
+    for idx, msg in enumerate(messages):
+        if not isinstance(msg, dict):
+            normalized.append(msg)
+            continue
+        content = msg.get("content")
+        if not isinstance(content, str):
+            normalized.append(msg)
+            continue
+
+        text = content.strip()
+        if not text.startswith("<tool"):
+            normalized.append(msg)
+            continue
+
+        call_open = re.match(r'^<tool\s+name="([^"]+)"\s*>', text)
+        call_close = "<" + "/tool>"
+        if call_open and text.endswith(call_close):
+            body_text = text[call_open.end(): -len(call_close)]
+            params = {}
+            param_close = "<" + "/param>"
+            param_re = re.compile(r'<param\s+name="([^"]+)"\s*>([\s\S]*?)' + re.escape(param_close))
+            for pm in param_re.finditer(body_text or ""):
+                params[pm.group(1)] = pm.group(2) or ""
+            call_id = "xml_tool_" + re.sub(r'[^\w-]', "_", str(msg.get("id") or msg.get("created_at") or idx))
+            tool_calls = [{
+                "id": call_id,
+                "type": "function",
+                "function": {
+                    "name": call_open.group(1),
+                    "arguments": json.dumps(params, ensure_ascii=False, indent=2)
+                }
+            }]
+            m = dict(msg)
+            m["role"] = "assistant"
+            m["content"] = None
+            m["tool_calls"] = tool_calls
+            m.pop("name", None)
+            m.pop("tool_call_id", None)
+            normalized.append(m)
+            converted += 1
+            continue
+
+        result_open = re.match(r'^<tool_result([\w-]*)\s+([^>]*)>', text)
+        if result_open:
+            suffix_raw = result_open.group(1) or ""
+            result_close = "<" + "/tool_result" + suffix_raw + ">"
+            if text.endswith(result_close):
+                attrs = dict(re.findall(r'([A-Za-z_][\w-]*)="([^"]*)"', result_open.group(2) or ""))
+                body_text = text[result_open.end(): -len(result_close)]
+                content_open = "<content>"
+                content_close = "<" + "/content>"
+                if body_text.startswith(content_open) and body_text.endswith(content_close):
+                    body_text = body_text[len(content_open): -len(content_close)]
+                suffix = suffix_raw.lstrip("_")
+                tool_call_id = attrs.get("tool_call_id") or attrs.get("id") or suffix or ("xml_tool_result_" + re.sub(r'[^\w-]', "_", str(msg.get("id") or idx)))
+                tool_name = attrs.get("name") or "工具结果"
+                m = dict(msg)
+                m["role"] = "tool"
+                m["content"] = body_text
+                m["tool_call_id"] = tool_call_id
+                m["name"] = tool_name
+                normalized.append(m)
+                converted += 1
+                continue
+
+        normalized.append(msg)
+
+    return normalized, converted
+
+
 def _log_tool_chain_snapshot(label: str, messages: list, session_id: str = "", enabled: bool = False, extra: str = ""):
     """向 Dashboard 输出工具链结构快照；只记录结构和短 head，不记录完整内容。"""
     if not enabled:
@@ -3544,6 +3623,8 @@ async def chat_completions(request: Request):
     
     body = await request.json()
     messages = body.get("messages", [])
+    messages, _incoming_xml_tool_converted = _normalize_incoming_xml_tool_messages(messages)
+    body["messages"] = messages
 
     # ---------- 入口诊断日志（无条件打印，定位请求是否真的进入网关） ----------
     try:
@@ -3621,8 +3702,9 @@ async def chat_completions(request: Request):
         if active_sid:
             session_id = active_sid
         
-        _log_tool_chain_snapshot("entry_raw", original_messages, session_id=session_id, enabled=tool_chain_debug)
-        _log_tool_chain_snapshot("after_tool_extract", messages, session_id=session_id, enabled=tool_chain_debug, extra=f"tool_messages={len(tool_messages) if tool_messages else 0}")
+        if _incoming_xml_tool_converted and tool_chain_debug:
+            add_dashboard_log("info", f"🔧 tool_chain[incoming_xml_normalized] converted={_incoming_xml_tool_converted}", category="chat", session_id=session_id)
+
 
         # 从DB读取历史
         try:
@@ -3966,7 +4048,6 @@ async def chat_completions(request: Request):
             client_increment = [last_user_msg] if last_user_msg else []
 
         all_msgs = db_msgs + client_increment
-        _log_tool_chain_snapshot("all_msgs_before_repair", all_msgs, session_id=session_id, enabled=tool_chain_debug)
         all_msgs = _repair_tool_call_ids_by_adjacency(all_msgs, session_id=session_id, reason="all_msgs")
 
         all_msgs = _normalize_tool_chains_by_id(all_msgs)
@@ -3980,7 +4061,6 @@ async def chat_completions(request: Request):
         messages = await build_partitioned_messages(
             session_id, all_msgs, partition_base_prompt, user_message
         )
-        _log_tool_chain_snapshot("final_after_build_partition", messages, session_id=session_id, enabled=tool_chain_debug)
         messages = _repair_tool_call_ids_by_adjacency(messages, session_id=session_id, reason="final_messages")
         messages = _normalize_tool_chains_by_id(messages)
         messages = _drop_orphan_tool_messages(messages)

@@ -5895,6 +5895,15 @@ def safe_parse_digest_actions_json(text: str) -> list:
     return []
 
 
+def _memory_palace_float_or_none(v):
+    if v is None or v == "":
+        return None
+    try:
+        return max(-1.0, min(1.0, float(v)))
+    except Exception:
+        return None
+
+
 def _normalize_memory_palace_item(item: dict) -> dict:
     if not isinstance(item, dict):
         return {}
@@ -5917,14 +5926,6 @@ def _normalize_memory_palace_item(item: dict) -> dict:
         tags = "、".join(str(t).strip() for t in tags if str(t).strip())
     else:
         tags = str(tags or "").strip()
-
-    def _float_or_none(v):
-        if v is None or v == "":
-            return None
-        try:
-            return max(-1.0, min(1.0, float(v)))
-        except Exception:
-            return None
 
     # 便利贴只认 pinDays。
     # pinDays=0/空/缺失 时必须清空 pinned_until；不能把 date 或模型误输出的 pinned_until 当成便利贴。
@@ -5949,8 +5950,8 @@ def _normalize_memory_palace_item(item: dict) -> dict:
         "tags": tags,
         "importance": importance,
         "mood": mood,
-        "valence": _float_or_none(item.get("valence")),
-        "arousal": _float_or_none(item.get("arousal")),
+        "valence": _memory_palace_float_or_none(item.get("valence")),
+        "arousal": _memory_palace_float_or_none(item.get("arousal")),
         "pinned_until": pinned_until,
         "date": str(item.get("date") or "").strip(),
         "relatedTo": item.get("relatedTo"),
@@ -6551,77 +6552,118 @@ async def maybe_compress_memory_palace_event_boxes(box_ids=None, character_id: s
                 WHERE character_id = $1 AND sealed = FALSE AND COALESCE(array_length(live_memory_ids, 1), 0) >= $2
                 ORDER BY updated_at DESC LIMIT 20
             """, character_id, threshold)
+
     compressed = 0
     for box_row in boxes:
-        box = dict(box_row)
-        live_ids = [str(x) for x in (box.get("live_memory_ids") or []) if x]
-        if len(live_ids) < threshold:
+        box_id = str(dict(box_row).get("id") or "").strip()
+        if not box_id:
             continue
-        async with pool.acquire() as conn:
-            live_rows = await conn.fetch("""
-                SELECT id, content, room, tags, importance, mood, valence, arousal, date, created_at
-                FROM memory_palace_nodes
-                WHERE character_id = $1 AND id = ANY($2::text[]) AND archived = FALSE AND is_box_summary = FALSE
-                ORDER BY COALESCE(date, created_at::date) ASC, created_at ASC
-            """, character_id, live_ids)
-            old_summary_row = None
-            if box.get("summary_node_id"):
-                old_summary_row = await conn.fetchrow("""
+        lock_key = f"mp_event_box_compress:{character_id}:{box_id}"
+        lock_acquired = False
+        try:
+            async with pool.acquire() as conn:
+                lock_acquired = bool(await conn.fetchval("SELECT pg_try_advisory_lock(hashtext($1))", lock_key))
+            if not lock_acquired:
+                print(f"⏭️ 事件盒压缩跳过 {box_id}：已有压缩任务在运行")
+                continue
+
+            async with pool.acquire() as conn:
+                fresh_box_row = await conn.fetchrow("""
+                    SELECT id, character_id, name, tags, summary_node_id, live_memory_ids, archived_memory_ids, compression_count, sealed, created_at, updated_at, last_compressed_at
+                    FROM memory_palace_event_boxes
+                    WHERE character_id = $1 AND id = $2 AND sealed = FALSE
+                """, character_id, box_id)
+                if not fresh_box_row:
+                    continue
+                box = dict(fresh_box_row)
+                live_ids = [str(x) for x in (box.get("live_memory_ids") or []) if x]
+                if len(live_ids) < threshold:
+                    continue
+                live_rows = await conn.fetch("""
                     SELECT id, content, room, tags, importance, mood, valence, arousal, date, created_at
                     FROM memory_palace_nodes
-                    WHERE character_id = $1 AND id = $2 AND is_box_summary = TRUE
-                """, character_id, box.get("summary_node_id"))
-        live_nodes = [dict(r) for r in live_rows]
-        old_summary = dict(old_summary_row) if old_summary_row else None
-        if len(live_nodes) < threshold:
-            continue
-        try:
-            summary = await call_memory_palace_event_box_summarizer(box, live_nodes, character_id=character_id, old_summary=old_summary)
-        except Exception as e:
-            print(f"⚠️ 事件盒压缩失败 {box.get('id')}: {e}")
-            continue
-        content = str(summary.get("content") or "").strip()
-        name = str(summary.get("name") or box.get("name") or "未命名事件").strip()[:40]
-        tags_value = summary.get("tags")
-        tags = _merge_text_tags(tags_value if isinstance(tags_value, list) else str(tags_value or ""), box.get("tags"))
-        mood = str(summary.get("mood") or "neutral").strip()
-        importance = max(1, min(int(summary.get("importance") or max([n.get("importance") or 5 for n in live_nodes])), 10))
-        valence = _float_or_none(summary.get("valence"))
-        arousal = _float_or_none(summary.get("arousal"))
-        summary_id = box.get("summary_node_id") or f"mn_{int(datetime.now(timezone.utc).timestamp() * 1000)}_{uuid.uuid4().hex[:6]}"
-        first_date = str(live_nodes[0].get("date") or live_nodes[0].get("created_at") or "")[:10] or None
-        metadata = json.dumps({"event_box_id": box.get("id"), "source_live_memory_ids": [n["id"] for n in live_nodes], "previous_summary_node_id": (old_summary or {}).get("id"), "summary_kind": "event_box", "compression_mode": "rewrite_with_previous_summary" if old_summary else "initial"}, ensure_ascii=False)
-        async with pool.acquire() as conn:
-            if box.get("summary_node_id"):
-                await conn.execute("""
-                    UPDATE memory_palace_nodes SET content=$3,tags=$4,importance=$5,mood=$6,valence=$7,arousal=$8,event_box_id=$9,archived=FALSE,is_box_summary=TRUE,metadata=$10::jsonb,updated_at=NOW()
-                    WHERE id=$1 AND character_id=$2
-                """, summary_id, character_id, content, tags, importance, mood, valence, arousal, box.get("id"), metadata)
-            else:
-                await conn.execute("""
-                    INSERT INTO memory_palace_nodes (id, character_id, content, room, tags, importance, mood, valence, arousal, date, embedded, created_at, last_accessed_at, access_count, origin, event_box_id, archived, is_box_summary, metadata, updated_at)
-                    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::date,FALSE,NOW(),NOW(),0,'event_box_summary',$11,FALSE,TRUE,$12::jsonb,NOW())
-                """, summary_id, character_id, content, live_nodes[0].get("room") or "living_room", tags, importance, mood, valence, arousal, first_date, box.get("id"), metadata)
-            compressed_ids = [n["id"] for n in live_nodes]
-            archived_ids = list(dict.fromkeys([*(box.get("archived_memory_ids") or []), *compressed_ids]))
-            remaining_live = [x for x in live_ids if x not in compressed_ids and x != summary_id]
-            await conn.execute("UPDATE memory_palace_nodes SET archived=TRUE, updated_at=NOW() WHERE character_id=$1 AND id=ANY($2::text[])", character_id, compressed_ids)
-            next_compression_count = int(box.get("compression_count") or 0) + 1
-            should_seal = next_compression_count >= max(1, int(MEMORY_PALACE_EVENT_BOX_SEAL_THRESHOLD or 6))
-            await conn.execute("""
-                UPDATE memory_palace_event_boxes
-                SET name=$3,tags=$4,summary_node_id=$5,live_memory_ids=$6::text[],archived_memory_ids=$7::text[],
-                    compression_count=compression_count+1,sealed=$8,last_compressed_at=NOW(),updated_at=NOW()
-                WHERE character_id=$1 AND id=$2
-            """, character_id, box.get("id"), name, tags, summary_id, remaining_live, archived_ids, should_seal)
-        try:
-            await save_memory_palace_embedding(summary_id, content)
-        except Exception as e:
-            print(f"⚠️ 事件盒 summary embedding 失败 {summary_id}: {e}")
-        compressed += 1
-        print(f"🗜️ 事件盒压缩完成 {box.get('id')}：{len(live_nodes)} 条" + (" + 旧summary" if old_summary else "") + f" → summary {summary_id}" + ("，已封盒" if should_seal else ""))
-    return compressed
+                    WHERE character_id = $1 AND id = ANY($2::text[]) AND archived = FALSE AND is_box_summary = FALSE
+                    ORDER BY COALESCE(date, created_at::date) ASC, created_at ASC
+                """, character_id, live_ids)
+                old_summary_row = None
+                if box.get("summary_node_id"):
+                    old_summary_row = await conn.fetchrow("""
+                        SELECT id, content, room, tags, importance, mood, valence, arousal, date, created_at
+                        FROM memory_palace_nodes
+                        WHERE character_id = $1 AND id = $2 AND is_box_summary = TRUE
+                    """, character_id, box.get("summary_node_id"))
 
+            live_nodes = [dict(r) for r in live_rows]
+            old_summary = dict(old_summary_row) if old_summary_row else None
+            if len(live_nodes) < threshold:
+                continue
+
+            try:
+                summary = await call_memory_palace_event_box_summarizer(box, live_nodes, character_id=character_id, old_summary=old_summary)
+            except Exception as e:
+                print(f"⚠️ 事件盒压缩失败 {box.get('id')}: {e}")
+                continue
+
+            content = str(summary.get("content") or "").strip()
+            name = str(summary.get("name") or box.get("name") or "未命名事件").strip()[:40]
+            tags_value = summary.get("tags")
+            tags = _merge_text_tags(tags_value if isinstance(tags_value, list) else str(tags_value or ""), box.get("tags"))
+            mood = str(summary.get("mood") or "neutral").strip()
+            importance = max(1, min(int(summary.get("importance") or max([n.get("importance") or 5 for n in live_nodes])), 10))
+            valence = _memory_palace_float_or_none(summary.get("valence"))
+            arousal = _memory_palace_float_or_none(summary.get("arousal"))
+            summary_id = box.get("summary_node_id") or f"mn_{int(datetime.now(timezone.utc).timestamp() * 1000)}_{uuid.uuid4().hex[:6]}"
+            first_date = str(live_nodes[0].get("date") or live_nodes[0].get("created_at") or "")[:10] or None
+            metadata = json.dumps({"event_box_id": box.get("id"), "source_live_memory_ids": [n["id"] for n in live_nodes], "previous_summary_node_id": (old_summary or {}).get("id"), "summary_kind": "event_box", "compression_mode": "rewrite_with_previous_summary" if old_summary else "initial"}, ensure_ascii=False)
+
+            async with pool.acquire() as conn:
+                current_live_ids = await conn.fetchval("""
+                    SELECT live_memory_ids
+                    FROM memory_palace_event_boxes
+                    WHERE character_id = $1 AND id = $2 AND sealed = FALSE
+                """, character_id, box.get("id"))
+                current_live_ids = [str(x) for x in (current_live_ids or []) if x]
+                if current_live_ids != live_ids:
+                    print(f"⏭️ 事件盒压缩跳过写入 {box.get('id')}：live 列表已变化")
+                    continue
+
+                if box.get("summary_node_id"):
+                    await conn.execute("""
+                        UPDATE memory_palace_nodes SET content=$3,tags=$4,importance=$5,mood=$6,valence=$7,arousal=$8,event_box_id=$9,archived=FALSE,is_box_summary=TRUE,metadata=$10::jsonb,updated_at=NOW()
+                        WHERE id=$1 AND character_id=$2
+                    """, summary_id, character_id, content, tags, importance, mood, valence, arousal, box.get("id"), metadata)
+                else:
+                    await conn.execute("""
+                        INSERT INTO memory_palace_nodes (id, character_id, content, room, tags, importance, mood, valence, arousal, date, embedded, created_at, last_accessed_at, access_count, origin, event_box_id, archived, is_box_summary, metadata, updated_at)
+                        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::date,FALSE,NOW(),NOW(),0,'event_box_summary',$11,FALSE,TRUE,$12::jsonb,NOW())
+                    """, summary_id, character_id, content, live_nodes[0].get("room") or "living_room", tags, importance, mood, valence, arousal, first_date, box.get("id"), metadata)
+                compressed_ids = [n["id"] for n in live_nodes]
+                archived_ids = list(dict.fromkeys([*(box.get("archived_memory_ids") or []), *compressed_ids]))
+                remaining_live = [x for x in live_ids if x not in compressed_ids and x != summary_id]
+                await conn.execute("UPDATE memory_palace_nodes SET archived=TRUE, updated_at=NOW() WHERE character_id=$1 AND id=ANY($2::text[])", character_id, compressed_ids)
+                next_compression_count = int(box.get("compression_count") or 0) + 1
+                should_seal = next_compression_count >= max(1, int(MEMORY_PALACE_EVENT_BOX_SEAL_THRESHOLD or 6))
+                await conn.execute("""
+                    UPDATE memory_palace_event_boxes
+                    SET name=$3,tags=$4,summary_node_id=$5,live_memory_ids=$6::text[],archived_memory_ids=$7::text[],
+                        compression_count=compression_count+1,sealed=$8,last_compressed_at=NOW(),updated_at=NOW()
+                    WHERE character_id=$1 AND id=$2
+                """, character_id, box.get("id"), name, tags, summary_id, remaining_live, archived_ids, should_seal)
+
+            try:
+                await save_memory_palace_embedding(summary_id, content)
+            except Exception as e:
+                print(f"⚠️ 事件盒 summary embedding 失败 {summary_id}: {e}")
+            compressed += 1
+            print(f"🗜️ 事件盒压缩完成 {box.get('id')}：{len(live_nodes)} 条" + (" + 旧summary" if old_summary else "") + f" → summary {summary_id}" + ("，已封盒" if should_seal else ""))
+        finally:
+            if lock_acquired:
+                try:
+                    async with pool.acquire() as conn:
+                        await conn.execute("SELECT pg_advisory_unlock(hashtext($1))", lock_key)
+                except Exception as e:
+                    print(f"⚠️ 事件盒压缩解锁失败 {box_id}: {e}")
+    return compressed
 
 async def call_memory_palace_extractor(messages_text: str, character_id: str = "default", source_messages: list = None) -> tuple:
     base_url = await get_runtime_memory_api_base_url()

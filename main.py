@@ -2185,8 +2185,8 @@ def _repair_tool_call_ids_by_adjacency(messages: list, session_id: str = "", rea
 
 def _map_tool_ids_to_db_pending(db_msgs: list, tool_messages: list) -> dict:
     """
-    保存 tool 结果前，把客户端 tool_call_id 映射回 DB 中最近仍在等待结果的 assistant(tool_calls).id。
-    不使用字符串后缀/包含关系，只按 DB 中最近未满足的 assistant(tool_calls) 和本轮 tool 顺序配对。
+    保存 tool 结果前，把客户端 tool_call_id 映射回 DB 中仍未满足的 assistant(tool_calls).id。
+    支持一次请求携带多组历史 tool 结果；不只看最近一组 pending。
     """
     if not db_msgs or not tool_messages:
         return {}
@@ -2198,13 +2198,14 @@ def _map_tool_ids_to_db_pending(db_msgs: list, tool_messages: list) -> dict:
     }
 
     pending_ids = []
-    for m in reversed(db_msgs):
+    seen_pending = set()
+    for m in db_msgs:
         if m.get("role") == "assistant" and m.get("tool_calls"):
             ids = [tc.get("id") for tc in (m.get("tool_calls") or []) if tc.get("id")]
-            remaining = [i for i in ids if i not in saved_tool_ids]
-            if remaining:
-                pending_ids = remaining
-                break
+            for cid in ids:
+                if cid and cid not in saved_tool_ids and cid not in seen_pending:
+                    pending_ids.append(cid)
+                    seen_pending.add(cid)
 
     if not pending_ids:
         return {}
@@ -3669,41 +3670,39 @@ async def chat_completions(request: Request):
                         if client_tool_ids & set(hist_ids):
                             db_matching_ast_ids.extend([i for i in hist_ids if i in client_tool_ids])
                 print(f"🔎 工具结果race诊断: client_tool_ids={list(client_tool_ids)}, db_has_matching_ast={bool(db_matching_ast_ids)}, matched_ids={db_matching_ast_ids}")
-                matching_ast = None
+                matching_asts = []
+                matched_ids = set()
                 for m in messages:
                     if m.get("role") == "assistant" and m.get("tool_calls"):
                         ast_tc_ids = {tc.get("id") for tc in m["tool_calls"] if tc.get("id")}
                         if client_tool_ids & ast_tc_ids:
-                            matching_ast = m
-                            break
-                if matching_ast:
-                    # 客户端有匹配的assistant(tool_calls)，说明是DB延迟，保留tool结果并补充assistant
-                    matched_ids = {tc.get("id") for tc in matching_ast["tool_calls"] if tc.get("id")}
+                            matching_asts.append(m)
+                            matched_ids |= ast_tc_ids
+                if matching_asts:
+                    # 客户端有匹配的assistant(tool_calls)，说明是DB延迟，保留所有匹配组的tool结果并补充assistant
                     kept_tools = [m for m in client_tools if m.get('tool_call_id') in matched_ids]
                     stale_tools = [m for m in client_tools if m.get('tool_call_id') not in matched_ids]
                     if stale_tools:
                         print(f"🔧 去重: 丢弃{len(stale_tools)}条非当前轮次tool (ids: {[m.get('tool_call_id','?') for m in stale_tools]})")
-                    # 从客户端原始messages里找到matching_ast前面最近的user，一起补进来
-                    # 否则DB为空时all_msgs里没有user，模型不知道用户问了什么
                     preceding_user = None
-                    for idx_m, orig_m in enumerate(messages):
-                        if orig_m is matching_ast:
-                            # 往前找最近的user
-                            for back in range(idx_m - 1, -1, -1):
-                                if messages[back].get("role") == "user":
-                                    preceding_user = messages[back]
-                                    break
-                            break
+                    if not db_msgs:
+                        first_ast = matching_asts[0]
+                        for idx_m, orig_m in enumerate(messages):
+                            if orig_m is first_ast:
+                                for back in range(idx_m - 1, -1, -1):
+                                    if messages[back].get("role") == "user":
+                                        preceding_user = messages[back]
+                                        break
+                                break
 
-                    # 重建client_new_msgs: [user] + assistant(tool_calls) + tool results
-                    # 让tool结果作为真正的末尾，不追加重复user。
+                    # 重建client_new_msgs: [user] + all assistant(tool_calls) + all matched tool results
                     client_new_msgs = []
                     if preceding_user and not db_msgs:
                         client_new_msgs.append(preceding_user)
-                    client_new_msgs.append(matching_ast)
+                    client_new_msgs.extend(matching_asts)
                     client_new_msgs.extend(kept_tools)
                     has_user = "user+" if (preceding_user and not db_msgs) else ""
-                    print(f"⚠️ DB延迟防护: 从客户端补充{has_user}assistant(tool_calls) + {len(kept_tools)}条tool")
+                    print(f"⚠️ DB延迟防护: 从客户端补充{has_user}{len(matching_asts)}组assistant(tool_calls) + {len(kept_tools)}条tool")
                 else:
                     # 客户端也没有匹配的assistant(tool_calls)，确实是历史残留
                     stale_ids = [m.get('tool_call_id', '?') for m in client_tools]
@@ -3727,32 +3726,34 @@ async def chat_completions(request: Request):
                     # 把它移除，然后走延迟防护分支从客户端原始messages里补正确的
                     db_msgs.pop()
                     print(f"🔧 分区模式: DB末尾assistant(tool_calls)是旧残留(ids={expected_tool_ids})，与当前tool(ids={client_tool_ids_set})不匹配，移除并回退到客户端补充")
-                    # 重新走延迟防护逻辑
-                    matching_ast = None
+                    # 重新走延迟防护逻辑：一次请求可能携带多组 assistant(tool_calls)+tool，不能只保留第一组。
+                    matching_asts = []
+                    matched_ids = set()
                     for m in messages:
                         if m.get("role") == "assistant" and m.get("tool_calls"):
                             ast_tc_ids = {tc.get("id") for tc in m["tool_calls"] if tc.get("id")}
                             if client_tool_ids_set & ast_tc_ids:
-                                matching_ast = m
-                                break
-                    if matching_ast:
-                        matched_ids = {tc.get("id") for tc in matching_ast["tool_calls"] if tc.get("id")}
+                                matching_asts.append(m)
+                                matched_ids |= ast_tc_ids
+                    if matching_asts:
                         kept_tools = [m for m in client_tools if m.get('tool_call_id') in matched_ids]
                         preceding_user = None
-                        for idx_m, orig_m in enumerate(messages):
-                            if orig_m is matching_ast:
-                                for back in range(idx_m - 1, -1, -1):
-                                    if messages[back].get("role") == "user":
-                                        preceding_user = messages[back]
-                                        break
-                                break
+                        if not db_msgs:
+                            first_ast = matching_asts[0]
+                            for idx_m, orig_m in enumerate(messages):
+                                if orig_m is first_ast:
+                                    for back in range(idx_m - 1, -1, -1):
+                                        if messages[back].get("role") == "user":
+                                            preceding_user = messages[back]
+                                            break
+                                    break
 
                         client_new_msgs = []
                         if preceding_user and not db_msgs:
                             client_new_msgs.append(preceding_user)
-                        client_new_msgs.append(matching_ast)
+                        client_new_msgs.extend(matching_asts)
                         client_new_msgs.extend(kept_tools)
-                        print(f"⚠️ 旧残留修复: 从客户端补充assistant(tool_calls) + {len(kept_tools)}条tool")
+                        print(f"⚠️ 旧残留修复: 从客户端补充{len(matching_asts)}组assistant(tool_calls) + {len(kept_tools)}条tool")
                     else:
                         # 客户端也找不到匹配，丢弃tool
                         print(f"🔧 去重: DB旧残留+客户端无匹配assistant，丢弃{len(client_tools)}条tool")

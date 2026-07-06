@@ -1411,8 +1411,14 @@ async def preview_cognitive_digestion(character_id: str = "default") -> dict:
     parsed_count = llm_result.get("parsed_count") or 0
     if not actions:
         if raw_reply.strip() and parsed_count == 0:
-            return {"status": "parse_empty", "message": "LLM 返回了内容，但没有解析出有效动作", "actions": [], "raw_preview": raw_reply[:800]}
-        return {"status": "no_actions", "message": "LLM 未返回需要执行的动作", "actions": []}
+            return {"status": "parse_empty", "message": "LLM 返回了内容，但没有解析出有效动作", "actions": [], "raw_preview": raw_reply[:1200]}
+        return {
+            "status": "no_actions",
+            "message": "LLM 未返回需要执行的动作",
+            "actions": [],
+            "raw_preview": raw_reply[:1200] if raw_reply else "",
+            "parsed_count": parsed_count,
+        }
     # Enrich actions with source content for preview
     enriched = []
     for act in actions:

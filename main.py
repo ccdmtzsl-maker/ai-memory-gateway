@@ -2134,19 +2134,32 @@ def _log_tool_chain_snapshot(label: str, messages: list, session_id: str = "", e
     if not enabled:
         return
     try:
+        # 降噪：没有任何工具链信号时不打日志，避免普通对话刷屏。
+        has_tool_signal = False
+        for _m in messages or []:
+            _content = _m.get("content")
+            if _m.get("role") == "tool" or _m.get("tool_calls") or _m.get("tool_call_id"):
+                has_tool_signal = True
+                break
+            if isinstance(_content, str) and _content.strip().startswith("<tool"):
+                has_tool_signal = True
+                break
+        if not has_tool_signal:
+            return
+
         lines = []
         for idx, msg in enumerate(messages or []):
             role = msg.get("role")
             content = msg.get("content")
             if isinstance(content, str):
                 content_len = len(content)
-                head = content.replace("\n", "\\n")[:60]
+                head = content.replace("\n", "\\n")[:24]
             elif content is None:
                 content_len = 0
                 head = ""
             else:
                 content_len = len(str(content))
-                head = str(content).replace("\n", "\\n")[:60]
+                head = str(content).replace("\n", "\\n")[:24]
 
             parts = [f"{idx}:{role}"]
             if msg.get("tool_calls"):
@@ -2173,9 +2186,9 @@ def _log_tool_chain_snapshot(label: str, messages: list, session_id: str = "", e
                 parts.append(f'head="{head}"')
             lines.append(" ".join(parts))
 
-        preview = "\n".join(lines[:80])
-        if len(lines) > 80:
-            preview += f"\n... ({len(lines)-80} more)"
+        preview = "\n".join(lines[:20])
+        if len(lines) > 20:
+            preview += f"\n... ({len(lines)-20} more)"
         msg = f"🔧 tool_chain[{label}] n={len(messages or [])}" + (f" {extra}" if extra else "") + "\n" + preview
         try:
             add_dashboard_log("info", msg, category="chat", session_id=session_id)

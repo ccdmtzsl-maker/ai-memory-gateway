@@ -3364,6 +3364,33 @@ def clean_user_message_for_log(user_msg: str, history: list = None) -> str:
     return cleaned or user_msg
 
 
+
+def _extract_xml_tool_calls_from_content(content: str):
+    """If assistant content ends with XML tool call, extract and return (clean_content, tool_calls_list)."""
+    if not content or not isinstance(content, str):
+        return content, None
+    tool_close_tag = "<" + "/tool>"
+    match = re.search(r'<tool\\s+name="([^"]+)"\\s*>([\\s\\S]*?)' + re.escape(tool_close_tag) + r'\\s*$', content)
+    if not match:
+        return content, None
+    tool_name = match.group(1)
+    tool_body = match.group(2)
+    clean_content = content[:match.start()].rstrip()
+    params = {}
+    param_close_tag = "<" + "/param>"
+    for pm in re.finditer(r'<param\\s+name="([^"]+)"\\s*>([\\s\\S]*?)' + re.escape(param_close_tag), tool_body):
+        params[pm.group(1)] = pm.group(2) or ""
+    call_id = "xml_call_" + re.sub(r'[^\\w-]', "_", tool_name)[:20] + "_" + uuid.uuid4().hex[:6]
+    tool_calls = [{
+        "id": call_id,
+        "type": "function",
+        "function": {
+            "name": tool_name,
+            "arguments": json.dumps(params, ensure_ascii=False, indent=2)
+        }
+    }]
+    return clean_content or None, tool_calls
+
 async def persist_assistant_tool_calls_sync(session_id: str, user_msg: str, assistant_msg: str, model: str, assistant_tool_calls: list = None, assistant_reasoning: str = None) -> bool:
     """同步保存首次工具调用的 user + assistant(tool_calls)，避免下一轮 tool 结果先到而 DB 还没写完。"""
     if not assistant_tool_calls:
@@ -4229,6 +4256,13 @@ async def chat_completions(request: Request):
                     if msg_obj.get("reasoning_content"):
                         assistant_reasoning = msg_obj["reasoning_content"]
                         print(f"🧠 Response 包含 reasoning_content ({len(assistant_reasoning)}字符)")
+                    # If no native tool_calls but content has XML tool call, extract it
+                    if not assistant_tool_calls and assistant_msg:
+                        _clean, _extracted = _extract_xml_tool_calls_from_content(assistant_msg)
+                        if _extracted:
+                            assistant_tool_calls = _extracted
+                            assistant_msg = _clean or ""
+                            print(f"\U0001f527 NonStream: extracted XML tool call: {[tc['function']['name'] for tc in _extracted]}")
                 except (KeyError, IndexError):
                     pass
                 
@@ -4370,6 +4404,13 @@ async def stream_and_capture(headers: dict, body: dict, session_id: str, user_me
     assistant_msg = "".join(full_response)
     assistant_reasoning = "".join(full_reasoning) if full_reasoning else None
     assistant_tool_calls = list(accumulated_tool_calls.values()) if accumulated_tool_calls else None
+    # If upstream returned no native tool_calls but content has XML tool call, extract it
+    if not assistant_tool_calls and assistant_msg:
+        _clean, _extracted = _extract_xml_tool_calls_from_content(assistant_msg)
+        if _extracted:
+            assistant_tool_calls = _extracted
+            assistant_msg = _clean or ""
+            print(f"\U0001f527 Stream: extracted XML tool call from content: {[tc['function']['name'] for tc in _extracted]}")
     
     if assistant_reasoning:
         print(f"🧠 Stream response 包含 reasoning_content ({len(assistant_reasoning)}字符)")

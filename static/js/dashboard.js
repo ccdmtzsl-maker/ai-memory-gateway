@@ -198,21 +198,6 @@ function normalizeXmlToolMessageForExistingRenderer(msg) {
     return null;
 }
 
-function normalizeDowngradedToolMessageForExistingRenderer(msg) {
-    const text = String((msg && msg.content) || '');
-    const m = text.match(/^工具结果\(([^)]+)\):\s*([\s\S]*)$/);
-    if (!m) return null;
-    return {
-        role: 'tool',
-        content: m[2] || '',
-        metadata: {
-            tool_call_id: m[1] || 'unknown',
-            name: '工具结果',
-            downgraded: true
-        }
-    };
-}
-
 
 // ============================================
 // 导入功能
@@ -827,8 +812,6 @@ async function loadConvMessages(sessionId, append = false) {
 function createConvMessageElement(msg) {
     const xmlNormalized = normalizeXmlToolMessageForExistingRenderer(msg);
     if (xmlNormalized) msg = Object.assign({}, msg, xmlNormalized);
-    const downgradedToolNormalized = normalizeDowngradedToolMessageForExistingRenderer(msg);
-    if (downgradedToolNormalized) msg = Object.assign({}, msg, downgradedToolNormalized);
     const isUser = msg.role === 'user';
     const isTool = msg.role === 'tool';
     const roleLabel = isUser ? '👤 用户' : (isTool ? '🧰 工具结果' : '🤖 助手');

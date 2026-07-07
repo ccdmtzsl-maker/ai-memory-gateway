@@ -2135,27 +2135,36 @@ def _normalize_incoming_xml_tool_messages(messages: list) -> tuple:
     if not isinstance(messages, list):
         return messages, 0
 
-    def _is_xml_tool_msg(msg):
+    def _xml_text(msg):
         if not isinstance(msg, dict):
-            return False
+            return ""
         content = msg.get("content")
         if not isinstance(content, str):
-            return False
-        text = content.strip()
-        return bool(re.match(r'^<tool\s+name="[^"]+"\s*>', text) or re.match(r'^<tool_result[\w-]*\s+[^>]*>', text))
+            return ""
+        return content.strip()
 
-    # 只处理尾部当前工具窗口。
+    def _xml_kind(msg):
+        text = _xml_text(msg)
+        if not text:
+            return None
+        if re.match(r'^<tool\s+name="[^"]+"\s*>', text):
+            return "call"
+        if re.match(r'^<tool_result[\w-]*\s+[^>]*>', text):
+            return "result"
+        return None
+
+    # 只处理尾部当前 XML 工具窗口。
     # 兼容尾部最后一条是普通重复 user、倒数第二条才是 XML tool_result 的请求。
     end_idx = len(messages)
     if end_idx > 0:
         last = messages[end_idx - 1]
-        if isinstance(last, dict) and last.get("role") == "user" and not _is_xml_tool_msg(last):
+        if isinstance(last, dict) and last.get("role") == "user" and not _xml_kind(last):
             prev = messages[end_idx - 2] if end_idx >= 2 else None
-            if _is_xml_tool_msg(prev):
+            if _xml_kind(prev):
                 end_idx -= 1
 
     start_idx = end_idx
-    while start_idx > 0 and _is_xml_tool_msg(messages[start_idx - 1]):
+    while start_idx > 0 and _xml_kind(messages[start_idx - 1]):
         start_idx -= 1
 
     if start_idx == end_idx:
@@ -2178,8 +2187,7 @@ def _normalize_incoming_xml_tool_messages(messages: list) -> tuple:
             pass
 
     for local_idx, msg in enumerate(window):
-        content = msg.get("content")
-        text = content.strip()
+        text = _xml_text(msg)
 
         call_open = re.match(r'^<tool\s+name="([^"]+)"\s*>', text)
         call_close = "<" + "/tool>"

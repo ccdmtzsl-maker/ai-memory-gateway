@@ -3406,26 +3406,35 @@ async def persist_assistant_tool_calls_sync(session_id: str, user_msg: str, assi
         return False
     try:
         pool = await get_pool()
+        existing_ids = set()
         async with pool.acquire() as conn:
-            exists = await conn.fetchval(
+            rows = await conn.fetch(
                 """
-                SELECT 1
-                FROM conversations
+                SELECT elem ->> 'id' AS id
+                FROM conversations,
+                     jsonb_array_elements(metadata::jsonb -> 'tool_calls') AS elem
                 WHERE session_id = $1
                   AND role = 'assistant'
                   AND metadata IS NOT NULL
-                  AND EXISTS (
-                    SELECT 1
-                    FROM jsonb_array_elements(metadata::jsonb -> 'tool_calls') AS elem
-                    WHERE elem ->> 'id' = ANY($2::text[])
-                  )
-                LIMIT 1
+                  AND elem ->> 'id' = ANY($2::text[])
                 """,
                 session_id, tool_call_ids
             )
-        if exists:
-            print(f"🔧 同步存储: assistant(tool_calls)已存在，跳过 ids={tool_call_ids}")
-            return False
+            existing_ids = {r["id"] for r in rows if r.get("id")}
+
+        if existing_ids:
+            # 同一个工具反复调用时，客户端/上游可能复用 tool_call_id。
+            # 不能因为 id 撞库就跳过当前 assistant(tool_calls)，否则下一轮 tool_result 会找不到当前 pending。
+            # 这里把当前轮撞库的 id 改成 DB 内部唯一 id；后续 tool_result 会通过“最新 pending”映射到新 id。
+            rewritten = {}
+            for tc in assistant_tool_calls:
+                old_id = tc.get("id")
+                if old_id in existing_ids:
+                    new_id = f"{old_id}_r{uuid.uuid4().hex[:6]}"
+                    tc["id"] = new_id
+                    rewritten[old_id] = new_id
+            tool_call_ids = [tc.get("id") for tc in assistant_tool_calls if tc.get("id")]
+            print(f"🔧 同步存储: tool_call_id撞库，已为当前轮重写 ids={rewritten}")
 
         recent_log_history = []
         try:

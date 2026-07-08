@@ -3422,19 +3422,26 @@ async def persist_assistant_tool_calls_sync(session_id: str, user_msg: str, assi
             )
             existing_ids = {r["id"] for r in rows if r.get("id")}
 
-        if existing_ids:
-            # 同一个工具反复调用时，客户端/上游可能复用 tool_call_id。
-            # 不能因为 id 撞库就跳过当前 assistant(tool_calls)，否则下一轮 tool_result 会找不到当前 pending。
-            # 这里把当前轮撞库的 id 改成 DB 内部唯一 id；后续 tool_result 会通过“最新 pending”映射到新 id。
-            rewritten = {}
-            for tc in assistant_tool_calls:
-                old_id = tc.get("id")
-                if old_id in existing_ids:
-                    new_id = f"{old_id}_r{uuid.uuid4().hex[:6]}"
-                    tc["id"] = new_id
-                    rewritten[old_id] = new_id
+        # 同一个工具、同一参数也可能被模型/客户端重复分配相同 tool_call_id。
+        # 这里按“调用 occurrence”保存：只要当前响应里出现了 assistant(tool_calls)，就必须落库；
+        # 不能因为 id 在 DB 里出现过，或当前批次里重复，就跳过当前轮。
+        rewritten = {}
+        seen_current_ids = set()
+        for tc in assistant_tool_calls:
+            old_id = tc.get("id")
+            if not old_id:
+                continue
+            need_rewrite = old_id in existing_ids or old_id in seen_current_ids
+            if need_rewrite:
+                new_id = f"{old_id}_r{uuid.uuid4().hex[:6]}"
+                tc["id"] = new_id
+                rewritten.setdefault(old_id, []).append(new_id)
+                seen_current_ids.add(new_id)
+            else:
+                seen_current_ids.add(old_id)
+        if rewritten:
             tool_call_ids = [tc.get("id") for tc in assistant_tool_calls if tc.get("id")]
-            print(f"🔧 同步存储: tool_call_id撞库，已为当前轮重写 ids={rewritten}")
+            print(f"🔧 同步存储: tool_call_id重复，按当前调用轮次重写 ids={rewritten}")
 
         recent_log_history = []
         try:

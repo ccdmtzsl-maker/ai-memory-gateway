@@ -4290,9 +4290,9 @@ async def chat_completions(request: Request):
                 
                 if MEMORY_ENABLED and (user_message or tool_messages):
                     sync_saved_tool_call = False
-                    if assistant_tool_calls and not tool_messages and not skip_conversation_log:
+                    if assistant_tool_calls and not skip_conversation_log:
                         sync_saved_tool_call = await persist_assistant_tool_calls_sync(
-                            session_id, user_message, assistant_msg, model, assistant_tool_calls, assistant_reasoning
+                            session_id, user_message if not tool_messages else "", assistant_msg, model, assistant_tool_calls, assistant_reasoning
                         )
                     asyncio.create_task(
                         process_memories_background(session_id, user_message, assistant_msg, model, 
@@ -4451,9 +4451,10 @@ async def stream_and_capture(headers: dict, body: dict, session_id: str, user_me
     
     if MEMORY_ENABLED and (user_message or tool_messages):
         sync_saved_tool_call = False
-        if assistant_tool_calls and not tool_messages and not skip_conversation_log:
+        if assistant_tool_calls and not skip_conversation_log:
+            # 连续工具调用：即使带了 tool_messages（上轮结果），本轮新 tool_calls 也必须同步保存。
             sync_saved_tool_call = await persist_assistant_tool_calls_sync(
-                session_id, user_message, assistant_msg, model, assistant_tool_calls, assistant_reasoning
+                session_id, user_message if not tool_messages else "", assistant_msg, model, assistant_tool_calls, assistant_reasoning
             )
         asyncio.create_task(
             process_memories_background(session_id, user_message, assistant_msg, model, 

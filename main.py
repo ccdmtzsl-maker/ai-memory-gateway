@@ -2378,8 +2378,11 @@ def _repair_tool_call_ids_by_adjacency(messages: list, session_id: str = "", rea
 
 def _map_tool_ids_to_db_pending(db_msgs: list, tool_messages: list) -> dict:
     """
-    保存 tool 结果前，把客户端 tool_call_id 映射回 DB 中仍未满足的 assistant(tool_calls).id。
-    支持一次请求携带多组历史 tool 结果；不只看最近一组 pending。
+    保存 tool 结果前，把客户端 tool_call_id 映射回 DB 中“最新一组”仍未满足的 assistant(tool_calls).id。
+
+    关键约束：
+    - 只看最近的未满足 assistant(tool_calls)，不扫描全部历史 pending。
+    - 避免历史旧洞把当前 tool_result 吸走，导致当前结果被查重跳过/没保存。
     """
     if not db_msgs or not tool_messages:
         return {}
@@ -2391,29 +2394,32 @@ def _map_tool_ids_to_db_pending(db_msgs: list, tool_messages: list) -> dict:
     }
 
     pending_ids = []
-    seen_pending = set()
-    for m in db_msgs:
-        if m.get("role") == "assistant" and m.get("tool_calls"):
-            ids = [tc.get("id") for tc in (m.get("tool_calls") or []) if tc.get("id")]
-            for cid in ids:
-                if cid and cid not in saved_tool_ids and cid not in seen_pending:
-                    pending_ids.append(cid)
-                    seen_pending.add(cid)
+    # 从后往前只找最近一组还缺结果的 assistant(tool_calls)
+    for m in reversed(db_msgs):
+        if m.get("role") != "assistant" or not m.get("tool_calls"):
+            continue
+        ids = [tc.get("id") for tc in (m.get("tool_calls") or []) if tc.get("id")]
+        missing = [cid for cid in ids if cid and cid not in saved_tool_ids]
+        if missing:
+            pending_ids = missing
+            break
 
     if not pending_ids:
         return {}
 
     mapping = {}
+    pending_queue = list(pending_ids)
     for tm in tool_messages:
         cid = tm.get("tool_call_id")
-        if not cid or not pending_ids:
+        if not cid or not pending_queue:
             continue
-        if cid in pending_ids:
+        if cid in pending_queue:
             mapping[cid] = cid
-            pending_ids.remove(cid)
+            pending_queue.remove(cid)
         else:
-            mapping[cid] = pending_ids.pop(0)
+            mapping[cid] = pending_queue.pop(0)
     return mapping
+
 
 
 def _drop_orphan_tool_messages(messages: list) -> list:

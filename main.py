@@ -2074,91 +2074,61 @@ def _strip_cache_control(messages: list):
 
 
 def _normalize_tool_chains_by_id(messages: list) -> list:
-    """按 tool_call_id 把工具结果归位到对应 assistant(tool_calls) 后面。
-
-    重要：只在同一个 user round 内归位。
-    同一工具同参数连续调用时，tool_call_id 可能重复；如果全局按 id 归位，
-    当前轮 tool 结果会被更早轮的残缺 assistant(tool_calls) 抢走。
-    """
+    """按 tool_call_id 把历史工具结果归位到对应 assistant(tool_calls) 后面；同 id 多次出现时按发生次数顺序消耗。"""
     if not messages:
         return messages
 
-    def _normalize_segment(segment: list) -> tuple:
-        tools_by_id = {}
-        all_call_ids = set()
-        for msg in segment:
-            if msg.get("role") == "assistant" and msg.get("tool_calls"):
-                for tc in msg.get("tool_calls", []):
-                    if tc.get("id"):
-                        all_call_ids.add(tc.get("id"))
-            elif msg.get("role") == "tool" and msg.get("tool_call_id"):
-                tools_by_id.setdefault(msg.get("tool_call_id"), []).append(msg)
+    tools_by_id = {}
+    all_call_ids = set()
+    for msg in messages:
+        if msg.get("role") == "assistant" and msg.get("tool_calls"):
+            for tc in msg.get("tool_calls", []):
+                if tc.get("id"):
+                    all_call_ids.add(tc.get("id"))
+        elif msg.get("role") == "tool" and msg.get("tool_call_id"):
+            tools_by_id.setdefault(msg.get("tool_call_id"), []).append(msg)
 
-        if not tools_by_id:
-            return segment, 0
+    if not tools_by_id:
+        return messages
 
-        normalized = []
-        emitted_tool_obj_ids = set()
-        moved_tools = 0
+    normalized = []
+    emitted_tool_obj_ids = set()
+    moved_tools = 0
 
-        for msg in segment:
-            if msg.get("role") == "tool":
-                tool_call_id = msg.get("tool_call_id")
-                if tool_call_id in all_call_ids:
-                    continue
-                normalized.append(msg)
-                continue
-
-            normalized.append(msg)
-
-            if msg.get("role") == "assistant" and msg.get("tool_calls"):
-                for tc in msg.get("tool_calls", []):
-                    call_id = tc.get("id")
-                    if not call_id:
-                        continue
-                    queue = tools_by_id.get(call_id) or []
-                    while queue:
-                        tool_msg = queue.pop(0)
-                        key = id(tool_msg)
-                        if key in emitted_tool_obj_ids:
-                            continue
-                        normalized.append(tool_msg)
-                        emitted_tool_obj_ids.add(key)
-                        moved_tools += 1
-                        break
-
-        return normalized, moved_tools
-
-    result = []
-    current = []
-    moved_total = 0
-
-    def flush_current():
-        nonlocal result, current, moved_total
-        if not current:
-            return
-        normalized, moved = _normalize_segment(current)
-        result.extend(normalized)
-        moved_total += moved
-        current = []
+    def _tool_obj_key(tool_msg):
+        return id(tool_msg)
 
     for msg in messages:
-        # system/developer 不参与轮次归位，直接刷新当前轮后输出。
-        if msg.get("role") in ("system", "developer"):
-            flush_current()
-            result.append(msg)
+        if msg.get("role") == "tool":
+            tool_call_id = msg.get("tool_call_id")
+            # 如果本批消息里存在对应 assistant(tool_calls)，tool 不在原位置输出；
+            # 等遇到对应 assistant 时按发生次数消耗一条，避免同 id 多轮时只归位一次。
+            if tool_call_id in all_call_ids:
+                continue
+            normalized.append(msg)
             continue
 
-        # user 开启新 round；上一 round 内部归位结束，避免跨 user 轮次抢 tool。
-        if msg.get("role") == "user" and current:
-            flush_current()
-        current.append(msg)
+        normalized.append(msg)
 
-    flush_current()
+        if msg.get("role") == "assistant" and msg.get("tool_calls"):
+            for tc in msg.get("tool_calls", []):
+                call_id = tc.get("id")
+                if not call_id:
+                    continue
+                queue = tools_by_id.get(call_id) or []
+                while queue:
+                    tool_msg = queue.pop(0)
+                    key = _tool_obj_key(tool_msg)
+                    if key in emitted_tool_obj_ids:
+                        continue
+                    normalized.append(tool_msg)
+                    emitted_tool_obj_ids.add(key)
+                    moved_tools += 1
+                    break
 
-    if moved_total:
-        print(f"🔧 分区模式: 按round内tool_call_id归位{moved_total}条历史tool结果")
-    return result
+    if moved_tools:
+        print(f"🔧 分区模式: 按tool_call_id发生次数归位{moved_tools}条历史tool结果")
+    return normalized
 
 
 

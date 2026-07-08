@@ -3230,20 +3230,57 @@ async def build_partitioned_messages(
     
     # 摘要区已架空：不再把历史 summary_parts 注入上下文。
     
-    # A区：默认剥离tool消息和tool_calls以节省上下文；可在设置页开启保留。
+    # A区：默认剥离不完整/孤立工具信息以节省上下文；但完整 assistant(tool_calls)+tool 链必须按原位置保留。
+    # 否则刚写入DB的工具结果如果落入A区，会被拆成“调用和结果都不进请求体”，模型会继续重复调用。
     cleaned_a = []
     if CACHE_PARTITION_KEEP_A_TOOLS:
         for msg in a_msgs:
             m = {k: v for k, v in msg.items() if k not in ('id', 'created_at')}
             cleaned_a.append(m)
     else:
-        for msg in a_msgs:
+        i = 0
+        preserved_a_tool_chains = 0
+        stripped_a_tools = 0
+        while i < len(a_msgs):
+            msg = a_msgs[i]
+            if msg.get('role') == 'assistant' and msg.get('tool_calls'):
+                call_ids = [tc.get('id') for tc in (msg.get('tool_calls') or []) if tc.get('id')]
+                chain = [{k: v for k, v in msg.items() if k not in ('id', 'created_at')}]
+                seen_ids = set()
+                j = i + 1
+                while j < len(a_msgs) and a_msgs[j].get('role') == 'tool':
+                    tid = a_msgs[j].get('tool_call_id')
+                    if tid in call_ids:
+                        chain.append({k: v for k, v in a_msgs[j].items() if k not in ('id', 'created_at')})
+                        seen_ids.add(tid)
+                        j += 1
+                        continue
+                    break
+                if call_ids and set(call_ids).issubset(seen_ids):
+                    cleaned_a.extend(chain)
+                    preserved_a_tool_chains += 1
+                    i = j
+                    continue
+                # 不完整的旧 assistant(tool_calls) 不按协议发给上游；有正文则保留正文，无正文则丢弃。
+                m = {k: v for k, v in msg.items() if k not in ('id', 'created_at', 'tool_calls')}
+                if m.get('role') == 'assistant' and not (m.get('content') or '').strip():
+                    i += 1
+                    continue
+                cleaned_a.append(m)
+                i += 1
+                continue
             if msg.get('role') == 'tool':
+                stripped_a_tools += 1
+                i += 1
                 continue
             m = {k: v for k, v in msg.items() if k not in ('id', 'created_at', 'tool_calls')}
             if m.get('role') == 'assistant' and not (m.get('content') or '').strip():
+                i += 1
                 continue
             cleaned_a.append(m)
+            i += 1
+        if preserved_a_tool_chains:
+            print(f"🔧 分区缓存: A区按原位置保留{preserved_a_tool_chains}组完整工具链")
     
     # A区：从末尾往前找第一条非tool消息打BP
     for j in range(len(cleaned_a) - 1, -1, -1):

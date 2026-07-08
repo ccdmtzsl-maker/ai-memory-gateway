@@ -2378,11 +2378,8 @@ def _repair_tool_call_ids_by_adjacency(messages: list, session_id: str = "", rea
 
 def _map_tool_ids_to_db_pending(db_msgs: list, tool_messages: list) -> dict:
     """
-    保存 tool 结果前，把客户端 tool_call_id 映射回 DB 中“最新一组”仍未满足的 assistant(tool_calls).id。
-
-    关键约束：
-    - 只看最近的未满足 assistant(tool_calls)，不扫描全部历史 pending。
-    - 避免历史旧洞把当前 tool_result 吸走，导致当前结果被查重跳过/没保存。
+    保存 tool 结果前，把客户端 tool_call_id 映射回 DB 中仍未满足的 assistant(tool_calls).id。
+    支持一次请求携带多组历史 tool 结果；不只看最近一组 pending。
     """
     if not db_msgs or not tool_messages:
         return {}
@@ -2394,32 +2391,29 @@ def _map_tool_ids_to_db_pending(db_msgs: list, tool_messages: list) -> dict:
     }
 
     pending_ids = []
-    # 从后往前只找最近一组还缺结果的 assistant(tool_calls)
-    for m in reversed(db_msgs):
-        if m.get("role") != "assistant" or not m.get("tool_calls"):
-            continue
-        ids = [tc.get("id") for tc in (m.get("tool_calls") or []) if tc.get("id")]
-        missing = [cid for cid in ids if cid and cid not in saved_tool_ids]
-        if missing:
-            pending_ids = missing
-            break
+    seen_pending = set()
+    for m in db_msgs:
+        if m.get("role") == "assistant" and m.get("tool_calls"):
+            ids = [tc.get("id") for tc in (m.get("tool_calls") or []) if tc.get("id")]
+            for cid in ids:
+                if cid and cid not in saved_tool_ids and cid not in seen_pending:
+                    pending_ids.append(cid)
+                    seen_pending.add(cid)
 
     if not pending_ids:
         return {}
 
     mapping = {}
-    pending_queue = list(pending_ids)
     for tm in tool_messages:
         cid = tm.get("tool_call_id")
-        if not cid or not pending_queue:
+        if not cid or not pending_ids:
             continue
-        if cid in pending_queue:
+        if cid in pending_ids:
             mapping[cid] = cid
-            pending_queue.remove(cid)
+            pending_ids.remove(cid)
         else:
-            mapping[cid] = pending_queue.pop(0)
+            mapping[cid] = pending_ids.pop(0)
     return mapping
-
 
 
 def _drop_orphan_tool_messages(messages: list) -> list:
@@ -3406,42 +3400,26 @@ async def persist_assistant_tool_calls_sync(session_id: str, user_msg: str, assi
         return False
     try:
         pool = await get_pool()
-        existing_ids = set()
         async with pool.acquire() as conn:
-            rows = await conn.fetch(
+            exists = await conn.fetchval(
                 """
-                SELECT elem ->> 'id' AS id
-                FROM conversations,
-                     jsonb_array_elements(metadata::jsonb -> 'tool_calls') AS elem
+                SELECT 1
+                FROM conversations
                 WHERE session_id = $1
                   AND role = 'assistant'
                   AND metadata IS NOT NULL
-                  AND elem ->> 'id' = ANY($2::text[])
+                  AND EXISTS (
+                    SELECT 1
+                    FROM jsonb_array_elements(metadata::jsonb -> 'tool_calls') AS elem
+                    WHERE elem ->> 'id' = ANY($2::text[])
+                  )
+                LIMIT 1
                 """,
                 session_id, tool_call_ids
             )
-            existing_ids = {r["id"] for r in rows if r.get("id")}
-
-        # 同一个工具、同一参数也可能被模型/客户端重复分配相同 tool_call_id。
-        # 这里按“调用 occurrence”保存：只要当前响应里出现了 assistant(tool_calls)，就必须落库；
-        # 不能因为 id 在 DB 里出现过，或当前批次里重复，就跳过当前轮。
-        rewritten = {}
-        seen_current_ids = set()
-        for tc in assistant_tool_calls:
-            old_id = tc.get("id")
-            if not old_id:
-                continue
-            need_rewrite = old_id in existing_ids or old_id in seen_current_ids
-            if need_rewrite:
-                new_id = f"{old_id}_r{uuid.uuid4().hex[:6]}"
-                tc["id"] = new_id
-                rewritten.setdefault(old_id, []).append(new_id)
-                seen_current_ids.add(new_id)
-            else:
-                seen_current_ids.add(old_id)
-        if rewritten:
-            tool_call_ids = [tc.get("id") for tc in assistant_tool_calls if tc.get("id")]
-            print(f"🔧 同步存储: tool_call_id重复，按当前调用轮次重写 ids={rewritten}")
+        if exists:
+            print(f"🔧 同步存储: assistant(tool_calls)已存在，跳过 ids={tool_call_ids}")
+            return False
 
         recent_log_history = []
         try:

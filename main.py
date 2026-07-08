@@ -2074,7 +2074,7 @@ def _strip_cache_control(messages: list):
 
 
 def _normalize_tool_chains_by_id(messages: list) -> list:
-    """按 tool_call_id 把历史工具结果归位到对应 assistant(tool_calls) 后面。"""
+    """按 tool_call_id 把历史工具结果归位到对应 assistant(tool_calls) 后面；同 id 多次出现时按发生次数顺序消耗。"""
     if not messages:
         return messages
 
@@ -2092,14 +2092,17 @@ def _normalize_tool_chains_by_id(messages: list) -> list:
         return messages
 
     normalized = []
-    emitted_tool_ids = set()
+    emitted_tool_obj_ids = set()
     moved_tools = 0
+
+    def _tool_obj_key(tool_msg):
+        return id(tool_msg)
 
     for msg in messages:
         if msg.get("role") == "tool":
             tool_call_id = msg.get("tool_call_id")
-            # 只要本批消息里存在对应 assistant(tool_calls)，tool 就不要在原位置输出；
-            # 等遇到对应 assistant 时再统一输出到它下面，避免“结果跑到调用上面”。
+            # 如果本批消息里存在对应 assistant(tool_calls)，tool 不在原位置输出；
+            # 等遇到对应 assistant 时按发生次数消耗一条，避免同 id 多轮时只归位一次。
             if tool_call_id in all_call_ids:
                 continue
             normalized.append(msg)
@@ -2110,21 +2113,22 @@ def _normalize_tool_chains_by_id(messages: list) -> list:
         if msg.get("role") == "assistant" and msg.get("tool_calls"):
             for tc in msg.get("tool_calls", []):
                 call_id = tc.get("id")
-                if not call_id or call_id in emitted_tool_ids:
+                if not call_id:
                     continue
-                tools = tools_by_id.get(call_id) or []
-                if tools:
-                    normalized.extend(tools)
-                    emitted_tool_ids.add(call_id)
-                    moved_tools += len(tools)
+                queue = tools_by_id.get(call_id) or []
+                while queue:
+                    tool_msg = queue.pop(0)
+                    key = _tool_obj_key(tool_msg)
+                    if key in emitted_tool_obj_ids:
+                        continue
+                    normalized.append(tool_msg)
+                    emitted_tool_obj_ids.add(key)
+                    moved_tools += 1
+                    break
 
     if moved_tools:
-        print(f"🔧 分区模式: 按tool_call_id归位{moved_tools}条历史tool结果")
+        print(f"🔧 分区模式: 按tool_call_id发生次数归位{moved_tools}条历史tool结果")
     return normalized
-
-
-
-
 
 
 
@@ -2379,26 +2383,28 @@ def _repair_tool_call_ids_by_adjacency(messages: list, session_id: str = "", rea
 def _map_tool_ids_to_db_pending(db_msgs: list, tool_messages: list) -> dict:
     """
     保存 tool 结果前，把客户端 tool_call_id 映射回 DB 中仍未满足的 assistant(tool_calls).id。
-    支持一次请求携带多组历史 tool 结果；不只看最近一组 pending。
+    关键点：同一个 tool_call_id 在一次会话里可能重复出现，不能用全局 saved_tool_ids 判定已满足；
+    必须按历史顺序把 tool 结果消耗到 assistant(tool_calls) 的发生次数上。
     """
     if not db_msgs or not tool_messages:
         return {}
 
-    saved_tool_ids = {
-        m.get("tool_call_id")
-        for m in db_msgs
-        if m.get("role") == "tool" and m.get("tool_call_id")
-    }
-
     pending_ids = []
-    seen_pending = set()
     for m in db_msgs:
         if m.get("role") == "assistant" and m.get("tool_calls"):
-            ids = [tc.get("id") for tc in (m.get("tool_calls") or []) if tc.get("id")]
-            for cid in ids:
-                if cid and cid not in saved_tool_ids and cid not in seen_pending:
+            for tc in (m.get("tool_calls") or []):
+                cid = tc.get("id")
+                if cid:
                     pending_ids.append(cid)
-                    seen_pending.add(cid)
+            continue
+        if m.get("role") == "tool" and m.get("tool_call_id"):
+            tid = m.get("tool_call_id")
+            # 按发生顺序消耗一条对应 pending；同 id 多次出现时只消耗其中一次。
+            if tid in pending_ids:
+                pending_ids.remove(tid)
+            elif pending_ids:
+                # 历史里有错配/短 id 映射过来的 tool 时，也消耗最早 pending，保持 occurrence 对齐。
+                pending_ids.pop(0)
 
     if not pending_ids:
         return {}
@@ -3515,6 +3521,47 @@ async def _run_partition_auto_extract_after_response_locked(session_id: str, cha
         log_memory_palace_auto_extract("error", f"⚠️ 回复后分区自动提取异常，下次回复后重试：session={session_id}, error={e}", session_id=session_id)
 
 
+async def _is_tool_result_occurrence_already_saved(session_id: str, tool_call_id: str) -> bool:
+    """同 id 可重复调用；只有已保存 tool 次数 >= assistant(tool_calls) 发生次数时，才认为这条结果是重复。"""
+    if not tool_call_id:
+        return False
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT
+                  COALESCE((
+                    SELECT COUNT(*)
+                    FROM conversations
+                    WHERE session_id = $1
+                      AND role = 'assistant'
+                      AND metadata IS NOT NULL
+                      AND EXISTS (
+                        SELECT 1
+                        FROM jsonb_array_elements(metadata::jsonb -> 'tool_calls') AS elem
+                        WHERE elem ->> 'id' = $2
+                      )
+                  ), 0) AS call_count,
+                  COALESCE((
+                    SELECT COUNT(*)
+                    FROM conversations
+                    WHERE session_id = $1
+                      AND role = 'tool'
+                      AND metadata IS NOT NULL
+                      AND metadata::jsonb ->> 'tool_call_id' = $2
+                  ), 0) AS tool_count
+                """,
+                session_id, tool_call_id
+            )
+        call_count = int(row["call_count"] or 0) if row else 0
+        tool_count = int(row["tool_count"] or 0) if row else 0
+        return call_count > 0 and tool_count >= call_count
+    except Exception as e:
+        print(f"⚠️ tool结果发生次数查重失败，继续保存 id={tool_call_id}: {e}")
+        return False
+
+
 async def process_memories_background(session_id: str, user_msg: str, assistant_msg: str, model: str, context_messages: list = None, skip_conversation_log: bool = False, tool_messages: list = None, assistant_tool_calls: list = None, assistant_reasoning: str = None):
     """
     后台异步：存储对话记录（不阻塞主流程）。
@@ -3576,25 +3623,9 @@ async def process_memories_background(session_id: str, user_msg: str, assistant_
                 meta = json.dumps(meta_dict) if meta_dict else None
 
                 if db_tool_call_id:
-                    try:
-                        pool = await get_pool()
-                        async with pool.acquire() as conn:
-                            exists = await conn.fetchval(
-                                """
-                                SELECT 1
-                                FROM conversations
-                                WHERE session_id = $1
-                                  AND role = 'tool'
-                                  AND metadata::jsonb ->> 'tool_call_id' = $2
-                                LIMIT 1
-                                """,
-                                session_id, db_tool_call_id
-                            )
-                        if exists:
-                            print(f"🔧 存储: 跳过重复tool结果 id={db_tool_call_id}")
-                            continue
-                    except Exception as e:
-                        print(f"⚠️ tool结果查重失败，继续保存: {e}")
+                    if await _is_tool_result_occurrence_already_saved(session_id, db_tool_call_id):
+                        print(f"🔧 存储: 按发生次数跳过重复tool结果 id={db_tool_call_id}")
+                        continue
 
                 await save_message(session_id, "tool", tm.get("content", ""), model, metadata=meta)
             
@@ -4041,20 +4072,7 @@ async def chat_completions(request: Request):
                     continue
                 db_tool_call_id = _id_map.get(tool_call_id, tool_call_id)
                 try:
-                    pool = await get_pool()
-                    async with pool.acquire() as conn:
-                        exists = await conn.fetchval(
-                            """
-                            SELECT 1
-                            FROM conversations
-                            WHERE session_id = $1
-                              AND role = 'tool'
-                              AND metadata::jsonb ->> 'tool_call_id' = $2
-                            LIMIT 1
-                            """,
-                            session_id, db_tool_call_id
-                        )
-                    if exists:
+                    if await _is_tool_result_occurrence_already_saved(session_id, db_tool_call_id):
                         continue
                     meta_dict = {"tool_call_id": db_tool_call_id}
                     if tm.get("name"):

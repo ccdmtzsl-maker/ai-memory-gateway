@@ -2422,6 +2422,35 @@ def _map_tool_ids_to_db_pending(db_msgs: list, tool_messages: list) -> dict:
     return mapping
 
 
+def _build_current_tool_chain_anchor(messages: list, tool_messages: list) -> list:
+    """从当前请求中提取本轮 assistant(tool_calls)+tool 结果，作为发上游请求的尾部锚点。
+    目的：同一 tool_call_id 重复出现时，不能再靠全局 id 去判断本轮结果是否已在 DB 请求体里。
+    """
+    if not messages or not tool_messages:
+        return []
+    tool_ids = {m.get("tool_call_id") for m in tool_messages if m.get("tool_call_id")}
+    if not tool_ids:
+        return []
+
+    matching_ast = None
+    for m in reversed(messages):
+        if m.get("role") == "assistant" and m.get("tool_calls"):
+            ast_ids = {tc.get("id") for tc in m.get("tool_calls", []) if tc.get("id")}
+            if ast_ids & tool_ids:
+                matching_ast = m
+                break
+
+    anchored = []
+    if matching_ast:
+        anchored.append({k: v for k, v in matching_ast.items() if k not in ("id", "created_at")})
+
+    for tm in tool_messages:
+        if tm.get("tool_call_id") in tool_ids:
+            anchored.append({k: v for k, v in tm.items() if k not in ("id", "created_at")})
+
+    return anchored
+
+
 def _drop_orphan_tool_messages(messages: list) -> list:
     """
     清理会触发上游 tool_call_id 错误的消息，但不静默丢历史信息。
@@ -4098,6 +4127,7 @@ async def chat_completions(request: Request):
         # 最终归一化：分区请求 = DB历史 + 本轮增量。
         # - 工具结果轮：如果当前DB快照还没有本轮tool，就把Operit刚返回的tool作为增量发给上游
         # - 普通用户轮：只追加客户端最后一条user，避免旧tool历史替换用户消息
+        current_tool_chain_anchor = _build_current_tool_chain_anchor(messages, tool_messages)
         if tool_messages:
             db_tool_ids = {m.get("tool_call_id") for m in db_msgs if m.get("role") == "tool" and m.get("tool_call_id")}
             increment_tools = [m for m in tool_messages if m.get("tool_call_id") and m.get("tool_call_id") not in db_tool_ids]
@@ -4148,6 +4178,9 @@ async def chat_completions(request: Request):
         messages = _repair_tool_call_ids_by_adjacency(messages, session_id=session_id, reason="final_messages")
         messages = _normalize_tool_chains_by_id(messages)
         messages = _drop_orphan_tool_messages(messages)
+        if current_tool_chain_anchor:
+            messages.extend(current_tool_chain_anchor)
+            print(f"🔧 分区模式: 尾部锚定本轮工具链 {len(current_tool_chain_anchor)} 条，避免同id工具结果从请求体消失")
         _log_tool_chain_snapshot("final_after_drop_orphan", messages, session_id=session_id, enabled=tool_chain_debug)
 
         await inject_memory_palace_auto_context(messages, query=user_message, recent_messages=messages, explicit_present=partition_has_explicit_memory_palace, session_id=session_id)

@@ -4099,8 +4099,39 @@ async def chat_completions(request: Request):
         # - 工具结果轮：如果当前DB快照还没有本轮tool，就把Operit刚返回的tool作为增量发给上游
         # - 普通用户轮：只追加客户端最后一条user，避免旧tool历史替换用户消息
         if tool_messages:
-            db_tool_ids = {m.get("tool_call_id") for m in db_msgs if m.get("role") == "tool" and m.get("tool_call_id")}
-            increment_tools = [m for m in tool_messages if m.get("tool_call_id") and m.get("tool_call_id") not in db_tool_ids]
+            # 不能只用 set 判断 tool_call_id 是否已在 DB。
+            # 连续调用同一工具且参数相同时，客户端/上游可能复用同一个 tool_call_id；
+            # 如果历史里已有同 id 的旧结果，set 会误认为“当前结果已在 DB”，
+            # 导致当前 tool_result 不进入本次上游请求。
+            # 这里按发生次数判断：DB 中该 id 的 tool 结果数量，是否已经满足 assistant(tool_calls) 出现次数。
+            db_tool_call_counts = {}
+            db_tool_result_counts = {}
+            for _m in db_msgs:
+                if _m.get("role") == "assistant" and _m.get("tool_calls"):
+                    for _tc in (_m.get("tool_calls") or []):
+                        _cid = _tc.get("id")
+                        if _cid:
+                            db_tool_call_counts[_cid] = db_tool_call_counts.get(_cid, 0) + 1
+                elif _m.get("role") == "tool" and _m.get("tool_call_id"):
+                    _cid = _m.get("tool_call_id")
+                    db_tool_result_counts[_cid] = db_tool_result_counts.get(_cid, 0) + 1
+
+            increment_tools = []
+            _increment_counts = {}
+            for _tm in tool_messages:
+                _cid = _tm.get("tool_call_id")
+                if not _cid:
+                    continue
+                _call_count = db_tool_call_counts.get(_cid, 0)
+                _saved_count = db_tool_result_counts.get(_cid, 0)
+                _added_count = _increment_counts.get(_cid, 0)
+                # DB 没有对应 assistant 时，也要把当前 tool 带上，下面会从客户端补 assistant(tool_calls)。
+                if _call_count == 0 or (_saved_count + _added_count) < _call_count:
+                    increment_tools.append(_tm)
+                    _increment_counts[_cid] = _added_count + 1
+
+            if increment_tools:
+                print(f"🔧 分区模式: 按发生次数保留{len(increment_tools)}条当前tool增量 ids={[m.get('tool_call_id','?') for m in increment_tools]}")
             client_increment = []
             if increment_tools:
                 increment_tool_ids = {m.get("tool_call_id") for m in increment_tools if m.get("tool_call_id")}

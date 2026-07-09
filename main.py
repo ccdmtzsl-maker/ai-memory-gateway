@@ -7303,12 +7303,15 @@ async def compute_memory_palace_embedding(text: str) -> list:
     endpoint = base_url if base_url.endswith("/embeddings") else (base_url + "/embeddings")
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     variants = []
-    # 优先不带 dimensions；很多兼容端（含部分 SiliconFlow 模型）不接受 dimensions。
-    variants.append({"model": model, "input": text})
-    variants.append({"model": model, "input": [text]})
+    # 记忆宫殿必须优先遵守仪表盘里的 EMBEDDING_DIM。
+    # 之前这里先请求无 dimensions，兼容端会直接返回模型默认维度（例如 bge-m3=1024），
+    # 导致 memory_palace_vectors.dimensions 与设置页不一致。
+    # 现在改为：先带 dimensions；只有服务商明确不接受时，再 fallback 到无 dimensions。
     if dim > 0:
         variants.append({"model": model, "input": text, "dimensions": dim})
         variants.append({"model": model, "input": [text], "dimensions": dim})
+    variants.append({"model": model, "input": text})
+    variants.append({"model": model, "input": [text]})
     try:
         async with httpx.AsyncClient() as client:
             last_error = ""
@@ -7322,6 +7325,8 @@ async def compute_memory_palace_embedding(text: str) -> list:
                     data = resp.json()
                     emb = (data.get("data") or [{}])[0].get("embedding")
                     if emb:
+                        if dim > 0 and len(emb) != dim:
+                            print(f"[mp-embedding] WARNING: provider returned dimension {len(emb)} but EMBEDDING_DIM is {dim}; variant#{idx}")
                         return emb
                     last_error = str(data)[:500]
                     print(f"[mp-embedding] variant#{idx} 无 embedding: {last_error}")

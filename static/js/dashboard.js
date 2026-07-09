@@ -2162,6 +2162,7 @@ function showSettingsMsg(type, text) {
 let _userImpressionCurrent = null;
 let _userImpressionPreview = null;
 let _userImpressionPreviewAbortController = null;
+let _userImpressionGenerating = false;
 let _userImpressionPreviewRequestId = 0;
 let _userImpressionEditOpen = false;
 
@@ -2521,10 +2522,14 @@ async function generateUserImpressionPreview(mode) {
     const content = document.getElementById('uiPreviewContent');
     const meta = document.getElementById('uiPreviewMeta');
 
-    // 中断上一个仍在飞行的画像生成请求，避免旧结果晚回来覆盖新预览。
-    if (_userImpressionPreviewAbortController) {
-        try { _userImpressionPreviewAbortController.abort(); } catch (e) {}
+    // 生成中的请求不自动 abort+重开。后端一旦开始调用供应商，前端 abort 不一定能取消扣费。
+    if (_userImpressionGenerating) {
+        showUserImpressionMsg('info', '用户画像正在生成中，请等待当前请求完成。');
+        if (card) card.style.display = 'block';
+        if (meta) meta.textContent = '生成中，请勿重复点击';
+        return;
     }
+    _userImpressionGenerating = true;
     const requestId = ++_userImpressionPreviewRequestId;
     const controller = new AbortController();
     _userImpressionPreviewAbortController = controller;
@@ -2545,6 +2550,7 @@ async function generateUserImpressionPreview(mode) {
         if (data.status !== 'ok') throw new Error(data.error || '生成失败');
         _userImpressionPreview = data;
         _userImpressionPreviewAbortController = null;
+        _userImpressionGenerating = false;
         if (meta) {
             const ms = data.material_summary || {};
             meta.textContent = '模式：' + data.mode + ' · 记忆 ' + (ms.memory_count || 0) + ' 条 · 近期聊天 ' + (ms.recent_message_count || 0) + ' 条 · prompt ' + (ms.prompt_chars || 0) + ' 字';
@@ -2557,9 +2563,11 @@ async function generateUserImpressionPreview(mode) {
             if (content) content.innerHTML = '<div class="msg-box msg-info">画像生成已取消。</div>';
             if (meta) meta.textContent = '已取消';
             _userImpressionPreviewAbortController = null;
+            _userImpressionGenerating = false;
             return;
         }
         _userImpressionPreviewAbortController = null;
+        _userImpressionGenerating = false;
         if (content) content.innerHTML = '<div class="msg-box msg-error">生成失败：' + uiEsc(e.message) + '</div>';
     }
 }
@@ -2598,6 +2606,7 @@ function clearUserImpressionPreview() {
         _userImpressionPreviewAbortController = null;
     }
     _userImpressionPreview = null;
+    _userImpressionGenerating = false;
     const card = document.getElementById('uiPreviewCard');
     const content = document.getElementById('uiPreviewContent');
     const meta = document.getElementById('uiPreviewMeta');

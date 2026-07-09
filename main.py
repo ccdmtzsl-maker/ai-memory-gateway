@@ -5209,6 +5209,7 @@ async def build_user_impression_materials_preview(character_id: str = "default",
         "current_impression": current if mode == "update" else None,
         "source_message_count": recent_messages["count"],
         "material_text_chars": len(material_text),
+        "material_text_full": material_text,
         "material_text_preview": _ui_preview_text(material_text, 12000),
     }
 

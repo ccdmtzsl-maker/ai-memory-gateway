@@ -5226,6 +5226,11 @@ def build_user_impression_generation_prompt(materials: dict) -> str:
     current_json = ""
     if mode == "update" and current and current.get("impression"):
         current_json = json.dumps(current.get("impression"), ensure_ascii=False, indent=2)
+    current_profile_section = f"""当前档案（你过去的观察）
+```json
+{current_json}
+```
+""" if current_json else ""
 
     is_initial = mode == "initial"
     summary_instruction = (
@@ -5248,11 +5253,7 @@ def build_user_impression_generation_prompt(materials: dict) -> str:
     material_text = materials.get("material_text_preview") or ""
 
     return f"""
-当前档案（你过去的观察）
-```json
-{current_json}
-```
-
+{current_profile_section}
 {material_text}
 
 【重要：语气与视角】

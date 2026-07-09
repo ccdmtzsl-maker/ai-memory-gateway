@@ -2161,6 +2161,8 @@ function showSettingsMsg(type, text) {
 
 let _userImpressionCurrent = null;
 let _userImpressionPreview = null;
+let _userImpressionPreviewAbortController = null;
+let _userImpressionPreviewRequestId = 0;
 let _userImpressionEditOpen = false;
 
 function uiEsc(v) {
@@ -2492,18 +2494,31 @@ async function generateUserImpressionPreview(mode) {
     const card = document.getElementById('uiPreviewCard');
     const content = document.getElementById('uiPreviewContent');
     const meta = document.getElementById('uiPreviewMeta');
+
+    // 中断上一个仍在飞行的画像生成请求，避免旧结果晚回来覆盖新预览。
+    if (_userImpressionPreviewAbortController) {
+        try { _userImpressionPreviewAbortController.abort(); } catch (e) {}
+    }
+    const requestId = ++_userImpressionPreviewRequestId;
+    const controller = new AbortController();
+    _userImpressionPreviewAbortController = controller;
+    _userImpressionPreview = null;
+
     if (card) card.style.display = 'block';
     if (content) content.innerHTML = '正在生成画像预览，可能需要一会儿...';
-    if (meta) meta.textContent = mode === 'update' ? '追加/更新模式' : '初始生成模式';
+    if (meta) meta.textContent = (mode === 'update' ? '追加/更新模式' : '初始生成模式') + ' · 请求中，可点“取消预览”中断';
     try {
         const resp = await fetch('/api/user-impression/generate-preview', {
             method: 'POST',
             headers: {'Content-Type':'application/json'},
-            body: JSON.stringify({character_id:'default', mode: mode || 'initial'})
+            body: JSON.stringify({character_id:'default', mode: mode || 'initial'}),
+            signal: controller.signal
         });
         const data = await resp.json();
+        if (requestId !== _userImpressionPreviewRequestId || controller.signal.aborted) return;
         if (data.status !== 'ok') throw new Error(data.error || '生成失败');
         _userImpressionPreview = data;
+        _userImpressionPreviewAbortController = null;
         if (meta) {
             const ms = data.material_summary || {};
             meta.textContent = '模式：' + data.mode + ' · 记忆 ' + (ms.memory_count || 0) + ' 条 · 近期聊天 ' + (ms.recent_message_count || 0) + ' 条 · prompt ' + (ms.prompt_chars || 0) + ' 字';
@@ -2511,6 +2526,14 @@ async function generateUserImpressionPreview(mode) {
         if (content) content.innerHTML = renderUserImpressionObject(data.impression);
         showUserImpressionMsg('success', '画像预览已生成，确认后才会保存。');
     } catch (e) {
+        if (requestId !== _userImpressionPreviewRequestId) return;
+        if (e && e.name === 'AbortError') {
+            if (content) content.innerHTML = '<div class="msg-box msg-info">画像生成已取消。</div>';
+            if (meta) meta.textContent = '已取消';
+            _userImpressionPreviewAbortController = null;
+            return;
+        }
+        _userImpressionPreviewAbortController = null;
         if (content) content.innerHTML = '<div class="msg-box msg-error">生成失败：' + uiEsc(e.message) + '</div>';
     }
 }
@@ -2543,11 +2566,18 @@ async function confirmUserImpressionPreview() {
 }
 
 function clearUserImpressionPreview() {
+    _userImpressionPreviewRequestId++;
+    if (_userImpressionPreviewAbortController) {
+        try { _userImpressionPreviewAbortController.abort(); } catch (e) {}
+        _userImpressionPreviewAbortController = null;
+    }
     _userImpressionPreview = null;
     const card = document.getElementById('uiPreviewCard');
     const content = document.getElementById('uiPreviewContent');
+    const meta = document.getElementById('uiPreviewMeta');
     if (card) card.style.display = 'none';
     if (content) content.innerHTML = '';
+    if (meta) meta.textContent = '';
 }
 
 async function deleteUserImpression() {

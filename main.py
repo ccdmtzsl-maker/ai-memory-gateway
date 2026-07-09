@@ -5387,6 +5387,18 @@ async def call_user_impression_generator(materials: dict) -> dict:
     }
 
 
+
+# 用户画像生成并发保护：避免前端重复触发导致供应商重复扣费
+_user_impression_generation_locks = {}
+
+def _get_user_impression_generation_lock(character_id: str):
+    key = character_id or "default"
+    lock = _user_impression_generation_locks.get(key)
+    if lock is None:
+        lock = asyncio.Lock()
+        _user_impression_generation_locks[key] = lock
+    return lock
+
 # ============================================================
 # 用户画像 / 印象档案（User Impression）阶段 1：基础 API
 # ============================================================
@@ -5460,12 +5472,19 @@ async def api_user_impression_generate_preview(request: Request):
         character_id = data.get("character_id") or "default"
         mode = data.get("mode") or "initial"
         session_id = data.get("session_id") or None
-        materials = await build_user_impression_materials_preview(
-            character_id=character_id,
-            mode=mode,
-            session_id=session_id,
-        )
-        generated = await call_user_impression_generator(materials)
+        lock = _get_user_impression_generation_lock(character_id)
+        if lock.locked():
+            return JSONResponse({
+                "status": "error",
+                "error": "该角色的用户画像正在生成中，请等待当前任务完成后再试。"
+            }, status_code=429)
+        async with lock:
+            materials = await build_user_impression_materials_preview(
+                character_id=character_id,
+                mode=mode,
+                session_id=session_id,
+            )
+            generated = await call_user_impression_generator(materials)
         return {
             "status": "ok",
             "mode": materials.get("mode"),

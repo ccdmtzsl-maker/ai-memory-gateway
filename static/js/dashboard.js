@@ -2591,7 +2591,7 @@ async function confirmUserImpressionPreview() {
         const data = await resp.json();
         if (data.status !== 'ok') throw new Error(data.error || '保存失败');
         _userImpressionCurrent = data;
-        clearUserImpressionPreview();
+        closeUserImpressionPreview();
         renderUserImpression();
         showUserImpressionMsg('success', '画像已保存。');
     } catch (e) {
@@ -2599,34 +2599,38 @@ async function confirmUserImpressionPreview() {
     }
 }
 
-async function clearUserImpressionPreview() {
-    _userImpressionPreviewRequestId++;
-
-    // 先通知网关取消后端任务，从而关闭到上游 LLM 的流式连接；再 abort 本地 fetch。
-    if (_userImpressionGenerating) {
-        try {
-            await fetch('/api/user-impression/cancel', {
-                method: 'POST',
-                headers: {'Content-Type':'application/json'},
-                body: JSON.stringify({character_id:'default'})
-            });
-        } catch (e) {
-            console.warn('cancel user impression generation failed', e);
-        }
+async function cancelUserImpressionGeneration() {
+    // 只有仍在生成、并且本地仍持有飞行中的 fetch controller 时，才通知后端取消上游。
+    if (!(_userImpressionGenerating && _userImpressionPreviewAbortController)) return false;
+    try {
+        await fetch('/api/user-impression/cancel', {
+            method: 'POST',
+            headers: {'Content-Type':'application/json'},
+            body: JSON.stringify({character_id:'default'})
+        });
+    } catch (e) {
+        console.warn('cancel user impression generation failed', e);
     }
-
-    if (_userImpressionPreviewAbortController) {
-        try { _userImpressionPreviewAbortController.abort(); } catch (e) {}
-        _userImpressionPreviewAbortController = null;
-    }
-    _userImpressionPreview = null;
+    try { _userImpressionPreviewAbortController.abort(); } catch (e) {}
+    _userImpressionPreviewAbortController = null;
     _userImpressionGenerating = false;
+    return true;
+}
+
+function closeUserImpressionPreview() {
+    _userImpressionPreview = null;
     const card = document.getElementById('uiPreviewCard');
     const content = document.getElementById('uiPreviewContent');
     const meta = document.getElementById('uiPreviewMeta');
     if (card) card.style.display = 'none';
     if (content) content.innerHTML = '';
     if (meta) meta.textContent = '';
+}
+
+async function clearUserImpressionPreview() {
+    _userImpressionPreviewRequestId++;
+    await cancelUserImpressionGeneration();
+    closeUserImpressionPreview();
 }
 
 async function deleteUserImpression() {

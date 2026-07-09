@@ -2599,8 +2599,22 @@ async function confirmUserImpressionPreview() {
     }
 }
 
-function clearUserImpressionPreview() {
+async function clearUserImpressionPreview() {
     _userImpressionPreviewRequestId++;
+
+    // 先通知网关取消后端任务，从而关闭到上游 LLM 的流式连接；再 abort 本地 fetch。
+    if (_userImpressionGenerating) {
+        try {
+            await fetch('/api/user-impression/cancel', {
+                method: 'POST',
+                headers: {'Content-Type':'application/json'},
+                body: JSON.stringify({character_id:'default'})
+            });
+        } catch (e) {
+            console.warn('cancel user impression generation failed', e);
+        }
+    }
+
     if (_userImpressionPreviewAbortController) {
         try { _userImpressionPreviewAbortController.abort(); } catch (e) {}
         _userImpressionPreviewAbortController = null;

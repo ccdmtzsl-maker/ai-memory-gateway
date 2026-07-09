@@ -2508,6 +2508,36 @@ async function loadUserImpression() {
     }
 }
 
+async function previewUserImpressionMaterials() {
+    const card = document.getElementById('uiPreviewCard');
+    const content = document.getElementById('uiPreviewContent');
+    const meta = document.getElementById('uiPreviewMeta');
+    if (card) card.style.display = 'block';
+    if (meta) meta.textContent = 'update 模式材料预览 · 不调用 LLM · 不保存';
+    if (content) content.innerHTML = '正在加载画像材料预览...';
+    try {
+        const resp = await fetch('/api/user-impression/materials-preview', {
+            method: 'POST',
+            headers: {'Content-Type':'application/json'},
+            body: JSON.stringify({character_id:'default', mode:'update'})
+        });
+        const data = await resp.json();
+        if (data.status !== 'ok') throw new Error(data.error || '材料预览失败');
+        const text = data.material_text_full || data.material_text_preview || '';
+        if (meta) {
+            const mem = (data.memory_palace && data.memory_palace.count) || 0;
+            const recent = (data.recent_messages && data.recent_messages.count) || 0;
+            meta.textContent = 'update 模式材料预览 · 记忆 ' + mem + ' 条 · 近期聊天 ' + recent + ' 条 · 材料 ' + (data.material_text_chars || text.length || 0) + ' 字 · 不调用 LLM';
+        }
+        if (content) {
+            content.innerHTML = '<div class="msg-box msg-info" style="margin-bottom:10px;">这是 update 模式实际进入画像生成的材料内容；本操作不调用 LLM、不保存。</div>' +
+                '<pre style="white-space:pre-wrap;word-break:break-word;max-height:70vh;overflow:auto;background:#0f172a;color:#e5e7eb;border-radius:14px;padding:16px;font-size:12px;line-height:1.65;">' + uiEsc(text || '（空）') + '</pre>';
+        }
+    } catch (e) {
+        if (content) content.innerHTML = '<div class="msg-box msg-error">材料预览失败：' + uiEsc(e.message) + '</div>';
+    }
+}
+
 function confirmGenerateUserImpressionPreview(mode) {
     const isUpdate = mode === 'update';
     const message = isUpdate

@@ -2181,17 +2181,26 @@ function showUserImpressionMsg(type, text) {
     setTimeout(() => { if (el) el.innerHTML = ''; }, 5000);
 }
 
+function uiNoteHeading(title, tone) {
+    const bg = tone === 'blue' ? 'rgba(191,211,232,.62)' : (tone === 'gray' ? 'rgba(218,218,218,.62)' : 'rgba(238,199,214,.62)');
+    return '<div style="margin-bottom:10px;"><span style="display:inline-block;padding:2px 10px 3px 10px;border-radius:999px;background:' + bg + ';font-weight:900;font-size:13px;letter-spacing:.03em;color:#5f6670;box-decoration-break:clone;-webkit-box-decoration-break:clone;">' + uiEsc(title) + '</span></div>';
+}
+
+function uiNotebookCard(inner, extraStyle) {
+    return '<div class="card" style="box-shadow:none;border:1px solid rgba(156,163,175,.34);padding:14px;margin:0;background:linear-gradient(to bottom, rgba(255,255,255,.88), rgba(255,255,255,.88)),repeating-linear-gradient(to bottom, transparent 0, transparent 27px, rgba(148,163,184,.18) 28px);border-radius:16px;' + (extraStyle || '') + '">' + inner + '</div>';
+}
+
 function uiListHtml(items) {
     const arr = Array.isArray(items) ? items.filter(x => String(x || '').trim()) : [];
     if (!arr.length) return '<span style="color:var(--text-muted);font-size:13px;">暂无</span>';
-    return '<div style="display:flex;flex-wrap:wrap;gap:6px;">' + arr.map(t => '<span style="padding:4px 8px;border-radius:999px;background:var(--bg-muted);font-size:12px;">' + uiEsc(t) + '</span>').join('') + '</div>';
+    return '<div style="display:flex;flex-wrap:wrap;gap:7px;">' + arr.map((t, i) => '<span style="padding:4px 9px;border-radius:999px;background:' + (i % 2 ? 'rgba(191,211,232,.45)' : 'rgba(238,199,214,.45)') + ';border:1px solid rgba(148,163,184,.22);font-size:12px;color:#5f6670;">' + uiEsc(t) + '</span>').join('') + '</div>';
 }
 
 function uiTextBlock(title, text) {
-    return '<div class="card" style="box-shadow:none;border:1px solid var(--border-color);padding:14px;margin:0;">' +
-        '<div style="font-weight:800;font-size:13px;margin-bottom:8px;">' + uiEsc(title) + '</div>' +
-        '<div style="font-size:14px;line-height:1.7;white-space:pre-wrap;">' + uiEsc(text || '暂无') + '</div>' +
-        '</div>';
+    return uiNotebookCard(
+        uiNoteHeading(title, 'pink') +
+        '<div style="font-size:14px;line-height:1.85;white-space:pre-wrap;color:#4f5660;">' + uiEsc(text || '暂无') + '</div>'
+    );
 }
 
 function renderUserImpressionObject(imp) {
@@ -2206,29 +2215,33 @@ function renderUserImpressionObject(imp) {
     const mbti = imp.mbti_analysis || null;
     const dims = (mbti && mbti.dimensions) || {};
     const changes = imp.observed_changes || [];
-    let html = '';
+    let html = '<div style="position:relative;padding:14px 12px 16px 28px;border:1px solid rgba(148,163,184,.35);border-radius:20px;background:linear-gradient(180deg,rgba(255,247,250,.72),rgba(245,250,255,.58));overflow:hidden;">' +
+        '<div style="position:absolute;left:12px;top:18px;bottom:18px;width:2px;background:rgba(148,163,184,.38);"></div>' +
+        '<div style="position:absolute;left:6px;top:34px;width:14px;height:14px;border:2px solid rgba(148,163,184,.45);border-radius:50%;background:white;"></div>' +
+        '<div style="position:absolute;left:6px;top:92px;width:14px;height:14px;border:2px solid rgba(148,163,184,.45);border-radius:50%;background:white;"></div>' +
+        '<div style="position:absolute;left:6px;top:150px;width:14px;height:14px;border:2px solid rgba(148,163,184,.45);border-radius:50%;background:white;"></div>';
 
-    html += '<div class="card" style="box-shadow:none;border:1px solid var(--border-color);padding:0;margin:0;overflow:hidden;background:linear-gradient(180deg,#fffdf8,#fff);">' +
-        '<div style="padding:12px 16px;border-bottom:1px solid var(--border-color);background:rgba(250,244,232,.65);display:flex;justify-content:space-between;gap:10px;align-items:center;">' +
-        '<div style="font-size:13px;font-weight:900;letter-spacing:.08em;color:var(--text-muted);">核心印象</div>' +
-        '<div style="font-size:11px;color:var(--text-muted);">Private Reader Note</div>' +
+    html += '<div class="card" style="box-shadow:none;border:1px solid rgba(156,163,175,.34);padding:0;margin:0;overflow:hidden;background:linear-gradient(to bottom, rgba(255,255,255,.90), rgba(255,255,255,.90)),repeating-linear-gradient(to bottom, transparent 0, transparent 28px, rgba(148,163,184,.18) 29px);border-radius:16px;">' +
+        '<div style="padding:12px 16px;border-bottom:1px solid rgba(156,163,175,.30);background:rgba(238,199,214,.32);display:flex;justify-content:space-between;gap:10px;align-items:center;">' +
+        '<div style="font-size:13px;font-weight:900;letter-spacing:.08em;color:#5f6670;"><span style="background:rgba(238,199,214,.65);border-radius:999px;padding:2px 10px;">核心印象</span></div>' +
+        '<div style="font-size:11px;color:#8a9099;">Private Reader Note</div>' +
         '</div>' +
         '<div style="padding:18px 18px 16px 18px;">' +
-        '<div style="font-size:16px;line-height:1.9;white-space:pre-wrap;color:var(--text-main);font-family:Georgia,Times New Roman,serif;">' + uiEsc(core.summary || '暂无') + '</div>' +
-        '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;margin-top:16px;padding-top:14px;border-top:1px dashed var(--border-color);">' +
-        '<div style="background:rgba(0,0,0,.025);border-radius:12px;padding:10px;"><div style="font-size:11px;color:var(--text-muted);font-weight:800;margin-bottom:4px;">互动模式</div><div style="font-size:13px;line-height:1.6;">' + uiEsc(core.interaction_style || '暂无') + '</div></div>' +
-        '<div style="background:rgba(0,0,0,.025);border-radius:12px;padding:10px;"><div style="font-size:11px;color:var(--text-muted);font-weight:800;margin-bottom:4px;">语气感知</div><div style="font-size:13px;line-height:1.6;">' + uiEsc(behavior.tone_style || '暂无') + '</div></div>' +
+        '<div style="font-size:16px;line-height:1.9;white-space:pre-wrap;color:#4f5660;font-family:Georgia,Times New Roman,serif;">' + uiEsc(core.summary || '暂无') + '</div>' +
+        '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;margin-top:16px;padding-top:14px;border-top:1px dashed rgba(148,163,184,.35);">' +
+        '<div style="background:rgba(191,211,232,.26);border:1px solid rgba(148,163,184,.18);border-radius:12px;padding:10px;"><div style="font-size:11px;color:#6b7280;font-weight:800;margin-bottom:4px;">互动模式</div><div style="font-size:13px;line-height:1.6;color:#4f5660;">' + uiEsc(core.interaction_style || '暂无') + '</div></div>' +
+        '<div style="background:rgba(238,199,214,.24);border:1px solid rgba(148,163,184,.18);border-radius:12px;padding:10px;"><div style="font-size:11px;color:#6b7280;font-weight:800;margin-bottom:4px;">语气感知</div><div style="font-size:13px;line-height:1.6;color:#4f5660;">' + uiEsc(behavior.tone_style || '暂无') + '</div></div>' +
         '</div>' +
         '</div></div>';
 
-    html += '<div class="card" style="box-shadow:none;border:1px solid var(--border-color);padding:16px;margin-top:14px;">' +
-        '<div style="display:flex;justify-content:space-between;gap:8px;align-items:center;margin-bottom:10px;">' +
-        '<div style="font-weight:800;">MBTI 侧写</div>' +
+    html += uiNotebookCard(
+        '<div style="display:flex;justify-content:space-between;gap:8px;align-items:flex-start;margin-bottom:10px;">' +
+        uiNoteHeading('MBTI 侧写', 'blue') +
         '<div style="font-size:22px;font-weight:900;color:var(--primary);">' + uiEsc((mbti && mbti.type) || 'XXXX') + '</div>' +
         '</div>' +
         '<div style="font-size:12px;color:var(--text-muted);line-height:1.6;margin-bottom:10px;white-space:pre-wrap;">' + uiEsc((mbti && mbti.reasoning) || '暂无') + '</div>' +
         '<div style="font-size:12px;line-height:1.8;">E/I: ' + uiEsc(dims.e_i ?? 50) + ' · S/N: ' + uiEsc(dims.s_n ?? 50) + ' · T/F: ' + uiEsc(dims.t_f ?? 50) + ' · J/P: ' + uiEsc(dims.j_p ?? 50) + '</div>' +
-        '</div>';
+        '</div>', 'margin-top:14px;');
 
     html += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:14px;margin-top:14px;">';
     html += uiTextBlock('核心价值观', value.core_values);
@@ -2237,28 +2250,29 @@ function renderUserImpressionObject(imp) {
     html += uiTextBlock('舒适区', emotion.comfort_zone);
     html += '</div>';
 
-    html += '<div class="card" style="box-shadow:none;border:1px solid var(--border-color);padding:16px;margin-top:14px;">' +
-        '<div style="font-weight:800;margin-bottom:12px;">价值地图</div>' +
+    html += uiNotebookCard(
+        uiNoteHeading('价值地图', 'pink') +
         '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px;">' +
         '<div><div style="font-size:12px;font-weight:800;margin-bottom:8px;">观察到的特质</div>' + uiListHtml(core.observed_traits) + '</div>' +
         '<div><div style="font-size:12px;font-weight:800;margin-bottom:8px;">喜欢</div>' + uiListHtml(value.likes) + '</div>' +
         '<div><div style="font-size:12px;font-weight:800;margin-bottom:8px;">讨厌/排斥</div>' + uiListHtml(value.dislikes) + '</div>' +
-        '</div></div>';
+        '</div></div>', 'margin-top:14px;');
 
-    html += '<div class="card" style="box-shadow:none;border:1px solid var(--border-color);padding:16px;margin-top:14px;">' +
-        '<div style="font-weight:800;margin-bottom:12px;">行为与情绪</div>' +
+    html += uiNotebookCard(
+        uiNoteHeading('行为与情绪', 'blue') +
         '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px;">' +
         '<div><div style="font-size:12px;font-weight:800;margin-bottom:8px;">正向触发器</div>' + uiListHtml(triggers.positive) + '</div>' +
         '<div><div style="font-size:12px;font-weight:800;margin-bottom:8px;">压力/雷区</div>' + uiListHtml(triggers.negative) + '</div>' +
         '<div><div style="font-size:12px;font-weight:800;margin-bottom:8px;">压力信号</div>' + uiListHtml(emotion.stress_signals) + '</div>' +
-        '</div></div>';
+        '</div></div>', 'margin-top:14px;');
 
-    html += '<div class="card" style="box-shadow:none;border:1px solid var(--border-color);padding:16px;margin-top:14px;">' +
-        '<div style="font-weight:800;margin-bottom:12px;">最近变化</div>' +
-        uiListHtml(changes) +
-        '</div>';
+    html += uiNotebookCard(
+        uiNoteHeading('最近变化', 'gray') +
+        uiListHtml(changes), 'margin-top:14px;'
+    );
 
     html += '<div style="font-size:12px;color:var(--text-muted);margin-top:12px;">Version ' + uiEsc(imp.version || 3.0) + ' · lastUpdated ' + uiEsc(imp.lastUpdated || '') + '</div>';
+    html += '</div>';
     return html;
 }
 

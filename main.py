@@ -5473,10 +5473,15 @@ async def call_user_impression_generator(materials: dict) -> dict:
 
 
 # 用户画像生成并发保护：避免前端重复触发导致供应商重复扣费
+# tasks 用于显式取消正在进行的上游流式请求；task.cancel() 会关闭 httpx stream 连接。
 _user_impression_generation_locks = {}
+_user_impression_generation_tasks = {}
+
+def _user_impression_generation_key(character_id: str) -> str:
+    return character_id or "default"
 
 def _get_user_impression_generation_lock(character_id: str):
-    key = character_id or "default"
+    key = _user_impression_generation_key(character_id)
     lock = _user_impression_generation_locks.get(key)
     if lock is None:
         lock = asyncio.Lock()
@@ -5547,6 +5552,23 @@ async def api_user_impression_materials_preview(request: Request):
         return JSONResponse({"status": "error", "error": str(e)}, status_code=500)
 
 
+@app.post("/api/user-impression/cancel")
+async def api_cancel_user_impression_generation(request: Request):
+    """显式取消正在进行的用户画像生成任务。会取消后端 task，并关闭到上游 LLM 的流式连接。"""
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    character_id = (data or {}).get("character_id") or "default"
+    key = _user_impression_generation_key(character_id)
+    task = _user_impression_generation_tasks.get(key)
+    if task and not task.done():
+        task.cancel()
+        print(f"[UserImpression] Cancel requested: character_id={key}")
+        return {"status": "ok", "character_id": key, "cancelled": True}
+    return {"status": "ok", "character_id": key, "cancelled": False}
+
+
 @app.post("/api/user-impression/generate-preview")
 async def api_user_impression_generate_preview(request: Request):
     if not MEMORY_ENABLED:
@@ -5556,7 +5578,8 @@ async def api_user_impression_generate_preview(request: Request):
         character_id = data.get("character_id") or "default"
         mode = data.get("mode") or "initial"
         session_id = data.get("session_id") or None
-        lock = _get_user_impression_generation_lock(character_id)
+        key = _user_impression_generation_key(character_id)
+        lock = _get_user_impression_generation_lock(key)
         if lock.locked():
             return JSONResponse({
                 "status": "error",
@@ -5568,7 +5591,20 @@ async def api_user_impression_generate_preview(request: Request):
                 mode=mode,
                 session_id=session_id,
             )
-            generated = await call_user_impression_generator(materials)
+            task = asyncio.create_task(call_user_impression_generator(materials))
+            _user_impression_generation_tasks[key] = task
+            try:
+                generated = await task
+            except asyncio.CancelledError:
+                print(f"[UserImpression] Generation cancelled: character_id={key}")
+                return JSONResponse({
+                    "status": "cancelled",
+                    "character_id": key,
+                    "error": "用户画像生成已取消"
+                }, status_code=499)
+            finally:
+                if _user_impression_generation_tasks.get(key) is task:
+                    _user_impression_generation_tasks.pop(key, None)
         return {
             "status": "ok",
             "mode": materials.get("mode"),

@@ -5343,7 +5343,7 @@ def build_user_impression_generation_prompt(materials: dict) -> str:
 
 
 async def call_user_impression_generator(materials: dict) -> dict:
-    """调用记忆模型生成用户画像预览。只返回结果，不保存。"""
+    """调用记忆模型生成用户画像预览。只返回结果，不保存。使用流式，避免长时间无首字节导致前端/代理 failed to fetch。"""
     base_url = await get_runtime_memory_api_base_url()
     if not base_url:
         raise RuntimeError("MEMORY_API_BASE_URL 未设置")
@@ -5368,14 +5368,99 @@ async def call_user_impression_generator(materials: dict) -> dict:
         ],
         "temperature": 0.5,
         "max_tokens": 8000,
-        "stream": False,
+        "stream": True,
     }
-    print(f"[UserImpression] Calling LLM: mode={materials.get('mode')}, model={memory_model}, prompt_chars={len(prompt)}")
+
+    print(f"[UserImpression] Calling LLM(stream): mode={materials.get('mode')}, model={memory_model}, prompt_chars={len(prompt)}")
+
+    parts = []
+    raw_events = []
+    line_buffer = ""
+
     async with httpx.AsyncClient(timeout=300.0) as client:
-        resp = await client.post(base_url, headers=headers, json=body)
-        resp.raise_for_status()
-        data = resp.json()
-    text = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+        async with client.stream("POST", base_url, headers=headers, json=body) as resp:
+            if resp.status_code != 200:
+                raw_error = await resp.aread()
+                error_text = raw_error.decode("utf-8", errors="ignore")
+                raise RuntimeError(f"画像生成上游失败 HTTP {resp.status_code}: {error_text[:500]}")
+
+            content_type = (resp.headers.get("content-type") or "").lower()
+
+            # 兼容少数 OpenAI 兼容服务：即使 stream=true，也可能直接返回普通 JSON。
+            if "text/event-stream" not in content_type and "stream" not in content_type:
+                raw_body = await resp.aread()
+                raw_text = raw_body.decode("utf-8", errors="ignore")
+                try:
+                    response_json = json.loads(raw_text)
+                    text = response_json.get("choices", [{}])[0].get("message", {}).get("content", "")
+                except Exception:
+                    text = raw_text
+                parsed = safe_parse_user_impression_json_object(text)
+                normalized = normalize_user_impression(parsed)
+                if not normalized:
+                    raise RuntimeError("画像生成结果不完整或不是有效 JSON 对象")
+                return {
+                    "impression": normalized,
+                    "raw_reply": text,
+                    "prompt_chars": len(prompt),
+                }
+
+            async for chunk in resp.aiter_bytes():
+                if not chunk:
+                    continue
+                text_chunk = chunk.decode("utf-8", errors="ignore")
+                line_buffer += text_chunk
+                while "\n" in line_buffer:
+                    line, line_buffer = line_buffer.split("\n", 1)
+                    line = line.strip()
+                    if not line or line.startswith(":"):
+                        continue
+                    if not line.startswith("data:"):
+                        continue
+                    data_text = line[5:].strip()
+                    if not data_text:
+                        continue
+                    if data_text == "[DONE]":
+                        continue
+                    raw_events.append(data_text)
+                    try:
+                        event = json.loads(data_text)
+                    except Exception:
+                        continue
+                    choice = (event.get("choices") or [{}])[0]
+                    delta = choice.get("delta") or {}
+                    content = delta.get("content")
+                    if content:
+                        parts.append(content)
+                    # 部分兼容接口可能把完整 message 混在流式事件里。
+                    message_content = (choice.get("message") or {}).get("content")
+                    if message_content:
+                        parts.append(message_content)
+
+            # 处理最后一个没有换行结尾的 data 行
+            tail = line_buffer.strip()
+            if tail.startswith("data:"):
+                data_text = tail[5:].strip()
+                if data_text and data_text != "[DONE]":
+                    raw_events.append(data_text)
+                    try:
+                        event = json.loads(data_text)
+                        choice = (event.get("choices") or [{}])[0]
+                        delta = choice.get("delta") or {}
+                        content = delta.get("content")
+                        if content:
+                            parts.append(content)
+                        message_content = (choice.get("message") or {}).get("content")
+                        if message_content:
+                            parts.append(message_content)
+                    except Exception:
+                        pass
+
+    text = "".join(parts).strip()
+    if not text and raw_events:
+        # 最后兜底：把事件原文拼起来，safe_parse 会尝试从中截取 JSON 对象。
+        text = "\n".join(raw_events)
+
     parsed = safe_parse_user_impression_json_object(text)
     normalized = normalize_user_impression(parsed)
     if not normalized:
@@ -5385,7 +5470,6 @@ async def call_user_impression_generator(materials: dict) -> dict:
         "raw_reply": text,
         "prompt_chars": len(prompt),
     }
-
 
 
 # 用户画像生成并发保护：避免前端重复触发导致供应商重复扣费

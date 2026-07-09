@@ -5058,8 +5058,7 @@ async def _collect_user_impression_memory_material(character_id: str = "default"
             rows = await conn.fetch("""
                 SELECT id, room, content, tags, importance, mood, date, created_at, updated_at, access_count
                 FROM memory_palace_nodes
-                WHERE character_id = $1
-                  AND room = $2
+                WHERE room = $1
                   AND archived = FALSE
                   AND COALESCE(is_box_summary, FALSE) = FALSE
                 ORDER BY
@@ -5068,8 +5067,8 @@ async def _collect_user_impression_memory_material(character_id: str = "default"
                   date DESC NULLS LAST,
                   updated_at DESC NULLS LAST,
                   created_at DESC NULLS LAST
-                LIMIT $3
-            """, character_id, room, limit)
+                LIMIT $2
+            """, room, limit)
             room_items = []
             for r in rows:
                 item = {

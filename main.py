@@ -5052,7 +5052,13 @@ def _ui_iso(value):
 
 
 async def _collect_user_impression_memory_material(character_id: str = "default") -> dict:
-    """收集用户画像生成用的记忆宫殿长期材料。只读，不修改任何记忆。"""
+    """收集用户画像生成用的记忆宫殿长期材料。只读，不修改任何记忆。
+
+    候选策略：每个房间分层采样，避免 access_count 让旧记忆自我强化。
+    - recent：约一半按日期新近选取，用于保证最近变化进入画像材料。
+    - important：约一半按重要度选取，用于保留长期关键节点；access_count 仅作为最后兜底排序。
+    - refill：去重后不足 limit 时，再按新近补齐。
+    """
     room_limits = {
         "user_room": 80,
         "bedroom": 40,
@@ -5067,51 +5073,124 @@ async def _collect_user_impression_memory_material(character_id: str = "default"
         "attic": "阁楼",
         "windowsill": "窗台",
     }
+
+    def _row_to_user_impression_item(r, reason: str):
+        return {
+            "id": r.get("id"),
+            "room": r.get("room"),
+            "room_label": room_labels.get(r.get("room"), r.get("room")),
+            "importance": int(r.get("importance") or 5),
+            "tags": r.get("tags") or "",
+            "mood": r.get("mood") or "",
+            "date": _ui_iso(r.get("date")),
+            "updated_at": _ui_iso(r.get("updated_at")),
+            "created_at": _ui_iso(r.get("created_at")),
+            "access_count": int(r.get("access_count") or 0),
+            "selection_reason": reason,
+            "content": _ui_preview_text(r.get("content"), 500),
+        }
+
     pool = await get_pool()
     items = []
     by_room = {}
     async with pool.acquire() as conn:
         for room, limit in room_limits.items():
-            rows = await conn.fetch("""
+            recent_limit = max(1, int((limit + 1) / 2))
+            important_limit = max(0, limit - recent_limit)
+            selected = []
+            selected_ids = set()
+            reason_counts = {"recent": 0, "important": 0, "refill": 0}
+
+            recent_rows = await conn.fetch("""
                 SELECT id, room, content, tags, importance, mood, date, created_at, updated_at, access_count
                 FROM memory_palace_nodes
-                WHERE room = $1
+                WHERE character_id = $1
+                  AND room = $2
                   AND archived = FALSE
                   AND COALESCE(is_box_summary, FALSE) = FALSE
                 ORDER BY
-                  importance DESC NULLS LAST,
-                  access_count DESC NULLS LAST,
                   date DESC NULLS LAST,
                   updated_at DESC NULLS LAST,
-                  created_at DESC NULLS LAST
-                LIMIT $2
-            """, room, limit)
-            room_items = []
-            for r in rows:
-                item = {
-                    "id": r.get("id"),
-                    "room": r.get("room"),
-                    "room_label": room_labels.get(r.get("room"), r.get("room")),
-                    "importance": int(r.get("importance") or 5),
-                    "tags": r.get("tags") or "",
-                    "mood": r.get("mood") or "",
-                    "date": _ui_iso(r.get("date")),
-                    "access_count": int(r.get("access_count") or 0),
-                    "content": _ui_preview_text(r.get("content"), 500),
-                }
-                room_items.append(item)
+                  created_at DESC NULLS LAST,
+                  importance DESC NULLS LAST
+                LIMIT $3
+            """, character_id, room, recent_limit)
+            for r in recent_rows:
+                rid = r.get("id")
+                if rid in selected_ids:
+                    continue
+                selected_ids.add(rid)
+                selected.append(_row_to_user_impression_item(r, "recent"))
+                reason_counts["recent"] += 1
+
+            if important_limit > 0:
+                important_rows = await conn.fetch("""
+                    SELECT id, room, content, tags, importance, mood, date, created_at, updated_at, access_count
+                    FROM memory_palace_nodes
+                    WHERE character_id = $1
+                      AND room = $2
+                      AND archived = FALSE
+                      AND COALESCE(is_box_summary, FALSE) = FALSE
+                    ORDER BY
+                      importance DESC NULLS LAST,
+                      date DESC NULLS LAST,
+                      updated_at DESC NULLS LAST,
+                      created_at DESC NULLS LAST,
+                      access_count DESC NULLS LAST
+                    LIMIT $3
+                """, character_id, room, important_limit + recent_limit)
+                for r in important_rows:
+                    if len(selected) >= limit:
+                        break
+                    rid = r.get("id")
+                    if rid in selected_ids:
+                        continue
+                    selected_ids.add(rid)
+                    selected.append(_row_to_user_impression_item(r, "important"))
+                    reason_counts["important"] += 1
+
+            if len(selected) < limit:
+                refill_rows = await conn.fetch("""
+                    SELECT id, room, content, tags, importance, mood, date, created_at, updated_at, access_count
+                    FROM memory_palace_nodes
+                    WHERE character_id = $1
+                      AND room = $2
+                      AND archived = FALSE
+                      AND COALESCE(is_box_summary, FALSE) = FALSE
+                    ORDER BY
+                      date DESC NULLS LAST,
+                      updated_at DESC NULLS LAST,
+                      created_at DESC NULLS LAST,
+                      importance DESC NULLS LAST
+                    LIMIT $3
+                """, character_id, room, limit * 3)
+                for r in refill_rows:
+                    if len(selected) >= limit:
+                        break
+                    rid = r.get("id")
+                    if rid in selected_ids:
+                        continue
+                    selected_ids.add(rid)
+                    selected.append(_row_to_user_impression_item(r, "refill"))
+                    reason_counts["refill"] += 1
+
+            for item in selected:
                 items.append(item)
+
             by_room[room] = {
                 "label": room_labels.get(room, room),
                 "limit": limit,
-                "count": len(room_items),
+                "count": len(selected),
+                "recent_quota": recent_limit,
+                "important_quota": important_limit,
+                "reason_counts": reason_counts,
             }
     return {
         "count": len(items),
+        "strategy": "balanced_recent_and_important_per_room",
         "by_room": by_room,
         "items": items,
     }
-
 
 async def _collect_user_impression_recent_messages(mode: str = "initial", session_id: str = None) -> dict:
     """收集用户画像生成用近期聊天。initial=15, update=50。"""

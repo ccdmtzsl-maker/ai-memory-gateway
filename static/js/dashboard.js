@@ -2507,6 +2507,19 @@ async function loadUserImpression() {
     }
 }
 
+function confirmGenerateUserImpressionPreview(mode) {
+    const isUpdate = mode === 'update';
+    const message = isUpdate
+        ? '确定要追加/更新用户画像预览吗？
+
+这会带入当前画像，并读取更多近期聊天。生成结果只会进入预览，不会自动覆盖。'
+        : '确定要从零生成新的用户画像预览吗？
+
+这不会读取旧画像。生成结果只会进入预览，不会自动覆盖。';
+    if (!confirm(message)) return;
+    generateUserImpressionPreview(isUpdate ? 'update' : 'initial');
+}
+
 async function generateUserImpressionPreview(mode) {
     const card = document.getElementById('uiPreviewCard');
     const content = document.getElementById('uiPreviewContent');

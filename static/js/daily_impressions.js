@@ -210,17 +210,28 @@ async function generateDailyImpressionFromPage() {
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({date})
         });
-        const data = await resp.json();
-        if (data.error || data.status === 'error') throw new Error(data.error || '生成失败');
+        const text = await resp.text();
+        let data = {};
+        try {
+            data = text ? JSON.parse(text) : {};
+        } catch (parseError) {
+            data = {status: 'error', error: '接口返回不是合法 JSON: ' + parseError.message, raw: text, raw_response: text};
+        }
+        const rawText = data.raw || data.raw_response || data.model_output || data.message || text || '';
+        if (!resp.ok || data.error || data.status === 'error') {
+            const err = data.error || data.message || ('HTTP ' + resp.status + ' 生成失败');
+            if (msg) msg.innerHTML = '<div class="msg msg-error">❌ ' + escHtml(err) + '</div>' + renderDailyRawBlock(rawText || err);
+            return;
+        }
         if (data.status === 'no_conversations') {
             if (msg) msg.innerHTML = '<div class="msg msg-info">这一天没有对话历史</div>';
             return;
         }
-        _lastDailyRaw = data.raw || '';
+        _lastDailyRaw = rawText || '';
         if (msg) msg.innerHTML = '<div class="msg msg-success">✅ 已生成日印象（使用 ' + (data.messages_used || 0) + ' 条对话）</div>' + renderDailyRawBlock(_lastDailyRaw);
         await loadDailyImpressionsPage();
     } catch (e) {
-        if (msg) msg.innerHTML = '<div class="msg msg-error">❌ ' + escHtml(e.message) + '</div>';
+        if (msg) msg.innerHTML = '<div class="msg msg-error">❌ ' + escHtml(e.message) + '</div>' + renderDailyRawBlock(e.raw || e.message || '');
     }
 }
 

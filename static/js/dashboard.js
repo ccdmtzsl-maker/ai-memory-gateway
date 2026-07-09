@@ -2208,24 +2208,27 @@ function renderUserImpressionObject(imp) {
     const changes = imp.observed_changes || [];
     let html = '';
 
-    html += '<div style="display:grid;grid-template-columns:minmax(0,1.2fr) minmax(260px,0.8fr);gap:14px;align-items:start;">';
-    html += '<div style="padding:18px;border-radius:16px;background:linear-gradient(135deg,#6366f1,#a855f7);color:white;">' +
-        '<div style="font-size:12px;opacity:.75;font-weight:800;margin-bottom:8px;">核心印象</div>' +
-        '<div style="font-size:18px;line-height:1.8;font-style:italic;">“' + uiEsc(core.summary || '暂无') + '”</div>' +
-        '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:16px;padding-top:14px;border-top:1px solid rgba(255,255,255,.22);">' +
-        '<div><div style="font-size:11px;opacity:.7;">互动模式</div><div style="font-size:13px;">' + uiEsc(core.interaction_style || '暂无') + '</div></div>' +
-        '<div><div style="font-size:11px;opacity:.7;">语气感知</div><div style="font-size:13px;">' + uiEsc(behavior.tone_style || '暂无') + '</div></div>' +
+    html += '<div class="card" style="box-shadow:none;border:1px solid var(--border-color);padding:0;margin:0;overflow:hidden;background:linear-gradient(180deg,#fffdf8,#fff);">' +
+        '<div style="padding:12px 16px;border-bottom:1px solid var(--border-color);background:rgba(250,244,232,.65);display:flex;justify-content:space-between;gap:10px;align-items:center;">' +
+        '<div style="font-size:13px;font-weight:900;letter-spacing:.08em;color:var(--text-muted);">核心印象</div>' +
+        '<div style="font-size:11px;color:var(--text-muted);">Private Reader Note</div>' +
+        '</div>' +
+        '<div style="padding:18px 18px 16px 18px;">' +
+        '<div style="font-size:16px;line-height:1.9;white-space:pre-wrap;color:var(--text-main);font-family:Georgia,'Times New Roman',serif;">' + uiEsc(core.summary || '暂无') + '</div>' +
+        '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;margin-top:16px;padding-top:14px;border-top:1px dashed var(--border-color);">' +
+        '<div style="background:rgba(0,0,0,.025);border-radius:12px;padding:10px;"><div style="font-size:11px;color:var(--text-muted);font-weight:800;margin-bottom:4px;">互动模式</div><div style="font-size:13px;line-height:1.6;">' + uiEsc(core.interaction_style || '暂无') + '</div></div>' +
+        '<div style="background:rgba(0,0,0,.025);border-radius:12px;padding:10px;"><div style="font-size:11px;color:var(--text-muted);font-weight:800;margin-bottom:4px;">语气感知</div><div style="font-size:13px;line-height:1.6;">' + uiEsc(behavior.tone_style || '暂无') + '</div></div>' +
+        '</div>' +
         '</div></div>';
 
-    html += '<div class="card" style="box-shadow:none;border:1px solid var(--border-color);padding:16px;margin:0;">' +
+    html += '<div class="card" style="box-shadow:none;border:1px solid var(--border-color);padding:16px;margin-top:14px;">' +
         '<div style="display:flex;justify-content:space-between;gap:8px;align-items:center;margin-bottom:10px;">' +
         '<div style="font-weight:800;">MBTI 侧写</div>' +
         '<div style="font-size:22px;font-weight:900;color:var(--primary);">' + uiEsc((mbti && mbti.type) || 'XXXX') + '</div>' +
         '</div>' +
-        '<div style="font-size:12px;color:var(--text-muted);line-height:1.6;margin-bottom:10px;">' + uiEsc((mbti && mbti.reasoning) || '暂无') + '</div>' +
+        '<div style="font-size:12px;color:var(--text-muted);line-height:1.6;margin-bottom:10px;white-space:pre-wrap;">' + uiEsc((mbti && mbti.reasoning) || '暂无') + '</div>' +
         '<div style="font-size:12px;line-height:1.8;">E/I: ' + uiEsc(dims.e_i ?? 50) + ' · S/N: ' + uiEsc(dims.s_n ?? 50) + ' · T/F: ' + uiEsc(dims.t_f ?? 50) + ' · J/P: ' + uiEsc(dims.j_p ?? 50) + '</div>' +
         '</div>';
-    html += '</div>';
 
     html += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:14px;margin-top:14px;">';
     html += uiTextBlock('核心价值观', value.core_values);

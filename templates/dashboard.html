@@ -398,8 +398,8 @@
                 <div class="card toolbar-card">
                     <div class="toolbar">
                         <button class="btn" style="background:#fff;border-style:dashed;border-width:2px;border-radius:18px;padding:10px 20px;font-weight:900;box-shadow:0 6px 0 rgba(15,23,42,.08), inset 0 0 0 3px rgba(255,255,255,.92);border-color:#9ca3af;color:#5f6670;" onclick="loadUserImpression()">刷新</button>
-                        <button class="btn" style="background:#fff;border-style:dashed;border-width:2px;border-radius:18px;padding:10px 20px;font-weight:900;box-shadow:0 6px 0 rgba(15,23,42,.08), inset 0 0 0 3px rgba(255,255,255,.92);border-color:#e8a7bb;color:#d94f7a;" onclick="generateUserImpressionPreview('initial')">生成画像</button>
-                        <button class="btn" style="background:#fff;border-style:dashed;border-width:2px;border-radius:18px;padding:10px 20px;font-weight:900;box-shadow:0 6px 0 rgba(15,23,42,.08), inset 0 0 0 3px rgba(255,255,255,.92);border-color:#1e3a8a;color:#1e3a8a;" onclick="generateUserImpressionPreview('update')">追加/更新</button>
+                        <button class="btn" style="background:#fff;border-style:dashed;border-width:2px;border-radius:18px;padding:10px 20px;font-weight:900;box-shadow:0 6px 0 rgba(15,23,42,.08), inset 0 0 0 3px rgba(255,255,255,.92);border-color:#e8a7bb;color:#d94f7a;" onclick="confirmGenerateUserImpressionPreview('initial')">生成画像</button>
+                        <button class="btn" style="background:#fff;border-style:dashed;border-width:2px;border-radius:18px;padding:10px 20px;font-weight:900;box-shadow:0 6px 0 rgba(15,23,42,.08), inset 0 0 0 3px rgba(255,255,255,.92);border-color:#1e3a8a;color:#1e3a8a;" onclick="confirmGenerateUserImpressionPreview('update')">追加/更新</button>
                         <button class="btn" style="background:#fff;border-style:dashed;border-width:2px;border-radius:18px;padding:10px 20px;font-weight:900;box-shadow:0 6px 0 rgba(15,23,42,.08), inset 0 0 0 3px rgba(255,255,255,.92);border-color:#991b1b;color:#991b1b;" onclick="deleteUserImpression()">删除画像</button>
                     </div>
                     <div class="hint" style="margin-top:10px;">initial 会从零生成；update 会带入旧画像并读取更多近期聊天。两者都会先生成预览，不会自动覆盖。</div>
@@ -691,7 +691,7 @@
         </main>
     </div>
 
-    <script src="/static/js/dashboard.js?v=6.1"></script>
+    <script src="/static/js/dashboard.js?v=6.2"></script>
 <script src="/static/js/daily_impressions.js?v=1.4"></script>
 <script>
     // --- 模型预设管理（右上角切换面板） ---

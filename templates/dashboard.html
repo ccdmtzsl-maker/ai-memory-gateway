@@ -287,8 +287,8 @@
                 <div class="card toolbar-card">
                     <div class="toolbar">
                         <input type="date" id="dailyPageDate" class="date-input">
-                        <button class="btn btn-primary" onclick="generateDailyImpressionFromPage()">生成/更新当天</button>
-                        <button class="btn btn-secondary" onclick="loadDailyImpressionsPage()">刷新列表</button>
+                        <button class="btn" style="background:#fff;border-style:dashed;border-width:2px;border-radius:18px;padding:10px 20px;font-weight:900;box-shadow:0 6px 0 rgba(15,23,42,.08), inset 0 0 0 3px rgba(255,255,255,.92);border-color:#e8a7bb;color:#d94f7a;" onclick="generateDailyImpressionFromPage()">生成/更新当天</button>
+                        <button class="btn" style="background:#fff;border-style:dashed;border-width:2px;border-radius:18px;padding:10px 20px;font-weight:900;box-shadow:0 6px 0 rgba(15,23,42,.08), inset 0 0 0 3px rgba(255,255,255,.92);border-color:#9ca3af;color:#5f6670;" onclick="loadDailyImpressionsPage()">刷新列表</button>
                     </div>
                 </div>
 
@@ -315,14 +315,13 @@
 
                 <div class="card toolbar-card">
                     <div class="toolbar mp-room-actions" style="align-items:center;">
-                        <button type="button" id="mpCurrentRoomTitle" class="btn btn-secondary mp-room-tools-toggle" onclick="toggleMemoryPalaceTools()">全部房间 ▾</button>
-                        <button class="btn btn-primary" onclick="openMemoryPalaceCreate()">新增记忆</button>
-                        <button id="mpModifyPinBtn" class="btn btn-secondary" onclick="modifyMemoryPalacePin()">修改便利贴</button>
-                        <button class="btn btn-secondary mp-advanced-action" style="display:none;" onclick="runMemoryPalaceConsolidation()">巩固记忆</button>
-                        <button class="btn btn-secondary mp-advanced-action" style="display:none;" onclick="runCognitiveDigestion()">认知消化</button>
-                        <button type="button" id="mpVectorStatsBtn" class="btn btn-secondary mp-advanced-action" style="display:none;" onclick="showMemoryPalaceVectorStats()">查看向量数</button>
-                        <button type="button" id="mpBackfillBtn" class="btn btn-secondary mp-advanced-action" style="display:none;" onclick="backfillMemoryPalaceEmbeddings()">补全向量</button>
-                        <button class="btn btn-secondary mp-advanced-action" style="display:none;" onclick="loadMemoryPalace()">刷新</button>
+                        <button type="button" id="mpCurrentRoomTitle" class="btn mp-room-tools-toggle" style="background:#fff;border-style:dashed;border-width:2px;border-radius:18px;padding:10px 20px;font-weight:900;box-shadow:0 6px 0 rgba(15,23,42,.08), inset 0 0 0 3px rgba(255,255,255,.92);border-color:#111827;color:#111827;" onclick="toggleMemoryPalaceTools()">全部房间 ▾</button>
+                        <button class="btn" style="background:#fff;border-style:dashed;border-width:2px;border-radius:18px;padding:10px 20px;font-weight:900;box-shadow:0 6px 0 rgba(15,23,42,.08), inset 0 0 0 3px rgba(255,255,255,.92);border-color:#d6a84f;color:#9a6a12;" onclick="openMemoryPalaceCreate()">新增记忆</button>
+                        <button id="mpModifyPinBtn" class="btn" style="background:#fff;border-style:dashed;border-width:2px;border-radius:18px;padding:10px 20px;font-weight:900;box-shadow:0 6px 0 rgba(15,23,42,.08), inset 0 0 0 3px rgba(255,255,255,.92);border-color:#991b1b;color:#991b1b;" onclick="modifyMemoryPalacePin()">修改便利贴</button>
+                        <button class="btn mp-advanced-action" style="display:none;background:#fff;border-style:dashed;border-width:2px;border-radius:18px;padding:10px 20px;font-weight:900;box-shadow:0 6px 0 rgba(15,23,42,.08), inset 0 0 0 3px rgba(255,255,255,.92);border-color:#b9a7e8;color:#6d4cc2;" onclick="runMemoryPalaceConsolidation()">巩固记忆</button>
+                        <button class="btn mp-advanced-action" style="display:none;background:#fff;border-style:dashed;border-width:2px;border-radius:18px;padding:10px 20px;font-weight:900;box-shadow:0 6px 0 rgba(15,23,42,.08), inset 0 0 0 3px rgba(255,255,255,.92);border-color:#15803d;color:#15803d;" onclick="runCognitiveDigestion()">认知消化</button>
+                        <button type="button" id="mpVectorStatsBtn" class="btn mp-advanced-action" style="display:none;background:#fff;border-style:dashed;border-width:2px;border-radius:18px;padding:10px 20px;font-weight:900;box-shadow:0 6px 0 rgba(15,23,42,.08), inset 0 0 0 3px rgba(255,255,255,.92);border-color:#6b3f22;color:#6b3f22;" onclick="showMemoryPalaceVectorStats()">查看向量数</button>
+                        <button type="button" id="mpBackfillBtn" class="btn mp-advanced-action" style="display:none;background:#fff;border-style:dashed;border-width:2px;border-radius:18px;padding:10px 20px;font-weight:900;box-shadow:0 6px 0 rgba(15,23,42,.08), inset 0 0 0 3px rgba(255,255,255,.92);border-color:#b08968;color:#7c5a3d;" onclick="backfillMemoryPalaceEmbeddings()">补全向量</button>
                     </div>
                 </div>
 
@@ -691,7 +690,7 @@
         </main>
     </div>
 
-    <script src="/static/js/dashboard.js?v=6.2"></script>
+    <script src="/static/js/dashboard.js?v=6.3"></script>
 <script src="/static/js/daily_impressions.js?v=1.4"></script>
 <script>
     // --- 模型预设管理（右上角切换面板） ---

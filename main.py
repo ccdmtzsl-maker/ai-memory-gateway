@@ -4887,10 +4887,26 @@ async def generate_daily_impression_for_date(impression_date):
                     "temperature": 0,
                 },
             )
+        response_text = response.text or ""
         if response.status_code != 200:
-            return {"status": "error", "error": f"HTTP {response.status_code}: {response.text[:300]}"}
+            return {
+                "status": "error",
+                "error": f"HTTP {response.status_code}: {response_text[:300]}",
+                "raw": response_text,
+                "raw_response": response_text,
+            }
 
-        raw = response.json().get("choices", [{}])[0].get("message", {}).get("content", "")
+        try:
+            response_json = response.json()
+        except Exception as parse_error:
+            return {
+                "status": "error",
+                "error": f"模型接口响应不是合法 JSON: {parse_error}",
+                "raw": response_text,
+                "raw_response": response_text,
+            }
+
+        raw = response_json.get("choices", [{}])[0].get("message", {}).get("content", "")
         import re as _re
         import html as _html
 
@@ -4904,7 +4920,7 @@ async def generate_daily_impression_for_date(impression_date):
         mood_text = _extract_tag(raw, "mood")
 
         if not summary_text:
-            return {"status": "error", "error": "AI 未返回 <summary> 标签", "raw": raw[:500]}
+            return {"status": "error", "error": "AI 未返回 <summary> 标签", "raw": raw, "raw_response": raw}
 
         tag_items = [t.strip() for t in _re.split(r"[、,，\n]+", tags_text) if t.strip()]
         topics_text = "、".join(tag_items)
@@ -4923,7 +4939,8 @@ async def generate_daily_impression_for_date(impression_date):
             "raw": raw,
         }
     except Exception as e:
-        return {"status": "error", "error": str(e)}
+        err_text = str(e)
+        return {"status": "error", "error": err_text, "raw": err_text, "raw_response": err_text}
 
 def _serialize_daily_impression(row):
     if not row:

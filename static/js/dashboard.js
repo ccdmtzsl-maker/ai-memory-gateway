@@ -2214,7 +2214,7 @@ function renderUserImpressionObject(imp) {
         '<div style="font-size:11px;color:var(--text-muted);">Private Reader Note</div>' +
         '</div>' +
         '<div style="padding:18px 18px 16px 18px;">' +
-        '<div style="font-size:16px;line-height:1.9;white-space:pre-wrap;color:var(--text-main);font-family:Georgia,'Times New Roman',serif;">' + uiEsc(core.summary || '暂无') + '</div>' +
+        '<div style="font-size:16px;line-height:1.9;white-space:pre-wrap;color:var(--text-main);font-family:Georgia,Times New Roman,serif;">' + uiEsc(core.summary || '暂无') + '</div>' +
         '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;margin-top:16px;padding-top:14px;border-top:1px dashed var(--border-color);">' +
         '<div style="background:rgba(0,0,0,.025);border-radius:12px;padding:10px;"><div style="font-size:11px;color:var(--text-muted);font-weight:800;margin-bottom:4px;">互动模式</div><div style="font-size:13px;line-height:1.6;">' + uiEsc(core.interaction_style || '暂无') + '</div></div>' +
         '<div style="background:rgba(0,0,0,.025);border-radius:12px;padding:10px;"><div style="font-size:11px;color:var(--text-muted);font-weight:800;margin-bottom:4px;">语气感知</div><div style="font-size:13px;line-height:1.6;">' + uiEsc(behavior.tone_style || '暂无') + '</div></div>' +

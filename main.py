@@ -5132,6 +5132,40 @@ def _user_impression_allocate_stage_quotas(stages: list, target: int) -> list:
     return quotas
 
 
+def _user_impression_allocate_update_stage_quotas(stages: list, target: int) -> list:
+    """update 模式：时间轴越新的阶段名额越多，默认 4 段按 0.1/0.2/0.3/0.4 分配。"""
+    if not stages or target <= 0:
+        return []
+    target = min(target, sum(len(x) for x in stages))
+    weights_base = [0.1, 0.2, 0.3, 0.4]
+    stage_count = len(stages)
+    weights = weights_base[-stage_count:]
+    total_weight = sum(weights) or 1.0
+
+    raw = [target * (w / total_weight) for w in weights]
+    quotas = [min(len(stages[i]), int(raw[i])) for i in range(stage_count)]
+    remaining = target - sum(quotas)
+
+    # 余数优先给理论配额小数部分更高、且时间更新的阶段。
+    order = sorted(
+        range(stage_count),
+        key=lambda i: (raw[i] - int(raw[i]), i),
+        reverse=True,
+    )
+    while remaining > 0:
+        progressed = False
+        for i in order:
+            if remaining <= 0:
+                break
+            if quotas[i] < len(stages[i]):
+                quotas[i] += 1
+                remaining -= 1
+                progressed = True
+        if not progressed:
+            break
+    return quotas
+
+
 def _user_impression_select_stage_mmr(stage_items: list, quota: int) -> list:
     """阶段内 MMR：代表性 + 弱 importance - 重复度；access_count 保留占位。"""
     quota = min(max(0, int(quota or 0)), len(stage_items))
@@ -5191,11 +5225,12 @@ def _user_impression_select_stage_mmr(stage_items: list, quota: int) -> list:
     return [stage_items[i] for i in selected_idx]
 
 
-async def _collect_user_impression_memory_material(character_id: str = "default") -> dict:
+async def _collect_user_impression_memory_material(character_id: str = "default", mode: str = "initial") -> dict:
     """收集用户画像生成用的记忆宫殿长期材料。只读，不修改任何记忆。
 
     候选策略：每个画像房间独立处理；按 date/created_at 建完整时间轴；
-    节点超过房间上限时按时间轴等分阶段，并在阶段内使用向量 MMR 选择代表性且不重复的节点。
+    initial 模式按时间阶段均衡分配名额；update 模式按 0.1/0.2/0.3/0.4 偏向近期阶段；
+    阶段内使用向量 MMR 选择代表性且不重复的节点。
     """
     room_limits = {
         "user_room": 80,
@@ -5250,14 +5285,22 @@ async def _collect_user_impression_memory_material(character_id: str = "default"
             candidates.sort(key=lambda x: x.get("_timeline_key") or datetime(1970, 1, 1, tzinfo=timezone.utc))
             target = min(int(limit), len(candidates))
             stage_debug = []
+            stage_strategy = "all"
             if len(candidates) <= target:
                 room_items = list(candidates)
                 if candidates:
                     stage_debug = [{"index": 1, "candidate_count": len(candidates), "quota": len(candidates), "selected": len(candidates)}]
             else:
-                stage_count = max(1, min(5, target, len(candidates)))
-                stages = _user_impression_split_timeline(candidates, stage_count)
-                quotas = _user_impression_allocate_stage_quotas(stages, target)
+                if mode == "update":
+                    stage_count = max(1, min(4, target, len(candidates)))
+                    stages = _user_impression_split_timeline(candidates, stage_count)
+                    quotas = _user_impression_allocate_update_stage_quotas(stages, target)
+                    stage_strategy = "timeline_mmr_recent_biased"
+                else:
+                    stage_count = max(1, min(5, target, len(candidates)))
+                    stages = _user_impression_split_timeline(candidates, stage_count)
+                    quotas = _user_impression_allocate_stage_quotas(stages, target)
+                    stage_strategy = "timeline_mmr"
                 room_items = []
                 for idx, stage in enumerate(stages):
                     quota = quotas[idx] if idx < len(quotas) else 0
@@ -5283,7 +5326,7 @@ async def _collect_user_impression_memory_material(character_id: str = "default"
                 "limit": limit,
                 "candidate_count": len(candidates),
                 "count": len(room_items),
-                "strategy": "timeline_mmr" if len(candidates) > target else "all",
+                "strategy": stage_strategy if len(candidates) > target else "all",
                 "stages": stage_debug,
             }
 
@@ -5346,7 +5389,7 @@ async def build_user_impression_materials_preview(character_id: str = "default",
     system_prompt = (await get_system_prompt()).strip()
     user_nickname = await get_runtime_user_nickname() or "用户"
     character_name = await get_runtime_character_name() or "澈"
-    memory_material = await _collect_user_impression_memory_material(character_id)
+    memory_material = await _collect_user_impression_memory_material(character_id, mode=mode)
     daily_impressions_text = await format_daily_impressions_for_prompt(limit=3)
     recent_messages = await _collect_user_impression_recent_messages(mode=mode, session_id=session_id)
     current = await get_user_impression(character_id=character_id) if mode == "update" else None

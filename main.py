@@ -5199,8 +5199,8 @@ async def _collect_user_impression_memory_material(character_id: str = "default"
     """
     room_limits = {
         "user_room": 80,
-        "bedroom": 40,
-        "study": 15,
+        "bedroom": 25,
+        "study": 10,
         "attic": 20,
         "windowsill": 20,
     }
@@ -5347,7 +5347,7 @@ async def build_user_impression_materials_preview(character_id: str = "default",
     user_nickname = await get_runtime_user_nickname() or "用户"
     character_name = await get_runtime_character_name() or "澈"
     memory_material = await _collect_user_impression_memory_material(character_id)
-    daily_impressions_text = await format_daily_impressions_for_prompt(limit=5)
+    daily_impressions_text = await format_daily_impressions_for_prompt(limit=3)
     recent_messages = await _collect_user_impression_recent_messages(mode=mode, session_id=session_id)
     current = await get_user_impression(character_id=character_id) if mode == "update" else None
 

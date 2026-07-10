@@ -5385,9 +5385,6 @@ async def build_user_impression_materials_preview(character_id: str = "default",
         sections.append("【近期聊天】\n" + "\n".join(msg_lines).rstrip())
     else:
         sections.append("【近期聊天】\n（暂无）")
-    if mode == "update":
-        sections.append("【当前画像】\n" + (json.dumps(current.get("impression"), ensure_ascii=False, indent=2) if current and current.get("impression") else ""))
-
     material_text = "\n\n".join(sections)
     return {
         "status": "ok",

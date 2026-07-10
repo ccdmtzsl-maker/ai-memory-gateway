@@ -5160,25 +5160,25 @@ def _user_impression_select_stage_mmr(stage_items: list, quota: int) -> list:
 
     selected_idx = []
     remaining = set(range(n))
-    # access_count 先保留空位，后续可与新机制一起接入。
-    access_count_weight = 0.0
-    importance_weight = 0.08
-    representative_weight = 0.62
-    diversity_weight = 0.30
+    # 画像候选仍以时间覆盖 + MMR 为主；importance 和 access_count 只作为阶段内辅助。
+    # access_count 沿用混合检索的熟悉度加成，最大 +0.05，避免重新形成旧节点垄断。
+    importance_weight = 0.10
+    representative_weight = 0.58
+    diversity_weight = 0.32
 
     while remaining and len(selected_idx) < quota:
         best_i = None
         best_score = None
         for i in remaining:
             importance = max(0.0, min(1.0, float(stage_items[i].get("importance") or 5) / 10.0))
-            access_score = 0.0
+            familiarity_bonus = _memory_palace_familiarity_bonus(stage_items[i].get("access_count") or 0)
             redundancy = max((sim(i, j) for j in selected_idx), default=0.0)
             diversity = 1.0 - redundancy
             score = (
                 representative_weight * centrality[i]
                 + diversity_weight * diversity
                 + importance_weight * importance
-                + access_count_weight * access_score
+                + familiarity_bonus
             )
             # 同分时偏向时间更早的节点，维持阶段弧线稳定。
             tie = _user_impression_timeline_key(stage_items[i])

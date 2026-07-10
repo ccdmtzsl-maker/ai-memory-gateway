@@ -5462,7 +5462,7 @@ def build_user_impression_generation_prompt(materials: dict) -> str:
 - personality_core、value_map、emotion_schema 必须反映TA在整段关系中展现出的稳定特征，而非仅仅是近期状态
 - 如果早期材料和近期材料中TA的表现有差异，请在 observed_changes 中记录这种演变，但 personality_core 应反映最持久稳定的特质
 """
-    material_text = materials.get("material_text_preview") or ""
+    material_text = materials.get("material_text_full") or materials.get("material_text_preview") or ""
 
     return f"""
 {current_profile_section}

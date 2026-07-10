@@ -5368,8 +5368,15 @@ async def build_user_impression_materials_preview(character_id: str = "default",
 
     if recent_messages["items"]:
         msg_lines = []
+        current_session = None
         for m in recent_messages["items"]:
-            msg_lines.append(f"{m.get('role')}({m.get('session_id')}#{m.get('id')}): {m.get('content')}")
+            sid = m.get("session_id") or "default"
+            if sid != current_session:
+                if msg_lines:
+                    msg_lines.append("")
+                msg_lines.append(f"【对话线：{sid}】")
+                current_session = sid
+            msg_lines.append(f"{m.get('role')}: {m.get('content')}")
         sections.append("【近期聊天】\n" + "\n".join(msg_lines))
     else:
         sections.append("【近期聊天】\n（暂无）")

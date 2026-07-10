@@ -5376,8 +5376,13 @@ async def build_user_impression_materials_preview(character_id: str = "default",
                     msg_lines.append("")
                 msg_lines.append(f"【对话线：{sid}】")
                 current_session = sid
-            msg_lines.append(f"{m.get('role')}: {m.get('content')}")
-        sections.append("【近期聊天】\n" + "\n".join(msg_lines))
+            role = m.get("role") or ""
+            speaker = user_nickname if role == "user" else (character_name if role == "assistant" else role)
+            content = "\n".join(line.strip() for line in str(m.get("content") or "").splitlines() if line.strip())
+            msg_lines.append(f"{speaker}#{m.get('id')}: {content}")
+            if role == "assistant":
+                msg_lines.append("")
+        sections.append("【近期聊天】\n" + "\n".join(msg_lines).rstrip())
     else:
         sections.append("【近期聊天】\n（暂无）")
     if mode == "update":

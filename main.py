@@ -5051,8 +5051,152 @@ def _ui_iso(value):
         return str(value)
 
 
+def _user_impression_timeline_key(item: dict):
+    """画像候选用时间键：优先 date，缺失时回退 created_at。"""
+    dt = _memory_palace_aware_dt(item.get("date") or item.get("created_at"))
+    if dt:
+        return dt
+    return datetime(1970, 1, 1, tzinfo=timezone.utc)
+
+
+def _user_impression_parse_embedding(value):
+    if not value:
+        return None
+    if isinstance(value, list):
+        return value
+    try:
+        parsed = json.loads(value)
+        return parsed if isinstance(parsed, list) else None
+    except Exception:
+        return None
+
+
+def _user_impression_text_similarity(a: dict, b: dict) -> float:
+    """没有向量时的轻量兜底：标签+内容 token Jaccard。"""
+    def toks(x):
+        text = ((x.get("tags") or "") + " " + (x.get("content") or "")).lower()
+        return set(_memory_palace_tokenize(text))
+    ta = toks(a)
+    tb = toks(b)
+    if not ta or not tb:
+        return 0.0
+    return len(ta & tb) / max(1, len(ta | tb))
+
+
+def _user_impression_node_similarity(a: dict, b: dict) -> float:
+    ea = a.get("_embedding")
+    eb = b.get("_embedding")
+    if ea and eb:
+        try:
+            return _memory_palace_cosine(ea, eb)
+        except Exception:
+            return 0.0
+    return _user_impression_text_similarity(a, b)
+
+
+def _user_impression_split_timeline(items: list, stage_count: int) -> list:
+    """按节点数量把完整时间轴等分为若干阶段。items 必须已按时间升序。"""
+    n = len(items)
+    stage_count = max(1, min(int(stage_count or 1), n))
+    stages = []
+    for idx in range(stage_count):
+        a = (idx * n) // stage_count
+        b = ((idx + 1) * n) // stage_count
+        part = items[a:b]
+        if part:
+            stages.append(part)
+    return stages
+
+
+def _user_impression_allocate_stage_quotas(stages: list, target: int) -> list:
+    """每个阶段先获基础名额，剩余名额按阶段节点数量分配。"""
+    if not stages or target <= 0:
+        return []
+    target = min(target, sum(len(x) for x in stages))
+    stage_count = len(stages)
+    base = target // stage_count
+    quotas = [min(len(stage), base) for stage in stages]
+    remaining = target - sum(quotas)
+    order = sorted(range(stage_count), key=lambda i: len(stages[i]) - quotas[i], reverse=True)
+    while remaining > 0:
+        progressed = False
+        for i in order:
+            if remaining <= 0:
+                break
+            if quotas[i] < len(stages[i]):
+                quotas[i] += 1
+                remaining -= 1
+                progressed = True
+        if not progressed:
+            break
+    return quotas
+
+
+def _user_impression_select_stage_mmr(stage_items: list, quota: int) -> list:
+    """阶段内 MMR：代表性 + 弱 importance - 重复度；access_count 保留占位。"""
+    quota = min(max(0, int(quota or 0)), len(stage_items))
+    if quota <= 0:
+        return []
+    if len(stage_items) <= quota:
+        return list(stage_items)
+
+    # 预计算阶段内相似度，避免重复算。
+    sim_cache = {}
+    def sim(i, j):
+        if i == j:
+            return 1.0
+        key = (i, j) if i < j else (j, i)
+        if key not in sim_cache:
+            sim_cache[key] = _user_impression_node_similarity(stage_items[key[0]], stage_items[key[1]])
+        return sim_cache[key]
+
+    centrality = []
+    n = len(stage_items)
+    for i in range(n):
+        if n <= 1:
+            centrality.append(0.0)
+        else:
+            centrality.append(sum(sim(i, j) for j in range(n) if j != i) / max(1, n - 1))
+
+    selected_idx = []
+    remaining = set(range(n))
+    # access_count 先保留空位，后续可与新机制一起接入。
+    access_count_weight = 0.0
+    importance_weight = 0.08
+    representative_weight = 0.62
+    diversity_weight = 0.30
+
+    while remaining and len(selected_idx) < quota:
+        best_i = None
+        best_score = None
+        for i in remaining:
+            importance = max(0.0, min(1.0, float(stage_items[i].get("importance") or 5) / 10.0))
+            access_score = 0.0
+            redundancy = max((sim(i, j) for j in selected_idx), default=0.0)
+            diversity = 1.0 - redundancy
+            score = (
+                representative_weight * centrality[i]
+                + diversity_weight * diversity
+                + importance_weight * importance
+                + access_count_weight * access_score
+            )
+            # 同分时偏向时间更早的节点，维持阶段弧线稳定。
+            tie = _user_impression_timeline_key(stage_items[i])
+            candidate_key = (score, -tie.timestamp())
+            if best_score is None or candidate_key > best_score:
+                best_score = candidate_key
+                best_i = i
+        selected_idx.append(best_i)
+        remaining.remove(best_i)
+    return [stage_items[i] for i in selected_idx]
+
+
 async def _collect_user_impression_memory_material(character_id: str = "default") -> dict:
-    """收集用户画像生成用的记忆宫殿长期材料。只读，不修改任何记忆。"""
+    """收集用户画像生成用的记忆宫殿长期材料。只读，不修改任何记忆。
+
+    候选策略：每个画像房间独立处理；按 date/created_at 建完整时间轴；
+    节点超过房间上限时按时间轴等分阶段，并在阶段内使用向量 MMR 选择代表性且不重复的节点。
+    """
     room_limits = {
         "user_room": 80,
         "bedroom": 40,
@@ -5068,25 +5212,23 @@ async def _collect_user_impression_memory_material(character_id: str = "default"
         "windowsill": "窗台",
     }
     pool = await get_pool()
-    items = []
+    selected_items = []
     by_room = {}
     async with pool.acquire() as conn:
         for room, limit in room_limits.items():
             rows = await conn.fetch("""
-                SELECT id, room, content, tags, importance, mood, date, created_at, updated_at, access_count
-                FROM memory_palace_nodes
-                WHERE room = $1
-                  AND archived = FALSE
-                  AND COALESCE(is_box_summary, FALSE) = FALSE
-                ORDER BY
-                  importance DESC NULLS LAST,
-                  access_count DESC NULLS LAST,
-                  date DESC NULLS LAST,
-                  updated_at DESC NULLS LAST,
-                  created_at DESC NULLS LAST
-                LIMIT $2
-            """, room, limit)
-            room_items = []
+                SELECT n.id, n.room, n.content, n.tags, n.importance, n.mood,
+                       n.date, n.created_at, n.updated_at, n.access_count,
+                       v.embedding_json
+                FROM memory_palace_nodes n
+                LEFT JOIN memory_palace_vectors v ON v.memory_id = n.id
+                WHERE n.room = $1
+                  AND n.archived = FALSE
+                  AND COALESCE(n.is_box_summary, FALSE) = FALSE
+                  AND n.content IS NOT NULL
+                  AND n.content <> ''
+            """, room)
+            candidates = []
             for r in rows:
                 item = {
                     "id": r.get("id"),
@@ -5096,21 +5238,62 @@ async def _collect_user_impression_memory_material(character_id: str = "default"
                     "tags": r.get("tags") or "",
                     "mood": r.get("mood") or "",
                     "date": _ui_iso(r.get("date")),
+                    "created_at": _ui_iso(r.get("created_at")),
+                    "updated_at": _ui_iso(r.get("updated_at")),
                     "access_count": int(r.get("access_count") or 0),
                     "content": _ui_preview_text(r.get("content"), 500),
+                    "_embedding": _user_impression_parse_embedding(r.get("embedding_json")),
+                    "_timeline_key": _user_impression_timeline_key({"date": r.get("date"), "created_at": r.get("created_at")}),
                 }
-                room_items.append(item)
-                items.append(item)
+                candidates.append(item)
+
+            candidates.sort(key=lambda x: x.get("_timeline_key") or datetime(1970, 1, 1, tzinfo=timezone.utc))
+            target = min(int(limit), len(candidates))
+            stage_debug = []
+            if len(candidates) <= target:
+                room_items = list(candidates)
+                if candidates:
+                    stage_debug = [{"index": 1, "candidate_count": len(candidates), "quota": len(candidates), "selected": len(candidates)}]
+            else:
+                stage_count = max(1, min(5, target, len(candidates)))
+                stages = _user_impression_split_timeline(candidates, stage_count)
+                quotas = _user_impression_allocate_stage_quotas(stages, target)
+                room_items = []
+                for idx, stage in enumerate(stages):
+                    quota = quotas[idx] if idx < len(quotas) else 0
+                    picked = _user_impression_select_stage_mmr(stage, quota)
+                    room_items.extend(picked)
+                    stage_debug.append({
+                        "index": idx + 1,
+                        "candidate_count": len(stage),
+                        "quota": quota,
+                        "selected": len(picked),
+                        "start": _ui_iso(stage[0].get("_timeline_key")) if stage else None,
+                        "end": _ui_iso(stage[-1].get("_timeline_key")) if stage else None,
+                    })
+                room_items.sort(key=lambda x: x.get("_timeline_key") or datetime(1970, 1, 1, tzinfo=timezone.utc))
+
+            for item in room_items:
+                clean = dict(item)
+                clean.pop("_embedding", None)
+                clean.pop("_timeline_key", None)
+                selected_items.append(clean)
             by_room[room] = {
                 "label": room_labels.get(room, room),
                 "limit": limit,
+                "candidate_count": len(candidates),
                 "count": len(room_items),
+                "strategy": "timeline_mmr" if len(candidates) > target else "all",
+                "stages": stage_debug,
             }
+
+    selected_items.sort(key=lambda x: _user_impression_timeline_key(x))
     return {
-        "count": len(items),
+        "count": len(selected_items),
         "by_room": by_room,
-        "items": items,
+        "items": selected_items,
     }
+
 
 async def _collect_user_impression_recent_messages(mode: str = "initial", session_id: str = None) -> dict:
     """收集用户画像生成用近期聊天。initial=15, update=50。"""

@@ -3060,9 +3060,51 @@ def _extract_use_package_chains(messages: list) -> list:
     return retained
 
 
+def _retained_use_package_name(chain: dict) -> str:
+    """Read package_name from a retained use_package chain."""
+    if not isinstance(chain, dict):
+        return ""
+    assistant = chain.get("assistant") or {}
+    for tc in assistant.get("tool_calls") or []:
+        fn = tc.get("function") or {}
+        if fn.get("name") != "use_package":
+            continue
+        arguments = fn.get("arguments") or "{}"
+        try:
+            parsed = json.loads(arguments) if isinstance(arguments, str) else arguments
+        except Exception:
+            parsed = {}
+        if isinstance(parsed, dict):
+            package_name = str(parsed.get("package_name") or "").strip()
+            if package_name:
+                return package_name
+    return ""
+
+
+def _dedupe_retained_use_package_chains(chains: list) -> list:
+    """Keep only the newest complete use_package chain for each package_name."""
+    newest_by_package = {}
+    newest_positions = {}
+    unnamed = []
+    for position, chain in enumerate(chains or []):
+        if not isinstance(chain, dict):
+            continue
+        package_name = _retained_use_package_name(chain)
+        if package_name:
+            newest_by_package[package_name] = chain
+            newest_positions[package_name] = position
+        else:
+            # Unknown argument shape cannot be safely considered the same package.
+            unnamed.append((position, chain))
+    ordered = [(newest_positions[name], chain) for name, chain in newest_by_package.items()]
+    ordered.extend(unnamed)
+    ordered.sort(key=lambda item: item[0])
+    return [chain for _, chain in ordered]
+
+
 def _flatten_retained_tool_chains(chains: list) -> list:
     messages = []
-    for chain in chains or []:
+    for chain in _dedupe_retained_use_package_chains(chains):
         assistant = chain.get("assistant") if isinstance(chain, dict) else None
         tools = chain.get("tools") if isinstance(chain, dict) else None
         if assistant and isinstance(tools, list):
@@ -3236,7 +3278,7 @@ async def build_partitioned_messages(
     state = await get_session_cache_state(session_id)
     summary_parts = state['summary_parts']
     a_start_round = state['a_start_round']
-    retained_tool_chains = list(state.get('retained_tool_chains') or [])
+    retained_tool_chains = _dedupe_retained_use_package_chains(list(state.get('retained_tool_chains') or []))
     keep_was_enabled = bool(state.get('keep_a_tools_enabled'))
 
     # Closing clears prior retained chains. Re-opening starts at the current partition boundary;
@@ -3272,8 +3314,9 @@ async def build_partitioned_messages(
         if CACHE_PARTITION_KEEP_A_TOOLS:
             captured = _extract_use_package_chains(a_msgs)
             if captured:
-                retained_tool_chains.extend(captured)
-                print(f"🔧 A区轮转: 保留{len(captured)}组use_package调用链到新对话开头")
+                before_count = len(retained_tool_chains)
+                retained_tool_chains = _dedupe_retained_use_package_chains(retained_tool_chains + captured)
+                print(f"🔧 A区轮转: 捕获{len(captured)}组use_package调用链，按包名去重后保留{len(retained_tool_chains)}组（原{before_count}组）")
 
         a_start_round += X
         a_end_round = a_start_round + X
@@ -3554,7 +3597,7 @@ async def _run_partition_auto_extract_after_response_locked(session_id: str, cha
         state = await get_session_cache_state(session_id)
         summary_parts = state['summary_parts']
         a_start_round = int(state.get('a_start_round') or 0)
-        retained_tool_chains = list(state.get('retained_tool_chains') or [])
+        retained_tool_chains = _dedupe_retained_use_package_chains(list(state.get('retained_tool_chains') or []))
         keep_was_enabled = bool(state.get('keep_a_tools_enabled'))
         if not CACHE_PARTITION_KEEP_A_TOOLS:
             if retained_tool_chains or keep_was_enabled:
@@ -3580,8 +3623,9 @@ async def _run_partition_auto_extract_after_response_locked(session_id: str, cha
             if CACHE_PARTITION_KEEP_A_TOOLS:
                 captured = _extract_use_package_chains(a_msgs)
                 if captured:
-                    retained_tool_chains.extend(captured)
-                    print(f"🔧 回复后A区轮转: 保留{len(captured)}组use_package调用链")
+                    before_count = len(retained_tool_chains)
+                    retained_tool_chains = _dedupe_retained_use_package_chains(retained_tool_chains + captured)
+                    print(f"🔧 回复后A区轮转: 捕获{len(captured)}组use_package调用链，按包名去重后保留{len(retained_tool_chains)}组（原{before_count}组）")
             a_start_round += X
             a_end_round = a_start_round + X
             a_round_groups = rounds[a_start_round : a_end_round]

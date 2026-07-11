@@ -3021,42 +3021,48 @@ def group_by_rounds(history: list) -> list:
 
 
 def _extract_use_package_chains(messages: list) -> list:
-    """Return complete use_package assistant/tool protocol chains from one evicted A batch."""
+    """Capture complete use_package chains by order inside an evicted A batch; IDs are not repaired here."""
     retained = []
-    pending = None
-    expected_ids = set()
-    matched_tools = []
+    items = messages or []
+    i = 0
+    while i < len(items):
+        msg = items[i]
+        if msg.get("role") != "assistant" or not msg.get("tool_calls"):
+            i += 1
+            continue
 
-    def flush():
-        nonlocal pending, expected_ids, matched_tools
-        if pending and expected_ids and {m.get("tool_call_id") for m in matched_tools} >= expected_ids:
+        calls = list(msg.get("tool_calls") or [])
+        package_positions = [
+            pos for pos, tc in enumerate(calls)
+            if (tc.get("function") or {}).get("name") == "use_package"
+        ]
+        if not package_positions:
+            i += 1
+            continue
+
+        # OpenAI tool results follow the assistant call group in the same order.
+        following_tools = []
+        j = i + 1
+        while j < len(items) and items[j].get("role") == "tool":
+            following_tools.append(items[j])
+            j += 1
+
+        # Only retain use_package calls whose positional result is present.
+        available_positions = [pos for pos in package_positions if pos < len(following_tools)]
+        if available_positions:
+            package_calls = [calls[pos] for pos in available_positions]
+            package_tools = [following_tools[pos] for pos in available_positions]
+            assistant = {k: v for k, v in msg.items() if k not in ("id", "created_at")}
+            assistant["tool_calls"] = package_calls
             retained.append({
-                "assistant": {k: v for k, v in pending.items() if k not in ("id", "created_at")},
-                "tools": [{k: v for k, v in m.items() if k not in ("id", "created_at")} for m in matched_tools],
+                "assistant": assistant,
+                "tools": [
+                    {k: v for k, v in tool.items() if k not in ("id", "created_at")}
+                    for tool in package_tools
+                ],
             })
-        pending = None
-        expected_ids = set()
-        matched_tools = []
 
-    for msg in messages or []:
-        if msg.get("role") == "assistant" and msg.get("tool_calls"):
-            flush()
-            package_ids = {
-                tc.get("id") for tc in msg.get("tool_calls", [])
-                if tc.get("id") and (tc.get("function") or {}).get("name") == "use_package"
-            }
-            if package_ids:
-                package_calls = [tc for tc in msg.get("tool_calls", []) if tc.get("id") in package_ids]
-                pending = {k: v for k, v in msg.items() if k not in ("id", "created_at")}
-                pending["tool_calls"] = package_calls
-                expected_ids = package_ids
-            continue
-        if msg.get("role") == "tool" and pending and msg.get("tool_call_id") in expected_ids:
-            matched_tools.append(msg)
-            continue
-        if msg.get("role") not in ("tool",):
-            flush()
-    flush()
+        i = j if j > i + 1 else i + 1
     return retained
 
 
@@ -4319,8 +4325,8 @@ async def chat_completions(request: Request):
             client_increment = [last_user_msg] if last_user_msg else []
 
         all_msgs = db_msgs + client_increment
-        all_msgs = _repair_tool_call_ids_by_adjacency(all_msgs, session_id=session_id, reason="all_msgs")
-
+        # Do not repair the entire DB history here. Only the final messages that actually enter
+        # the upstream request are repaired below.
         all_msgs = _normalize_tool_chains_by_id(all_msgs)
         _log_tool_chain_snapshot("all_msgs_after_normalize", all_msgs, session_id=session_id, enabled=tool_chain_debug)
 

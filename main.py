@@ -3102,6 +3102,16 @@ def _dedupe_retained_use_package_chains(chains: list) -> list:
     return [chain for _, chain in ordered]
 
 
+def _retained_package_names(chains: list) -> list:
+    """Compact package-name list for dashboard logs."""
+    names = []
+    for chain in chains or []:
+        name = _retained_use_package_name(chain)
+        if name:
+            names.append(name)
+    return names
+
+
 def _flatten_retained_tool_chains(chains: list) -> list:
     messages = []
     for chain in _dedupe_retained_use_package_chains(chains):
@@ -3305,6 +3315,8 @@ async def build_partitioned_messages(
     b_rounds_count = len(b_round_groups)
     
     rotation_count = 0
+    retained_audit_before = None
+    retained_audit_captured = []
     max_rotations = CACHE_MAX_ROTATIONS if CACHE_PARTITION_TRIGGER == "time" else 999
     while _should_rotate(b_rounds_count, X, a_msgs) and rotation_count < max_rotations:
         rotation_count += 1
@@ -3314,6 +3326,9 @@ async def build_partitioned_messages(
         if CACHE_PARTITION_KEEP_A_TOOLS:
             captured = _extract_use_package_chains(a_msgs)
             if captured:
+                if retained_audit_before is None:
+                    retained_audit_before = list(retained_tool_chains)
+                retained_audit_captured.extend(captured)
                 before_count = len(retained_tool_chains)
                 retained_tool_chains = _dedupe_retained_use_package_chains(retained_tool_chains + captured)
                 print(f"🔧 A区轮转: 捕获{len(captured)}组use_package调用链，按包名去重后保留{len(retained_tool_chains)}组（原{before_count}组）")
@@ -3328,6 +3343,9 @@ async def build_partitioned_messages(
     
     if rotation_count > 0:
         await save_session_cache_state(session_id, summary_parts, a_start_round, retained_tool_chains, CACHE_PARTITION_KEEP_A_TOOLS)
+        if retained_audit_captured:
+            add_dashboard_log("info", f"🔧 A区use_package保留[处理前]: 已有={_retained_package_names(retained_audit_before or [])}, 本次捕获={_retained_package_names(retained_audit_captured)}", category="chat", session_id=session_id)
+            add_dashboard_log("info", f"🔧 A区use_package保留[处理后]: 最终={_retained_package_names(retained_tool_chains)}（按包名仅留最新）", category="chat", session_id=session_id)
         print(f"🔄 轮转完成(共{rotation_count}次): 摘要已架空, A区{len(a_msgs)}条, B区{len(b_msgs)}条")
 
     # 自动提取不在请求构造阶段执行，避免用户到临界值时等待提取完成。
@@ -3615,6 +3633,8 @@ async def _run_partition_auto_extract_after_response_locked(session_id: str, cha
         b_rounds_count = len(b_round_groups)
 
         rotation_count = 0
+        retained_audit_before = None
+        retained_audit_captured = []
         max_rotations = CACHE_MAX_ROTATIONS if CACHE_PARTITION_TRIGGER == "time" else 999
         while _should_rotate(b_rounds_count, X, a_msgs) and rotation_count < max_rotations:
             rotation_count += 1
@@ -3623,6 +3643,9 @@ async def _run_partition_auto_extract_after_response_locked(session_id: str, cha
             if CACHE_PARTITION_KEEP_A_TOOLS:
                 captured = _extract_use_package_chains(a_msgs)
                 if captured:
+                    if retained_audit_before is None:
+                        retained_audit_before = list(retained_tool_chains)
+                    retained_audit_captured.extend(captured)
                     before_count = len(retained_tool_chains)
                     retained_tool_chains = _dedupe_retained_use_package_chains(retained_tool_chains + captured)
                     print(f"🔧 回复后A区轮转: 捕获{len(captured)}组use_package调用链，按包名去重后保留{len(retained_tool_chains)}组（原{before_count}组）")
@@ -3635,6 +3658,9 @@ async def _run_partition_auto_extract_after_response_locked(session_id: str, cha
 
         if rotation_count > 0:
             await save_session_cache_state(session_id, summary_parts, a_start_round, retained_tool_chains, CACHE_PARTITION_KEEP_A_TOOLS)
+            if retained_audit_captured:
+                add_dashboard_log("info", f"🔧 A区use_package保留[处理前]: 已有={_retained_package_names(retained_audit_before or [])}, 本次捕获={_retained_package_names(retained_audit_captured)}", category="chat", session_id=session_id)
+                add_dashboard_log("info", f"🔧 A区use_package保留[处理后]: 最终={_retained_package_names(retained_tool_chains)}（按包名仅留最新）", category="chat", session_id=session_id)
             log_memory_palace_auto_extract("run", f"🧠 回复后分区轮转完成：session={session_id}, 共{rotation_count}次, a_start_round={a_start_round}", session_id=session_id)
 
         if a_start_round > 0:

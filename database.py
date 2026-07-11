@@ -858,10 +858,10 @@ async def get_session_cache_state(session_id: str) -> dict:
             retained_tool_chains = []
             if isinstance(raw_retained, str):
                 try:
-                    parsed_retained = _json.loads(raw_retained)
+                    parsed_retained = json.loads(raw_retained)
                     if isinstance(parsed_retained, list):
                         retained_tool_chains = parsed_retained
-                except (_json.JSONDecodeError, ValueError, TypeError):
+                except (json.JSONDecodeError, ValueError, TypeError):
                     retained_tool_chains = []
             elif isinstance(raw_retained, list):
                 retained_tool_chains = raw_retained

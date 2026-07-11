@@ -867,17 +867,17 @@ async def get_session_cache_state(session_id: str) -> dict:
 async def save_session_cache_state(session_id: str, summary_parts: list, a_start_round: int, retained_tool_chains: list = None, keep_a_tools_enabled: bool = None):
     import json
     summary_json = json.dumps(summary_parts, ensure_ascii=False)
-    retained_json = json.dumps(retained_tool_chains or [], ensure_ascii=False)
-    keep_enabled = bool(keep_a_tools_enabled) if keep_a_tools_enabled is not None else False
+    retained_json = json.dumps(retained_tool_chains, ensure_ascii=False) if retained_tool_chains is not None else None
+    keep_enabled = bool(keep_a_tools_enabled) if keep_a_tools_enabled is not None else None
     pool = await get_pool()
     async with pool.acquire() as conn:
         await conn.execute("""
             INSERT INTO session_cache_state (session_id, summary, a_start_round, retained_tool_chains, keep_a_tools_enabled, updated_at)
-            VALUES ($1, $2, $3, $4::jsonb, $5, NOW())
+            VALUES ($1, $2, $3, COALESCE($4::jsonb, '[]'::jsonb), COALESCE($5, FALSE), NOW())
             ON CONFLICT (session_id)
             DO UPDATE SET summary = $2, a_start_round = $3,
-                          retained_tool_chains = $4::jsonb,
-                          keep_a_tools_enabled = $5,
+                          retained_tool_chains = COALESCE($4::jsonb, session_cache_state.retained_tool_chains),
+                          keep_a_tools_enabled = COALESCE($5, session_cache_state.keep_a_tools_enabled),
                           updated_at = NOW()
         """, session_id, summary_json, a_start_round, retained_json, keep_enabled)
 

@@ -3018,6 +3018,59 @@ def group_by_rounds(history: list) -> list:
     return rounds
 
 
+
+
+def _extract_use_package_chains(messages: list) -> list:
+    """Return complete use_package assistant/tool protocol chains from one evicted A batch."""
+    retained = []
+    pending = None
+    expected_ids = set()
+    matched_tools = []
+
+    def flush():
+        nonlocal pending, expected_ids, matched_tools
+        if pending and expected_ids and {m.get("tool_call_id") for m in matched_tools} >= expected_ids:
+            retained.append({
+                "assistant": {k: v for k, v in pending.items() if k not in ("id", "created_at")},
+                "tools": [{k: v for k, v in m.items() if k not in ("id", "created_at")} for m in matched_tools],
+            })
+        pending = None
+        expected_ids = set()
+        matched_tools = []
+
+    for msg in messages or []:
+        if msg.get("role") == "assistant" and msg.get("tool_calls"):
+            flush()
+            package_ids = {
+                tc.get("id") for tc in msg.get("tool_calls", [])
+                if tc.get("id") and (tc.get("function") or {}).get("name") == "use_package"
+            }
+            if package_ids:
+                package_calls = [tc for tc in msg.get("tool_calls", []) if tc.get("id") in package_ids]
+                pending = {k: v for k, v in msg.items() if k not in ("id", "created_at")}
+                pending["tool_calls"] = package_calls
+                expected_ids = package_ids
+            continue
+        if msg.get("role") == "tool" and pending and msg.get("tool_call_id") in expected_ids:
+            matched_tools.append(msg)
+            continue
+        if msg.get("role") not in ("tool",):
+            flush()
+    flush()
+    return retained
+
+
+def _flatten_retained_tool_chains(chains: list) -> list:
+    messages = []
+    for chain in chains or []:
+        assistant = chain.get("assistant") if isinstance(chain, dict) else None
+        tools = chain.get("tools") if isinstance(chain, dict) else None
+        if assistant and isinstance(tools, list):
+            messages.append(dict(assistant))
+            messages.extend(dict(m) for m in tools if isinstance(m, dict))
+    return messages
+
+
 def _should_rotate(b_rounds_count: int, X: int, a_msgs: list) -> bool:
     """
     判断是否应该触发A区→摘要的轮转。
@@ -3183,7 +3236,19 @@ async def build_partitioned_messages(
     state = await get_session_cache_state(session_id)
     summary_parts = state['summary_parts']
     a_start_round = state['a_start_round']
-    
+    retained_tool_chains = list(state.get('retained_tool_chains') or [])
+    keep_was_enabled = bool(state.get('keep_a_tools_enabled'))
+
+    # Closing clears prior retained chains. Re-opening starts at the current partition boundary;
+    # previously evicted history is never searched retroactively.
+    if not CACHE_PARTITION_KEEP_A_TOOLS:
+        if retained_tool_chains or keep_was_enabled:
+            retained_tool_chains = []
+            await save_session_cache_state(session_id, summary_parts, a_start_round, [], False)
+    elif not keep_was_enabled:
+        retained_tool_chains = []
+        await save_session_cache_state(session_id, summary_parts, a_start_round, [], True)
+
     if total_rounds < X:
         return await _build_basic_cached(history, base_prompt, user_message, current_user_msg)
     
@@ -3204,7 +3269,12 @@ async def build_partitioned_messages(
         trigger_info = f"B区{b_rounds_count}轮 >= X={X}" if CACHE_PARTITION_TRIGGER != "time" else f"A区首条消息超出{CACHE_PARTITION_WINDOW}分钟窗口"
         print(f"🔄 轮转#{rotation_count}: session={session_id}, {trigger_info}")
         log_memory_palace_auto_extract("run", f"🧠 分区轮转推进缓存边界：session={session_id}, {trigger_info}, 当前A区{len(a_msgs)}条", session_id=session_id)
-        
+        if CACHE_PARTITION_KEEP_A_TOOLS:
+            captured = _extract_use_package_chains(a_msgs)
+            if captured:
+                retained_tool_chains.extend(captured)
+                print(f"🔧 A区轮转: 保留{len(captured)}组use_package调用链到新对话开头")
+
         a_start_round += X
         a_end_round = a_start_round + X
         a_round_groups = rounds[a_start_round : a_end_round]
@@ -3214,7 +3284,7 @@ async def build_partitioned_messages(
         b_rounds_count = len(b_round_groups)
     
     if rotation_count > 0:
-        await save_session_cache_state(session_id, summary_parts, a_start_round)
+        await save_session_cache_state(session_id, summary_parts, a_start_round, retained_tool_chains, CACHE_PARTITION_KEEP_A_TOOLS)
         print(f"🔄 轮转完成(共{rotation_count}次): 摘要已架空, A区{len(a_msgs)}条, B区{len(b_msgs)}条")
 
     # 自动提取不在请求构造阶段执行，避免用户到临界值时等待提取完成。
@@ -3229,7 +3299,11 @@ async def build_partitioned_messages(
         })
     
     # 摘要区已架空：不再把历史 summary_parts 注入上下文。
-    
+
+    # 已轮转出 A 区的 use_package 链固定放在新对话历史开头。
+    if CACHE_PARTITION_KEEP_A_TOOLS and retained_tool_chains:
+        result.extend(_flatten_retained_tool_chains(retained_tool_chains))
+
     # A区：默认剥离tool消息和tool_calls以节省上下文；可在设置页开启保留。
     cleaned_a = []
     if CACHE_PARTITION_KEEP_A_TOOLS:
@@ -3480,6 +3554,15 @@ async def _run_partition_auto_extract_after_response_locked(session_id: str, cha
         state = await get_session_cache_state(session_id)
         summary_parts = state['summary_parts']
         a_start_round = int(state.get('a_start_round') or 0)
+        retained_tool_chains = list(state.get('retained_tool_chains') or [])
+        keep_was_enabled = bool(state.get('keep_a_tools_enabled'))
+        if not CACHE_PARTITION_KEEP_A_TOOLS:
+            if retained_tool_chains or keep_was_enabled:
+                retained_tool_chains = []
+                await save_session_cache_state(session_id, summary_parts, a_start_round, [], False)
+        elif not keep_was_enabled:
+            retained_tool_chains = []
+            await save_session_cache_state(session_id, summary_parts, a_start_round, [], True)
         X = CACHE_PARTITION_X
 
         a_end_round = a_start_round + X
@@ -3494,6 +3577,11 @@ async def _run_partition_auto_extract_after_response_locked(session_id: str, cha
             rotation_count += 1
             trigger_info = f"B区{b_rounds_count}轮 >= X={X}" if CACHE_PARTITION_TRIGGER != "time" else f"A区首条消息超出{CACHE_PARTITION_WINDOW}分钟窗口"
             log_memory_palace_auto_extract("run", f"🧠 回复后分区轮转推进缓存边界：session={session_id}, {trigger_info}, 当前A区{len(a_msgs)}条", session_id=session_id)
+            if CACHE_PARTITION_KEEP_A_TOOLS:
+                captured = _extract_use_package_chains(a_msgs)
+                if captured:
+                    retained_tool_chains.extend(captured)
+                    print(f"🔧 回复后A区轮转: 保留{len(captured)}组use_package调用链")
             a_start_round += X
             a_end_round = a_start_round + X
             a_round_groups = rounds[a_start_round : a_end_round]
@@ -3502,7 +3590,7 @@ async def _run_partition_auto_extract_after_response_locked(session_id: str, cha
             b_rounds_count = len(b_round_groups)
 
         if rotation_count > 0:
-            await save_session_cache_state(session_id, summary_parts, a_start_round)
+            await save_session_cache_state(session_id, summary_parts, a_start_round, retained_tool_chains, CACHE_PARTITION_KEEP_A_TOOLS)
             log_memory_palace_auto_extract("run", f"🧠 回复后分区轮转完成：session={session_id}, 共{rotation_count}次, a_start_round={a_start_round}", session_id=session_id)
 
         if a_start_round > 0:

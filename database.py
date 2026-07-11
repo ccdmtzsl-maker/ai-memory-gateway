@@ -147,8 +147,18 @@ async def init_tables():
                 session_id      TEXT PRIMARY KEY,
                 summary         TEXT DEFAULT '',
                 a_start_round   INTEGER DEFAULT 0,
+                retained_tool_chains JSONB DEFAULT '[]'::jsonb,
+                keep_a_tools_enabled BOOLEAN DEFAULT FALSE,
                 updated_at      TIMESTAMPTZ DEFAULT NOW()
             );
+        """)
+        await conn.execute("""
+            ALTER TABLE session_cache_state
+            ADD COLUMN IF NOT EXISTS retained_tool_chains JSONB DEFAULT '[]'::jsonb;
+        """)
+        await conn.execute("""
+            ALTER TABLE session_cache_state
+            ADD COLUMN IF NOT EXISTS keep_a_tools_enabled BOOLEAN DEFAULT FALSE;
         """)
         
         # 日印象表（每天一条叙事摘要，不影响碎片/事件/核心三层结构）
@@ -828,7 +838,7 @@ async def get_session_cache_state(session_id: str) -> dict:
     pool = await get_pool()
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
-            "SELECT summary, a_start_round, updated_at FROM session_cache_state WHERE session_id = $1",
+            "SELECT summary, a_start_round, retained_tool_chains, keep_a_tools_enabled, updated_at FROM session_cache_state WHERE session_id = $1",
             session_id
         )
         if row:
@@ -847,22 +857,29 @@ async def get_session_cache_state(session_id: str) -> dict:
             return {
                 'summary_parts': summary_parts,
                 'a_start_round': row['a_start_round'] or 0,
+                'retained_tool_chains': list(row['retained_tool_chains'] or []),
+                'keep_a_tools_enabled': bool(row['keep_a_tools_enabled']),
                 'updated_at': row['updated_at'],
             }
-        return {'summary_parts': [], 'a_start_round': 0, 'updated_at': None}
+        return {'summary_parts': [], 'a_start_round': 0, 'retained_tool_chains': [], 'keep_a_tools_enabled': False, 'updated_at': None}
 
 
-async def save_session_cache_state(session_id: str, summary_parts: list, a_start_round: int):
+async def save_session_cache_state(session_id: str, summary_parts: list, a_start_round: int, retained_tool_chains: list = None, keep_a_tools_enabled: bool = None):
     import json
     summary_json = json.dumps(summary_parts, ensure_ascii=False)
+    retained_json = json.dumps(retained_tool_chains or [], ensure_ascii=False)
+    keep_enabled = bool(keep_a_tools_enabled) if keep_a_tools_enabled is not None else False
     pool = await get_pool()
     async with pool.acquire() as conn:
         await conn.execute("""
-            INSERT INTO session_cache_state (session_id, summary, a_start_round, updated_at)
-            VALUES ($1, $2, $3, NOW())
-            ON CONFLICT (session_id) 
-            DO UPDATE SET summary = $2, a_start_round = $3, updated_at = NOW()
-        """, session_id, summary_json, a_start_round)
+            INSERT INTO session_cache_state (session_id, summary, a_start_round, retained_tool_chains, keep_a_tools_enabled, updated_at)
+            VALUES ($1, $2, $3, $4::jsonb, $5, NOW())
+            ON CONFLICT (session_id)
+            DO UPDATE SET summary = $2, a_start_round = $3,
+                          retained_tool_chains = $4::jsonb,
+                          keep_a_tools_enabled = $5,
+                          updated_at = NOW()
+        """, session_id, summary_json, a_start_round, retained_json, keep_enabled)
 
 
 

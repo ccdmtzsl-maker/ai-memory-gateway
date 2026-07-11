@@ -854,10 +854,22 @@ async def get_session_cache_state(session_id: str) -> dict:
                         summary_parts = [raw_summary]
                 except (json.JSONDecodeError, ValueError):
                     summary_parts = [raw_summary]
+            raw_retained = row['retained_tool_chains']
+            retained_tool_chains = []
+            if isinstance(raw_retained, str):
+                try:
+                    parsed_retained = _json.loads(raw_retained)
+                    if isinstance(parsed_retained, list):
+                        retained_tool_chains = parsed_retained
+                except (_json.JSONDecodeError, ValueError, TypeError):
+                    retained_tool_chains = []
+            elif isinstance(raw_retained, list):
+                retained_tool_chains = raw_retained
+
             return {
                 'summary_parts': summary_parts,
                 'a_start_round': row['a_start_round'] or 0,
-                'retained_tool_chains': list(row['retained_tool_chains'] or []),
+                'retained_tool_chains': retained_tool_chains,
                 'keep_a_tools_enabled': bool(row['keep_a_tools_enabled']),
                 'updated_at': row['updated_at'],
             }

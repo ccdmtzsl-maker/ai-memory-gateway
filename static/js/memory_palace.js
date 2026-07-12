@@ -4,8 +4,10 @@ let _mpCurrentRoom = '';
 let _mpEditingId = null;
 let _mpEventBoxes = [];
 let _mpCurrentEventBoxId = null;
-const MP_NODE_RENDER_BATCH_SIZE = 40;
-let _mpNodeRenderedCount = 0;
+const MP_NODE_PAGE_SIZE = 40;
+let _mpNodeLoadedCount = 0;
+let _mpNodeHasMore = true;
+let _mpNodeLoadingMore = false;
 let _mpNodeScrollListenerBound = false;
 let _mpCompressRunning = false;
 let _mpShowNodeIds = false;
@@ -172,25 +174,55 @@ function toggleMemoryPalaceTools() {
 
 async function loadMemoryPalaceNodes(room) {
     const el = document.getElementById('mpNodeList');
-    if (el) el.innerHTML = '<div style=\"color:var(--text-muted);padding:16px;\">加载中...</div>';
+    if (el) el.innerHTML = '<div style="color:var(--text-muted);padding:16px;">加载中...</div>';
 
+    _mpNodes = [];
+    _mpNodeLoadedCount = 0;
+    _mpNodeHasMore = true;
+    _mpNodeLoadingMore = false;
+
+    try {
+        await fetchNextMemoryPalaceNodePage(true);
+        updateMemoryPalaceRoomTitle();
+    } catch (e) {
+        mpMsg('加载记忆节点失败：' + e.message, 'error');
+        if (el) el.innerHTML = '<div style="color:var(--text-muted);padding:16px;">加载失败</div>';
+    }
+}
+
+async function fetchNextMemoryPalaceNodePage(reset) {
+    if (_mpNodeLoadingMore) return;
+    if (!reset && !_mpNodeHasMore) return;
+
+    _mpNodeLoadingMore = true;
     const params = new URLSearchParams();
-    params.set('limit', '200');
+    params.set('limit', String(MP_NODE_PAGE_SIZE));
+    params.set('offset', String(reset ? 0 : _mpNodeLoadedCount));
     params.set('archived', 'false');
-    if (room) params.set('room', room);
+    if (_mpCurrentRoom) params.set('room', _mpCurrentRoom);
 
     try {
         const resp = await fetch('/api/memory-palace/nodes?' + params.toString());
         const data = await resp.json();
         if (data.error) throw new Error(data.error);
-        _mpNodes = data.nodes || [];
-        renderMemoryPalaceNodes();
-        updateMemoryPalaceRoomTitle();
-    } catch (e) {
-        mpMsg('加载记忆节点失败：' + e.message, 'error');
-        if (el) el.innerHTML = '<div style=\"color:var(--text-muted);padding:16px;\">加载失败</div>';
+        const nodes = data.nodes || [];
+        if (reset) {
+            _mpNodes = nodes;
+            _mpNodeLoadedCount = nodes.length;
+            renderMemoryPalaceNodes();
+        } else {
+            const startIndex = _mpNodes.length;
+            _mpNodes = _mpNodes.concat(nodes);
+            _mpNodeLoadedCount += nodes.length;
+            appendMemoryPalaceNodeBatch(startIndex, nodes);
+        }
+        _mpNodeHasMore = nodes.length >= MP_NODE_PAGE_SIZE;
+        renderMemoryPalaceNodeLoadMoreHint();
+    } finally {
+        _mpNodeLoadingMore = false;
     }
 }
+
 
 function memoryPalaceNodeCardHtml(node, index) {
     const room = mpRoomMeta(node.room);
@@ -219,16 +251,13 @@ function memoryPalaceNodeCardHtml(node, index) {
     '</div>';
 }
 
-function appendMemoryPalaceNodeBatch() {
+function appendMemoryPalaceNodeBatch(startIndex, nodes) {
     const el = document.getElementById('mpNodeList');
-    if (!el || !_mpNodes.length) return;
-    const from = _mpNodeRenderedCount;
-    const to = Math.min(from + MP_NODE_RENDER_BATCH_SIZE, _mpNodes.length);
-    if (from >= to) return;
-    const html = _mpNodes.slice(from, to).map((node, offset) => memoryPalaceNodeCardHtml(node, from + offset)).join('');
+    if (!el || !nodes || !nodes.length) return;
+    const oldHint = document.getElementById('mpNodeLoadMoreHint');
+    if (oldHint) oldHint.remove();
+    const html = nodes.map((node, offset) => memoryPalaceNodeCardHtml(node, startIndex + offset)).join('');
     el.insertAdjacentHTML('beforeend', html);
-    _mpNodeRenderedCount = to;
-    renderMemoryPalaceNodeLoadMoreHint();
 }
 
 function renderMemoryPalaceNodeLoadMoreHint() {
@@ -236,21 +265,27 @@ function renderMemoryPalaceNodeLoadMoreHint() {
     if (!el) return;
     const old = document.getElementById('mpNodeLoadMoreHint');
     if (old) old.remove();
-    if (!_mpNodes.length || _mpNodeRenderedCount >= _mpNodes.length) return;
+    if (!_mpNodes.length) return;
     const hint = document.createElement('div');
     hint.id = 'mpNodeLoadMoreHint';
     hint.className = 'card';
     hint.style.cssText = 'grid-column:1/-1;padding:14px;text-align:center;color:var(--text-muted);border-style:dashed;';
-    hint.textContent = '已显示 ' + _mpNodeRenderedCount + ' / ' + _mpNodes.length + ' 条，继续向下滚动加载更多...';
+    if (_mpNodeLoadingMore) {
+        hint.textContent = '正在加载更多记忆...';
+    } else if (_mpNodeHasMore) {
+        hint.textContent = '已显示 ' + _mpNodes.length + ' 条，继续向下滚动加载更多...';
+    } else {
+        hint.textContent = '已显示全部 ' + _mpNodes.length + ' 条记忆。';
+    }
     el.appendChild(hint);
 }
 
 function maybeAppendMemoryPalaceNodeBatch() {
-    if (!_mpNodes.length || _mpNodeRenderedCount >= _mpNodes.length) return;
+    if (_mpNodeLoadingMore || !_mpNodeHasMore) return;
     const section = document.getElementById('section-memory-palace');
     if (section && section.classList && !section.classList.contains('active')) return;
     const distance = document.documentElement.scrollHeight - (window.scrollY + window.innerHeight);
-    if (distance < 700) appendMemoryPalaceNodeBatch();
+    if (distance < 700) fetchNextMemoryPalaceNodePage(false).catch(e => mpMsg('加载更多记忆失败：' + e.message, 'error'));
 }
 
 function ensureMemoryPalaceNodeScrollListener() {
@@ -264,14 +299,14 @@ function ensureMemoryPalaceNodeScrollListener() {
 function renderMemoryPalaceNodes() {
     const el = document.getElementById('mpNodeList');
     if (!el) return;
-    _mpNodeRenderedCount = 0;
     if (!_mpNodes.length) {
         el.innerHTML = '<div class="card" style="padding:24px;color:var(--text-muted);text-align:center;">这个房间还没有记忆。可以点“新增记忆”手动放一条进去。</div>';
         return;
     }
     el.innerHTML = '';
     ensureMemoryPalaceNodeScrollListener();
-    appendMemoryPalaceNodeBatch();
+    appendMemoryPalaceNodeBatch(0, _mpNodes);
+    renderMemoryPalaceNodeLoadMoreHint();
 }
 
 

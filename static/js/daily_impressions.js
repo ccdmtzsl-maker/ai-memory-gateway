@@ -72,6 +72,15 @@ function _dailyMonthLabel(key) {
     return parts[0] + '年' + parts[1] + '月';
 }
 
+function _dailyCurrentMonthKey() {
+    return new Date().toISOString().slice(0, 7);
+}
+
+function _dailySetToolbarVisible(visible) {
+    const toolbar = document.getElementById('dailyPageToolbarCard');
+    if (toolbar) toolbar.style.display = visible ? '' : 'none';
+}
+
 function _dailyUpdatePageTitle() {
     const title = document.getElementById('dailyPageTitle');
     if (!title) return;
@@ -93,6 +102,7 @@ function renderDailyMonthOverview(items) {
     const detail = document.getElementById('dailyPageDetail');
     if (!list) return;
     if (detail) detail.style.display = 'none';
+    _dailySetToolbarVisible(false);
     _dailyUpdatePageTitle();
 
     const groups = [];
@@ -147,6 +157,7 @@ function renderDailyMonthItems(monthKey) {
     const detail = document.getElementById('dailyPageDetail');
     if (!list) return;
     if (detail) detail.style.display = 'none';
+    _dailySetToolbarVisible(true);
     _dailyUpdatePageTitle();
 
     const entries = _dailyImpressions
@@ -211,6 +222,7 @@ async function loadDailyImpressionsPage() {
         const items = await _fetchDailyImpressions();
         if (!items.length) {
             _dailySelectedMonth = '';
+            _dailySetToolbarVisible(false);
             _dailyUpdatePageTitle();
             list.innerHTML = '<div class="card" style="grid-column:1/-1;padding:28px;text-align:center;color:var(--text-muted);">还没有生成过日印象。</div>';
             return;
@@ -218,8 +230,14 @@ async function loadDailyImpressionsPage() {
         if (_dailySelectedMonth && items.some(item => _dailyMonthKey(item) === _dailySelectedMonth)) {
             renderDailyMonthItems(_dailySelectedMonth);
         } else {
-            _dailySelectedMonth = '';
-            renderDailyMonthOverview(items);
+            const currentMonth = _dailyCurrentMonthKey();
+            if (items.some(item => _dailyMonthKey(item) === currentMonth)) {
+                _dailySelectedMonth = currentMonth;
+                renderDailyMonthItems(_dailySelectedMonth);
+            } else {
+                _dailySelectedMonth = '';
+                renderDailyMonthOverview(items);
+            }
         }
     } catch (e) {
         list.innerHTML = '<div class="card" style="grid-column:1/-1;padding:18px;color:#b91c1c;"><b>加载失败：</b>' + escHtml(e.message) + '</div>';

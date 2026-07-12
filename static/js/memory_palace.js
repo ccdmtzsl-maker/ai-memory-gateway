@@ -4,6 +4,9 @@ let _mpCurrentRoom = '';
 let _mpEditingId = null;
 let _mpEventBoxes = [];
 let _mpCurrentEventBoxId = null;
+const MP_NODE_RENDER_BATCH_SIZE = 40;
+let _mpNodeRenderedCount = 0;
+let _mpNodeScrollListenerBound = false;
 let _mpCompressRunning = false;
 let _mpShowNodeIds = false;
 let _mpEventBoxesExpanded = false;
@@ -91,7 +94,9 @@ async function loadMemoryPalace() {
         renderMemoryPalaceEventBoxCollapseState();
         renderMemoryPalaceToolsState();
         await loadMemoryPalaceNodes(_mpCurrentRoom);
-        await loadMemoryPalaceEventBoxes();
+        if (_mpEventBoxesExpanded) {
+            await loadMemoryPalaceEventBoxes();
+        }
     } catch (e) {
         mpMsg('加载记忆宫殿失败：' + e.message, 'error');
         const roomsEl = document.getElementById('mpRooms');
@@ -187,40 +192,88 @@ async function loadMemoryPalaceNodes(room) {
     }
 }
 
+function memoryPalaceNodeCardHtml(node, index) {
+    const room = mpRoomMeta(node.room);
+    const color = room.color || '#64748b';
+    const tags = node.tags ? String(node.tags).split(/[、,，\n]/).map(t => t.trim()).filter(Boolean) : [];
+    const pinnedText = mpPinnedText(node.pinned_until);
+    const nodeShortId = String(index + 1).padStart(2, '0');
+    const idBadge = _mpShowNodeIds ? ' <code title="绑定时可输入 #' + nodeShortId + '" style="font-weight:700;color:#e75480;margin-left:8px;font-size:12px;background:#fff1f5;border:1px solid #f9a8d4;border-radius:6px;padding:2px 6px;vertical-align:middle;user-select:text;">#' + nodeShortId + '</code>' : '';
+    return '<div class="card mp-node-card" data-id="' + mpEsc(node.id) + '" style="padding:16px;border-top:4px solid ' + color + ';">' +
+        '<div style="display:flex;justify-content:space-between;gap:10px;margin-bottom:10px;">' +
+            '<div>' +
+                '<div style="font-weight:800;color:' + color + ';">' + mpEsc(room.label || node.room) + idBadge + '</div>' +
+                '<div style="font-size:12px;color:var(--text-muted);margin-top:2px;">importance ' + mpEsc(node.importance || 5) + ' · ' + mpEsc(node.mood || 'neutral') + (pinnedText ? ' · ' + mpEsc(pinnedText) : '') + '</div>' +
+            '</div>' +
+            '<div style="display:flex;gap:6px;align-items:flex-start;">' +
+                '<button class="mp-add-node-current-box" data-id="' + mpEsc(node.id) + '" style="padding:4px 8px;border:1px solid var(--border-color);border-radius:6px;background:#fff;cursor:pointer;font-size:12px;">入盒</button>' +
+                '<button class="mp-manual-bind-node" data-id="' + mpEsc(node.id) + '" style="padding:4px 8px;border:1px solid var(--border-color);border-radius:6px;background:#fff;cursor:pointer;font-size:12px;">绑定</button>' +
+                '<button class="mp-edit-node" data-id="' + mpEsc(node.id) + '" style="padding:4px 8px;border:1px solid var(--border-color);border-radius:6px;background:#fff;cursor:pointer;font-size:12px;">编辑</button>' +
+                '<button class="mp-delete-node" data-id="' + mpEsc(node.id) + '" style="padding:4px 8px;border:1px solid #dc2626;color:#dc2626;border-radius:6px;background:#fff;cursor:pointer;font-size:12px;">删除</button>' +
+            '</div>' +
+        '</div>' +
+        '<div style="white-space:pre-wrap;line-height:1.65;font-size:14px;">' + mpEsc(node.content || '') + '</div>' +
+        (tags.length ? '<div style="margin-top:12px;display:flex;gap:6px;flex-wrap:wrap;">' + tags.map(t => '<span style="font-size:12px;padding:3px 8px;border-radius:999px;background:' + color + '18;color:' + color + ';">#' + mpEsc(t) + '</span>').join('') + '</div>' : '') +
+        '<div style="margin-top:10px;font-size:12px;color:var(--text-muted);">记忆日期：' + mpEsc(node.date || (node.created_at || '').slice(0, 10)) + ' · 入库：' + mpEsc((node.created_at || '').slice(0, 19).replace('T', ' ')) + (node.access_count ? ' · 访问 ' + node.access_count : '') + '</div>' +
+        '<div class="mp-inline-editor" data-id="' + mpEsc(node.id) + '" style="display:none;margin-top:14px;padding-top:14px;border-top:1px dashed var(--border-color);"></div>' +
+    '</div>';
+}
+
+function appendMemoryPalaceNodeBatch() {
+    const el = document.getElementById('mpNodeList');
+    if (!el || !_mpNodes.length) return;
+    const from = _mpNodeRenderedCount;
+    const to = Math.min(from + MP_NODE_RENDER_BATCH_SIZE, _mpNodes.length);
+    if (from >= to) return;
+    const html = _mpNodes.slice(from, to).map((node, offset) => memoryPalaceNodeCardHtml(node, from + offset)).join('');
+    el.insertAdjacentHTML('beforeend', html);
+    _mpNodeRenderedCount = to;
+    renderMemoryPalaceNodeLoadMoreHint();
+}
+
+function renderMemoryPalaceNodeLoadMoreHint() {
+    const el = document.getElementById('mpNodeList');
+    if (!el) return;
+    const old = document.getElementById('mpNodeLoadMoreHint');
+    if (old) old.remove();
+    if (!_mpNodes.length || _mpNodeRenderedCount >= _mpNodes.length) return;
+    const hint = document.createElement('div');
+    hint.id = 'mpNodeLoadMoreHint';
+    hint.className = 'card';
+    hint.style.cssText = 'grid-column:1/-1;padding:14px;text-align:center;color:var(--text-muted);border-style:dashed;';
+    hint.textContent = '已显示 ' + _mpNodeRenderedCount + ' / ' + _mpNodes.length + ' 条，继续向下滚动加载更多...';
+    el.appendChild(hint);
+}
+
+function maybeAppendMemoryPalaceNodeBatch() {
+    if (!_mpNodes.length || _mpNodeRenderedCount >= _mpNodes.length) return;
+    const section = document.getElementById('section-memory-palace');
+    if (section && section.classList && !section.classList.contains('active')) return;
+    const distance = document.documentElement.scrollHeight - (window.scrollY + window.innerHeight);
+    if (distance < 700) appendMemoryPalaceNodeBatch();
+}
+
+function ensureMemoryPalaceNodeScrollListener() {
+    if (_mpNodeScrollListenerBound) return;
+    _mpNodeScrollListenerBound = true;
+    window.addEventListener('scroll', function() {
+        window.requestAnimationFrame(maybeAppendMemoryPalaceNodeBatch);
+    }, {passive: true});
+}
+
 function renderMemoryPalaceNodes() {
     const el = document.getElementById('mpNodeList');
     if (!el) return;
+    _mpNodeRenderedCount = 0;
     if (!_mpNodes.length) {
-        el.innerHTML = '<div class=\"card\" style=\"padding:24px;color:var(--text-muted);text-align:center;\">这个房间还没有记忆。可以点“新增记忆”手动放一条进去。</div>';
+        el.innerHTML = '<div class="card" style="padding:24px;color:var(--text-muted);text-align:center;">这个房间还没有记忆。可以点“新增记忆”手动放一条进去。</div>';
         return;
     }
-    el.innerHTML = _mpNodes.map(node => {
-        const room = mpRoomMeta(node.room);
-        const color = room.color || '#64748b';
-        const tags = node.tags ? String(node.tags).split(/[、,，\\n]/).map(t => t.trim()).filter(Boolean) : [];
-        const pinnedText = mpPinnedText(node.pinned_until);
-        const nodeShortId = String(_mpNodes.indexOf(node) + 1).padStart(2, '0');
-        const idBadge = _mpShowNodeIds ? ' <code title=\"绑定时可输入 #' + nodeShortId + '\" style=\"font-weight:700;color:#e75480;margin-left:8px;font-size:12px;background:#fff1f5;border:1px solid #f9a8d4;border-radius:6px;padding:2px 6px;vertical-align:middle;user-select:text;\">#' + nodeShortId + '</code>' : '';
-        return '<div class=\"card mp-node-card\" data-id=\"' + mpEsc(node.id) + '\" style=\"padding:16px;border-top:4px solid ' + color + ';\">' +
-            '<div style=\"display:flex;justify-content:space-between;gap:10px;margin-bottom:10px;\">' +
-                '<div>' +
-                    '<div style=\"font-weight:800;color:' + color + ';\">' + mpEsc(room.label || node.room) + idBadge + '</div>' +
-                    '<div style=\"font-size:12px;color:var(--text-muted);margin-top:2px;\">importance ' + mpEsc(node.importance || 5) + ' · ' + mpEsc(node.mood || 'neutral') + (pinnedText ? ' · ' + mpEsc(pinnedText) : '') + '</div>' +
-                '</div>' +
-                '<div style=\"display:flex;gap:6px;align-items:flex-start;\">' +
-                    '<button class=\"mp-add-node-current-box\" data-id=\"' + mpEsc(node.id) + '\" style=\"padding:4px 8px;border:1px solid var(--border-color);border-radius:6px;background:#fff;cursor:pointer;font-size:12px;\">入盒</button>' +
-                    '<button class=\"mp-manual-bind-node\" data-id=\"' + mpEsc(node.id) + '\" style=\"padding:4px 8px;border:1px solid var(--border-color);border-radius:6px;background:#fff;cursor:pointer;font-size:12px;\">绑定</button>' +
-                    '<button class=\"mp-edit-node\" data-id=\"' + mpEsc(node.id) + '\" style=\"padding:4px 8px;border:1px solid var(--border-color);border-radius:6px;background:#fff;cursor:pointer;font-size:12px;\">编辑</button>' +
-                    '<button class=\"mp-delete-node\" data-id=\"' + mpEsc(node.id) + '\" style=\"padding:4px 8px;border:1px solid #dc2626;color:#dc2626;border-radius:6px;background:#fff;cursor:pointer;font-size:12px;\">删除</button>' +
-                '</div>' +
-            '</div>' +
-            '<div style=\"white-space:pre-wrap;line-height:1.65;font-size:14px;\">' + mpEsc(node.content || '') + '</div>' +
-            (tags.length ? '<div style=\"margin-top:12px;display:flex;gap:6px;flex-wrap:wrap;\">' + tags.map(t => '<span style=\"font-size:12px;padding:3px 8px;border-radius:999px;background:' + color + '18;color:' + color + ';\">#' + mpEsc(t) + '</span>').join('') + '</div>' : '') +
-            '<div style=\"margin-top:10px;font-size:12px;color:var(--text-muted);\">记忆日期：' + mpEsc(node.date || (node.created_at || '').slice(0, 10)) + ' · 入库：' + mpEsc((node.created_at || '').slice(0, 19).replace('T', ' ')) + (node.access_count ? ' · 访问 ' + node.access_count : '') + '</div>' +
-            '<div class=\"mp-inline-editor\" data-id=\"' + mpEsc(node.id) + '\" style=\"display:none;margin-top:14px;padding-top:14px;border-top:1px dashed var(--border-color);\"></div>' +
-        '</div>';
-    }).join('');
+    el.innerHTML = '';
+    ensureMemoryPalaceNodeScrollListener();
+    appendMemoryPalaceNodeBatch();
 }
+
 
 
 let _digestPreviewActions = [];

@@ -2529,8 +2529,16 @@ async function previewUserImpressionMaterials() {
             meta.textContent = 'update 模式材料预览 · 记忆 ' + mem + ' 条 · 近期聊天 ' + recent + ' 条 · 材料 ' + (data.material_text_chars || text.length || 0) + ' 字 · 不调用 LLM';
         }
         if (content) {
-            content.innerHTML = '<div class="msg-box msg-info" style="margin-bottom:10px;">这是 update 模式实际进入画像生成的材料内容；本操作不调用 LLM、不保存。</div>' +
-                '<pre style="white-space:pre-wrap;word-break:break-word;max-height:70vh;overflow:auto;background:#0f172a;color:#e5e7eb;border-radius:14px;padding:16px;font-size:12px;line-height:1.65;">' + uiEsc(text || '（空）') + '</pre>';
+            content.textContent = '';
+            const info = document.createElement('div');
+            info.className = 'msg-box msg-info';
+            info.style.marginBottom = '10px';
+            info.textContent = '这是 update 模式实际进入画像生成的材料内容；本操作不调用 LLM、不保存。';
+            const pre = document.createElement('pre');
+            pre.style.cssText = 'white-space:pre-wrap;word-break:break-word;max-height:70vh;overflow:auto;background:#0f172a;color:#e5e7eb;border-radius:14px;padding:16px;font-size:12px;line-height:1.65;';
+            pre.textContent = text || '（空）';
+            content.appendChild(info);
+            content.appendChild(pre);
         }
     } catch (e) {
         if (content) content.innerHTML = '<div class="msg-box msg-error">材料预览失败：' + uiEsc(e.message) + '</div>';

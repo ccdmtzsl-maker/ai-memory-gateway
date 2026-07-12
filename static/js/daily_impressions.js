@@ -1,6 +1,7 @@
 let _dailyImpressions = [];
 let _lastDailyRaw = '';
 let _editingDailyIndex = -1;
+let _dailySelectedMonth = '';
 
 function _dailyTags(item) {
     return item.tags || item.topics || '';
@@ -60,6 +61,146 @@ function showDailyImpressionDetail(index) {
     _renderDailyDetail(_dailyImpressions[index], 'dailyImpressionResult');
 }
 
+function _dailyMonthKey(item) {
+    const date = String((item && item.date) || '').trim();
+    return /^\d{4}-\d{2}/.test(date) ? date.slice(0, 7) : 'unknown';
+}
+
+function _dailyMonthLabel(key) {
+    if (!key || key === 'unknown') return '未知月份';
+    const parts = key.split('-');
+    return parts[0] + '年' + parts[1] + '月';
+}
+
+function _dailyUpdatePageTitle() {
+    const title = document.getElementById('dailyPageTitle');
+    if (!title) return;
+    if (_dailySelectedMonth) {
+        title.textContent = '← 日印象';
+        title.title = '返回月份总览';
+        title.style.cursor = 'pointer';
+        title.onclick = backToDailyMonths;
+    } else {
+        title.textContent = '日印象';
+        title.title = '';
+        title.style.cursor = '';
+        title.onclick = null;
+    }
+}
+
+function renderDailyMonthOverview(items) {
+    const list = document.getElementById('dailyPageList');
+    const detail = document.getElementById('dailyPageDetail');
+    if (!list) return;
+    if (detail) detail.style.display = 'none';
+    _dailyUpdatePageTitle();
+
+    const groups = [];
+    const byMonth = {};
+    items.forEach((item, index) => {
+        const key = _dailyMonthKey(item);
+        if (!byMonth[key]) {
+            byMonth[key] = {key, items: [], indexes: []};
+            groups.push(byMonth[key]);
+        }
+        byMonth[key].items.push(item);
+        byMonth[key].indexes.push(index);
+    });
+
+    const palettes = [
+        ['#fff1f2', '#e11d48'],
+        ['#eef2ff', '#4f46e5'],
+        ['#ecfeff', '#0891b2'],
+        ['#f0fdf4', '#16a34a'],
+        ['#fffbeb', '#d97706'],
+        ['#fdf2f8', '#db2777'],
+        ['#f5f3ff', '#7c3aed'],
+        ['#f8fafc', '#475569']
+    ];
+
+    list.innerHTML = groups.map((group, i) => {
+        const p = palettes[i % palettes.length];
+        const latest = group.items[0] || {};
+        const earliest = group.items[group.items.length - 1] || {};
+        const range = group.items.length > 1
+            ? escHtml((earliest.date || '').slice(5) + ' ~ ' + (latest.date || '').slice(5))
+            : escHtml((latest.date || '').slice(5));
+        const moods = group.items.map(x => x.mood).filter(Boolean).slice(0, 3).join(' · ');
+        return '<div onclick="enterDailyMonth(\'' + escHtml(group.key) + '\')" style="' +
+            'min-height:150px;padding:18px;border-radius:20px;cursor:pointer;' +
+            'background:' + p[0] + ';border:1px solid rgba(15,23,42,.06);' +
+            'box-shadow:0 8px 24px rgba(15,23,42,.06);display:flex;flex-direction:column;gap:10px;' +
+            '">' +
+            '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">' +
+                '<div style="font-weight:900;font-size:20px;color:' + p[1] + ';">' + escHtml(_dailyMonthLabel(group.key)) + '</div>' +
+                '<div style="font-size:22px;">🗓️</div>' +
+            '</div>' +
+            '<div style="font-size:13px;color:rgba(15,23,42,.62);">' + group.items.length + ' 条日印象 · ' + range + '</div>' +
+            (moods ? '<div style="font-size:12px;color:' + p[1] + ';font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + escHtml(moods) + '</div>' : '') +
+            '<div style="margin-top:auto;font-size:12px;color:rgba(15,23,42,.55);">点击查看这个月</div>' +
+        '</div>';
+    }).join('');
+}
+
+function renderDailyMonthItems(monthKey) {
+    const list = document.getElementById('dailyPageList');
+    const detail = document.getElementById('dailyPageDetail');
+    if (!list) return;
+    if (detail) detail.style.display = 'none';
+    _dailyUpdatePageTitle();
+
+    const entries = _dailyImpressions
+        .map((item, index) => ({item, index}))
+        .filter(x => _dailyMonthKey(x.item) === monthKey);
+
+    if (!entries.length) {
+        list.innerHTML = '<div class="card" style="grid-column:1/-1;padding:28px;text-align:center;color:var(--text-muted);">这个月份还没有日印象。</div>';
+        return;
+    }
+
+    const palettes = [
+        ['#fff1f2', '#e11d48'],
+        ['#eef2ff', '#4f46e5'],
+        ['#ecfeff', '#0891b2'],
+        ['#f0fdf4', '#16a34a'],
+        ['#fffbeb', '#d97706'],
+        ['#fdf2f8', '#db2777'],
+        ['#f5f3ff', '#7c3aed'],
+        ['#f8fafc', '#475569']
+    ];
+
+    list.innerHTML = entries.map((entry, localIndex) => {
+        const item = entry.item;
+        const tags = _dailyTags(item);
+        const summary = item.summary || '';
+        const shortSummary = summary.length > 72 ? summary.slice(0, 72) + '...' : summary;
+        const p = palettes[localIndex % palettes.length];
+        return '<div onclick="showDailyPageDetail(' + entry.index + ')" style="' +
+            'min-height:170px;padding:16px;border-radius:18px;cursor:pointer;' +
+            'background:' + p[0] + ';border:1px solid rgba(15,23,42,.06);' +
+            'box-shadow:0 8px 24px rgba(15,23,42,.06);display:flex;flex-direction:column;gap:10px;' +
+            '">' +
+            '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">' +
+                '<div style="font-weight:800;font-size:17px;color:' + p[1] + ';">' + escHtml(item.date || '') + '</div>' +
+                '<div style="font-size:18px;">📔</div>' +
+            '</div>' +
+            (item.mood ? '<div style="font-size:12px;color:rgba(15,23,42,.58);">' + escHtml(item.mood) + '</div>' : '') +
+            '<div style="font-size:13px;line-height:1.55;color:rgba(15,23,42,.72);white-space:pre-wrap;flex:1;">' + escHtml(shortSummary) + '</div>' +
+            (tags ? '<div style="font-size:12px;color:' + p[1] + ';font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;"># ' + escHtml(tags.replace(/、/g, ' # ')) + '</div>' : '') +
+        '</div>';
+    }).join('');
+}
+
+function enterDailyMonth(monthKey) {
+    _dailySelectedMonth = monthKey || '';
+    renderDailyMonthItems(_dailySelectedMonth);
+}
+
+function backToDailyMonths() {
+    _dailySelectedMonth = '';
+    renderDailyMonthOverview(_dailyImpressions || []);
+}
+
 async function loadDailyImpressionsPage() {
     const list = document.getElementById('dailyPageList');
     const detail = document.getElementById('dailyPageDetail');
@@ -69,38 +210,17 @@ async function loadDailyImpressionsPage() {
     try {
         const items = await _fetchDailyImpressions();
         if (!items.length) {
+            _dailySelectedMonth = '';
+            _dailyUpdatePageTitle();
             list.innerHTML = '<div class="card" style="grid-column:1/-1;padding:28px;text-align:center;color:var(--text-muted);">还没有生成过日印象。</div>';
             return;
         }
-        const palettes = [
-            ['#fff1f2', '#e11d48'],
-            ['#eef2ff', '#4f46e5'],
-            ['#ecfeff', '#0891b2'],
-            ['#f0fdf4', '#16a34a'],
-            ['#fffbeb', '#d97706'],
-            ['#fdf2f8', '#db2777'],
-            ['#f5f3ff', '#7c3aed'],
-            ['#f8fafc', '#475569']
-        ];
-        list.innerHTML = items.map((item, index) => {
-            const tags = _dailyTags(item);
-            const summary = item.summary || '';
-            const shortSummary = summary.length > 72 ? summary.slice(0, 72) + '...' : summary;
-            const p = palettes[index % palettes.length];
-            return '<div onclick="showDailyPageDetail(' + index + ')" style="' +
-                'min-height:170px;padding:16px;border-radius:18px;cursor:pointer;' +
-                'background:' + p[0] + ';border:1px solid rgba(15,23,42,.06);' +
-                'box-shadow:0 8px 24px rgba(15,23,42,.06);display:flex;flex-direction:column;gap:10px;' +
-                '">' +
-                '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">' +
-                    '<div style="font-weight:800;font-size:17px;color:' + p[1] + ';">' + escHtml(item.date || '') + '</div>' +
-                    '<div style="font-size:18px;">📔</div>' +
-                '</div>' +
-                (item.mood ? '<div style="font-size:12px;color:rgba(15,23,42,.58);">' + escHtml(item.mood) + '</div>' : '') +
-                '<div style="font-size:13px;line-height:1.55;color:rgba(15,23,42,.72);white-space:pre-wrap;flex:1;">' + escHtml(shortSummary) + '</div>' +
-                (tags ? '<div style="font-size:12px;color:' + p[1] + ';font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;"># ' + escHtml(tags.replace(/、/g, ' # ')) + '</div>' : '') +
-            '</div>';
-        }).join('');
+        if (_dailySelectedMonth && items.some(item => _dailyMonthKey(item) === _dailySelectedMonth)) {
+            renderDailyMonthItems(_dailySelectedMonth);
+        } else {
+            _dailySelectedMonth = '';
+            renderDailyMonthOverview(items);
+        }
     } catch (e) {
         list.innerHTML = '<div class="card" style="grid-column:1/-1;padding:18px;color:#b91c1c;"><b>加载失败：</b>' + escHtml(e.message) + '</div>';
     }
@@ -228,6 +348,7 @@ async function generateDailyImpressionFromPage() {
             return;
         }
         _lastDailyRaw = rawText || '';
+        _dailySelectedMonth = String(date || '').slice(0, 7);
         if (msg) msg.innerHTML = '<div class="msg msg-success">✅ 已生成日印象（使用 ' + (data.messages_used || 0) + ' 条对话）</div>' + renderDailyRawBlock(_lastDailyRaw);
         await loadDailyImpressionsPage();
     } catch (e) {

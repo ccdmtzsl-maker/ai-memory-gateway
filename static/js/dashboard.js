@@ -2168,13 +2168,12 @@ let _userImpressionEditOpen = false;
 
 function uiEsc(v) {
     return String(v === undefined || v === null ? '' : v)
-        .replace(/&/g, '&')
-        .replace(/</g, '<')
-        .replace(/>/g, '>')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
         .replace(/"/g, '"')
         .replace(/'/g, '&#39;');
 }
-
 function showUserImpressionMsg(type, text) {
     const el = document.getElementById('ui-msg');
     if (!el) return;

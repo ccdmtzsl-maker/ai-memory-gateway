@@ -1111,7 +1111,7 @@ async function previewMemoryPalaceFromSelectedConversations() {
     try {
         const r = await fetch('/api/memory-palace/extract-preview-sessions', {
             method:'POST', headers:{'Content-Type':'application/json'},
-            body:JSON.stringify({session_ids:sessionIds, character_id:'default', limit:300})
+            body:JSON.stringify({session_ids:sessionIds, character_id:'default'})
         });
         const d = await r.json();
         if (d.error || d.status === 'error') {

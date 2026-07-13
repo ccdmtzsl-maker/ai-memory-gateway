@@ -284,6 +284,14 @@
                     <p class="section-desc">按天查看由对话历史生成的日记式印象</p>
                 </div>
 
+                <div id="dailyPageOverviewStartCard" class="card toolbar-card" style="display:none;">
+                    <div class="toolbar">
+                        <label style="display:flex;align-items:center;gap:8px;color:var(--text-muted);font-size:13px;white-space:nowrap;">起始时间
+                            <input type="time" id="dailyPageOverviewStartTime" value="00:00" step="3600" style="width:92px;padding:8px;border:1px solid var(--border-color);border-radius:8px;background:#fff;">
+                        </label>
+                        <span style="color:var(--text-muted);font-size:12px;">用于生成日印象时选择材料窗口</span>
+                    </div>
+                </div>
                 <div id="dailyPageToolbarCard" class="card toolbar-card">
                     <div class="toolbar">
                         <input type="date" id="dailyPageDate" class="date-input">

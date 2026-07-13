@@ -7800,12 +7800,19 @@ async def call_memory_palace_extractor(messages_text: str, character_id: str = "
             {"role": "user", "content": prompt},
         ],
         "temperature": 0.2,
-        "max_tokens": 2000,
+        # 给带 reasoning/thinking 的兼容模型留足输出空间，避免 JSON 被截断。
+        "max_tokens": 9000,
     }
-    async with httpx.AsyncClient(timeout=60.0) as client:
-        resp = await client.post(base_url, headers=headers, json=body)
-        resp.raise_for_status()
-        data = resp.json()
+    timeout = httpx.Timeout(180.0, connect=30.0)
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            resp = await client.post(base_url, headers=headers, json=body)
+            resp.raise_for_status()
+            data = resp.json()
+    except httpx.TimeoutException as e:
+        # async with 会关闭连接池/连接；这里明确抛出可读错误。
+        # 已经送达上游的请求能否在服务商侧停止，取决于上游实现；本地会中断连接并停止等待。
+        raise RuntimeError("记忆宫殿提取请求超时（180秒），已尝试中断本地连接") from e
     text = data.get("choices", [{}])[0].get("message", {}).get("content", "")
     raw_items = safe_parse_memory_palace_json_array(text)
     unpin_ids = parse_memory_palace_unpin_ids(raw_items, pinned_refs)

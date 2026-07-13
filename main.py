@@ -8008,7 +8008,9 @@ async def api_memory_palace_extract_preview_sessions(request: Request):
         if not session_ids:
             return {"status": "error", "error": "请先选择对话"}
         character_id = data.get("character_id") or "default"
-        limit = int(data.get("limit", 200))
+        # 手动预览与分区自动提取共用同一个消息上限，避免对话记录按钮一次塞入过多历史。
+        # 即使前端传了旧的 limit=300，这里也以后端设置为准。
+        limit = max(1, int(CACHE_PARTITION_EXTRACT_LIMIT or 120))
         add_dashboard_log("run", f"🧠 记忆宫殿预览请求：{len(session_ids)} 个对话，limit={limit}", category="mp-preview")
         groups = []
         for idx, sid in enumerate(session_ids):

@@ -94,6 +94,8 @@ _last_upstream_request_meta = {}
 _memory_palace_auto_extract_locks = {}
 # 分区后台维护锁：保护 a_start_round 读取/轮转/保存/提取调度，避免同一会话后台任务互相覆盖状态。
 _partition_auto_maintenance_locks = {}
+# 手动记忆提取锁：防止对话记录/聊天记录提取在未返回结果前重复发起同类请求。
+_memory_palace_manual_extract_locks = {}
 
 def add_dashboard_log(level: str, message: str, category: str = "memory", session_id: str = ""):
     item = {
@@ -8025,22 +8027,37 @@ async def api_memory_palace_extract_preview_sessions(request: Request):
         # 手动预览与分区自动提取共用同一个消息上限，避免对话记录按钮一次塞入过多历史。
         # 即使前端传了旧的 limit=300，这里也以后端设置为准。
         limit = max(1, int(CACHE_PARTITION_EXTRACT_LIMIT or 120))
-        add_dashboard_log("run", f"🧠 记忆宫殿预览请求：{len(session_ids)} 个对话，limit={limit}", category="mp-preview")
-        groups = []
-        for idx, sid in enumerate(session_ids):
-            try:
-                add_dashboard_log("run", f"🧠 开始提取预览：session={sid}", category="mp-preview", session_id=sid)
-                group = await preview_memory_palace_extraction_for_session(sid, character_id=character_id, limit=limit)
-                group["group_index"] = idx
-                for item in group.get("items", []):
-                    item["group_index"] = idx
-                groups.append(group)
-                add_dashboard_log("success", f"🧠 预览完成：session={sid} status={group.get('status')} memories={group.get('memory_count', 0)} unpin={group.get('unpin_count', 0)}", category="mp-preview", session_id=sid)
-            except Exception as e:
-                add_dashboard_log("error", f"🧠 预览失败：session={sid} error={e}", category="mp-preview", session_id=sid)
-                groups.append({"session_id": sid, "group_index": idx, "status": "error", "error": str(e), "items": []})
-        add_dashboard_log("success", f"🧠 记忆宫殿预览请求结束：返回 {len(groups)} 组", category="mp-preview")
-        return {"status": "ok", "groups": groups}
+        unique_sids = sorted(set(session_ids))
+        lock_keys = [f"preview:{character_id}:{sid}" for sid in unique_sids]
+        locks = [_memory_palace_manual_extract_locks.setdefault(k, asyncio.Lock()) for k in lock_keys]
+        busy = [sid for sid, lock in zip(unique_sids, locks) if lock.locked()]
+        if busy:
+            return {"status": "error", "error": "这些对话正在提取记忆，请等待上一次请求完成：" + ", ".join(busy)}
+        for lock in locks:
+            await lock.acquire()
+        try:
+            add_dashboard_log("run", f"🧠 记忆宫殿预览请求：{len(session_ids)} 个对话，limit={limit}", category="mp-preview")
+            groups = []
+            for idx, sid in enumerate(session_ids):
+                try:
+                    add_dashboard_log("run", f"🧠 开始提取预览：session={sid}", category="mp-preview", session_id=sid)
+                    group = await preview_memory_palace_extraction_for_session(sid, character_id=character_id, limit=limit)
+                    group["group_index"] = idx
+                    for item in group.get("items", []):
+                        item["group_index"] = idx
+                    groups.append(group)
+                    add_dashboard_log("success", f"🧠 预览完成：session={sid} status={group.get('status')} memories={group.get('memory_count', 0)} unpin={group.get('unpin_count', 0)}", category="mp-preview", session_id=sid)
+                except Exception as e:
+                    add_dashboard_log("error", f"🧠 预览失败：session={sid} error={e}", category="mp-preview", session_id=sid)
+                    groups.append({"session_id": sid, "group_index": idx, "status": "error", "error": str(e), "items": []})
+            add_dashboard_log("success", f"🧠 记忆宫殿预览请求结束：返回 {len(groups)} 组", category="mp-preview")
+            return {"status": "ok", "groups": groups}
+        finally:
+            for lock in locks:
+                try:
+                    lock.release()
+                except RuntimeError:
+                    pass
     except Exception as e:
         return {"status": "error", "error": str(e)}
 
@@ -8353,34 +8370,45 @@ async def api_memory_palace_extract_text(request: Request):
         character_id = data.get("character_id") or "default"
         preview = bool(data.get("preview"))
         if preview:
-            if not text:
-                return {"status": "error", "error": "文本为空"}
-            if len(text) > 20000:
-                text = text[:20000] + "\n…（已截断）"
-            raw_items, unpin_ids, related_refs, corrections = await call_memory_palace_extractor(text, character_id=character_id)
-            normalized = [_normalize_memory_palace_item(x) for x in raw_items]
-            normalized = [x for x in normalized if x]
-            raw_count = len(raw_items)
-            memory_count = len(normalized)
-            if memory_count > 0:
-                message = f"已解析到 {raw_count} 项模型输出，其中 {memory_count} 条可进入记忆宫殿"
-            elif raw_count > 0:
-                message = f"模型返回了 {raw_count} 项，但没有可进入记忆宫殿的记忆；通常是项目不是对象或缺少 content 字段"
-            else:
-                message = "模型没有返回可解析的 JSON 数组，或返回了空数组 []"
-            return {
-                "status": "ok",
-                "preview": True,
-                "extracted": raw_count,
-                "raw_count": raw_count,
-                "memory_count": memory_count,
-                "unpin_count": len(unpin_ids),
-                "created": 0,
-                "embedded": 0,
-                "message": message,
-                "memories": normalized,
-                "nodes": normalized,
-            }
+            lock_key = f"extract-text-preview:{character_id}"
+            lock = _memory_palace_manual_extract_locks.setdefault(lock_key, asyncio.Lock())
+            if lock.locked():
+                return {"status": "error", "error": "聊天记录记忆提取正在进行，请等待上一次请求完成"}
+            await lock.acquire()
+            try:
+                if not text:
+                    return {"status": "error", "error": "文本为空"}
+                if len(text) > 20000:
+                    text = text[:20000] + "\n…（已截断）"
+                raw_items, unpin_ids, related_refs, corrections = await call_memory_palace_extractor(text, character_id=character_id)
+                normalized = [_normalize_memory_palace_item(x) for x in raw_items]
+                normalized = [x for x in normalized if x]
+                raw_count = len(raw_items)
+                memory_count = len(normalized)
+                if memory_count > 0:
+                    message = f"已解析到 {raw_count} 项模型输出，其中 {memory_count} 条可进入记忆宫殿"
+                elif raw_count > 0:
+                    message = f"模型返回了 {raw_count} 项，但没有可进入记忆宫殿的记忆；通常是项目不是对象或缺少 content 字段"
+                else:
+                    message = "模型没有返回可解析的 JSON 数组，或返回了空数组 []"
+                return {
+                    "status": "ok",
+                    "preview": True,
+                    "extracted": raw_count,
+                    "raw_count": raw_count,
+                    "memory_count": memory_count,
+                    "unpin_count": len(unpin_ids),
+                    "created": 0,
+                    "embedded": 0,
+                    "message": message,
+                    "memories": normalized,
+                    "nodes": normalized,
+                }
+            finally:
+                try:
+                    lock.release()
+                except RuntimeError:
+                    pass
         return await extract_memories_from_text_for_palace(text=text, character_id=character_id)
     except Exception as e:
         return {"status": "error", "error": str(e)}

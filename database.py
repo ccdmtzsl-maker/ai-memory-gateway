@@ -812,11 +812,23 @@ async def get_conversation_messages(session_id: str, limit: int = 100):
         return [dict(r) for r in rows]
 
 
-async def get_conversation_messages_by_date(event_date):
-    """按本地日期读取当天全部对话消息（用于日印象）。"""
+async def get_conversation_messages_by_date(event_date, start_hour: int = 0):
+    """按本地时间窗口读取对话消息（用于日印象）。
+
+    start_hour=0 表示当天 00:00 到次日 00:00；
+    start_hour=7 表示当天 07:00 到次日 07:00。
+    """
+    try:
+        start_hour = int(start_hour or 0)
+    except (TypeError, ValueError):
+        start_hour = 0
+    start_hour = max(0, min(start_hour, 23))
+
     local_tz = dt_timezone(timedelta(hours=TIMEZONE_HOURS))
-    start_utc = datetime(event_date.year, event_date.month, event_date.day, tzinfo=local_tz).astimezone(dt_timezone.utc)
-    end_utc = start_utc + timedelta(days=1)
+    start_local = datetime(event_date.year, event_date.month, event_date.day, start_hour, 0, 0, tzinfo=local_tz)
+    end_local = start_local + timedelta(days=1)
+    start_utc = start_local.astimezone(dt_timezone.utc)
+    end_utc = end_local.astimezone(dt_timezone.utc)
 
     pool = await get_pool()
     async with pool.acquire() as conn:

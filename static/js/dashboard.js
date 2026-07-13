@@ -1092,10 +1092,13 @@ async function batchMergeSessions() {
 
 
 let _convMemoryPalacePreviewItems = [];
+let _convMemoryPalacePreviewRunning = false;
 function convMpPanel(){let p=document.getElementById('conv-memory-preview-panel');if(!p){const c=document.getElementById('conv-list-container');p=document.createElement('div');p.id='conv-memory-preview-panel';p.className='card';p.style.marginTop='12px';p.style.display='none';c.parentNode.insertBefore(p,c);}return p;}
 async function previewMemoryPalaceFromSelectedConversations() {
+    if (_convMemoryPalacePreviewRunning) return;
     const checked = document.querySelectorAll('.conv-checkbox:checked');
     if (!checked.length) return;
+    _convMemoryPalacePreviewRunning = true;
     const btn = document.getElementById('conv-batch-mp-btn');
     const oldText = btn ? btn.textContent : '';
     if (btn) { btn.disabled = true; btn.textContent = '🧠 提取中...'; }
@@ -1122,6 +1125,7 @@ async function previewMemoryPalaceFromSelectedConversations() {
     } catch(e) {
         setConvPlainMessage(p, '请求失败：' + e.message, {style:'color:var(--error);padding:12px;'});
     } finally {
+        _convMemoryPalacePreviewRunning = false;
         if (btn) { btn.disabled = false; btn.textContent = oldText || '🧠 提取记忆'; }
     }
 }
@@ -2690,8 +2694,11 @@ async function deleteUserImpression() {
 // ============================================================
 
 let _extractedMemories = [];
+let _chatMemoryPalaceExtractRunning = false;
 
 async function doExtractToMemoryPalaceFromChat() {
+    if (_chatMemoryPalaceExtractRunning) return;
+    _chatMemoryPalaceExtractRunning = true;
     const fileInput = document.getElementById('chatFile');
     const textInput = document.getElementById('chatInput');
     let text = '';
@@ -2733,6 +2740,7 @@ async function doExtractToMemoryPalaceFromChat() {
     } catch (e) {
         showImportResult('error', '❌ 记忆宫殿提取请求失败: ' + e.message);
     } finally {
+        _chatMemoryPalaceExtractRunning = false;
         if (btn) { btn.disabled = false; btn.textContent = '提取到记忆宫殿'; }
     }
 }

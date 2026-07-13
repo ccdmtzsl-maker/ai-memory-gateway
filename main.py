@@ -94,8 +94,10 @@ _last_upstream_request_meta = {}
 _memory_palace_auto_extract_locks = {}
 # 分区后台维护锁：保护 a_start_round 读取/轮转/保存/提取调度，避免同一会话后台任务互相覆盖状态。
 _partition_auto_maintenance_locks = {}
-# 手动记忆提取锁：防止对话记录/聊天记录提取在未返回结果前重复发起同类请求。
-_memory_palace_manual_extract_locks = {}
+# 手动记忆提取状态：防止对话记录/聊天记录提取在未返回结果前重复发起同类请求。
+# 用 guard 保护 active 集合，确保“检查忙碌 + 登记忙碌”是原子的。
+_memory_palace_manual_extract_active = set()
+_memory_palace_manual_extract_guard = asyncio.Lock()
 
 def add_dashboard_log(level: str, message: str, category: str = "memory", session_id: str = ""):
     item = {
@@ -8028,13 +8030,12 @@ async def api_memory_palace_extract_preview_sessions(request: Request):
         # 即使前端传了旧的 limit=300，这里也以后端设置为准。
         limit = max(1, int(CACHE_PARTITION_EXTRACT_LIMIT or 120))
         unique_sids = sorted(set(session_ids))
-        lock_keys = [f"preview:{character_id}:{sid}" for sid in unique_sids]
-        locks = [_memory_palace_manual_extract_locks.setdefault(k, asyncio.Lock()) for k in lock_keys]
-        busy = [sid for sid, lock in zip(unique_sids, locks) if lock.locked()]
-        if busy:
-            return {"status": "error", "error": "这些对话正在提取记忆，请等待上一次请求完成：" + ", ".join(busy)}
-        for lock in locks:
-            await lock.acquire()
+        active_keys = [f"preview:{character_id}:{sid}" for sid in unique_sids]
+        async with _memory_palace_manual_extract_guard:
+            busy = [sid for sid, key in zip(unique_sids, active_keys) if key in _memory_palace_manual_extract_active]
+            if busy:
+                return {"status": "error", "error": "这些对话正在提取记忆，请等待上一次请求完成：" + ", ".join(busy)}
+            _memory_palace_manual_extract_active.update(active_keys)
         try:
             add_dashboard_log("run", f"🧠 记忆宫殿预览请求：{len(session_ids)} 个对话，limit={limit}", category="mp-preview")
             groups = []
@@ -8053,11 +8054,9 @@ async def api_memory_palace_extract_preview_sessions(request: Request):
             add_dashboard_log("success", f"🧠 记忆宫殿预览请求结束：返回 {len(groups)} 组", category="mp-preview")
             return {"status": "ok", "groups": groups}
         finally:
-            for lock in locks:
-                try:
-                    lock.release()
-                except RuntimeError:
-                    pass
+            async with _memory_palace_manual_extract_guard:
+                for key in active_keys:
+                    _memory_palace_manual_extract_active.discard(key)
     except Exception as e:
         return {"status": "error", "error": str(e)}
 
@@ -8370,11 +8369,11 @@ async def api_memory_palace_extract_text(request: Request):
         character_id = data.get("character_id") or "default"
         preview = bool(data.get("preview"))
         if preview:
-            lock_key = f"extract-text-preview:{character_id}"
-            lock = _memory_palace_manual_extract_locks.setdefault(lock_key, asyncio.Lock())
-            if lock.locked():
-                return {"status": "error", "error": "聊天记录记忆提取正在进行，请等待上一次请求完成"}
-            await lock.acquire()
+            active_key = f"extract-text-preview:{character_id}"
+            async with _memory_palace_manual_extract_guard:
+                if active_key in _memory_palace_manual_extract_active:
+                    return {"status": "error", "error": "聊天记录记忆提取正在进行，请等待上一次请求完成"}
+                _memory_palace_manual_extract_active.add(active_key)
             try:
                 if not text:
                     return {"status": "error", "error": "文本为空"}
@@ -8405,10 +8404,8 @@ async def api_memory_palace_extract_text(request: Request):
                     "nodes": normalized,
                 }
             finally:
-                try:
-                    lock.release()
-                except RuntimeError:
-                    pass
+                async with _memory_palace_manual_extract_guard:
+                    _memory_palace_manual_extract_active.discard(active_key)
         return await extract_memories_from_text_for_palace(text=text, character_id=character_id)
     except Exception as e:
         return {"status": "error", "error": str(e)}

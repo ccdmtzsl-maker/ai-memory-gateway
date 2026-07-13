@@ -287,6 +287,9 @@
                 <div id="dailyPageToolbarCard" class="card toolbar-card">
                     <div class="toolbar">
                         <input type="date" id="dailyPageDate" class="date-input">
+                        <label style="display:flex;align-items:center;gap:6px;color:var(--text-muted);font-size:13px;white-space:nowrap;">起始时间
+                            <input type="time" id="dailyPageStartTime" value="00:00" step="3600" style="width:92px;padding:8px;border:1px solid var(--border-color);border-radius:8px;background:#fff;">
+                        </label>
                         <button class="btn" style="background:#fff;border-style:dashed;border-width:2px;border-radius:18px;padding:10px 20px;font-weight:900;box-shadow:0 6px 0 rgba(15,23,42,.08), inset 0 0 0 3px rgba(255,255,255,.92);border-color:#e8a7bb;color:#d94f7a;" onclick="generateDailyImpressionFromPage()">生成/更新当天</button>
                         <button class="btn" style="background:#fff;border-style:dashed;border-width:2px;border-radius:18px;padding:10px 20px;font-weight:900;box-shadow:0 6px 0 rgba(15,23,42,.08), inset 0 0 0 3px rgba(255,255,255,.92);border-color:#9ca3af;color:#5f6670;" onclick="loadDailyImpressionsPage()">刷新列表</button>
                     </div>

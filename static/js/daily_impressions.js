@@ -338,15 +338,18 @@ function renderDailyRawBlock(raw) {
 
 async function generateDailyImpressionFromPage() {
     const dateInput = document.getElementById('dailyPageDate');
+    const startTimeInput = document.getElementById('dailyPageStartTime');
     const msg = document.getElementById('daily-page-msg');
     const date = dateInput ? dateInput.value : '';
+    const startHourRaw = startTimeInput && startTimeInput.value ? startTimeInput.value.split(':')[0] : '0';
+    const startHour = Math.max(0, Math.min(23, parseInt(startHourRaw, 10) || 0));
     if (!date) { if (msg) msg.innerHTML = '<div class="msg msg-error">请选择日期</div>'; return; }
-    if (msg) msg.innerHTML = '<div class="msg msg-info">正在生成日印象...</div>';
+    if (msg) msg.innerHTML = '<div class="msg msg-info">正在生成日印象...（材料窗口：' + startHour + ':00 到次日 ' + startHour + ':00）</div>';
     try {
         const resp = await fetch('/api/daily-impressions/generate', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({date})
+            body: JSON.stringify({date, start_hour: startHour})
         });
         const text = await resp.text();
         let data = {};
@@ -378,6 +381,8 @@ async function generateDailyImpressionFromPage() {
     document.addEventListener('DOMContentLoaded', () => {
         const pageDate = document.getElementById('dailyPageDate');
         if (pageDate && !pageDate.value) pageDate.value = new Date().toISOString().slice(0, 10);
+        const startTime = document.getElementById('dailyPageStartTime');
+        if (startTime && !startTime.value) startTime.value = '00:00';
     });
 
     const originalOpen = window.openDailyImpressionModal;

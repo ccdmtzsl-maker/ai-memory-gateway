@@ -4992,9 +4992,14 @@ def set_daily_impression_prompt(prompt: str):
     _cached_daily_impression_prompt_loaded = True
 
 
-async def generate_daily_impression_for_date(impression_date):
+async def generate_daily_impression_for_date(impression_date, start_hour: int = 0):
     """从指定日期的对话历史生成/更新日印象，不改动碎片状态。"""
-    messages = await get_conversation_messages_by_date(impression_date)
+    try:
+        start_hour = int(start_hour or 0)
+    except (TypeError, ValueError):
+        start_hour = 0
+    start_hour = max(0, min(start_hour, 23))
+    messages = await get_conversation_messages_by_date(impression_date, start_hour=start_hour)
     if not messages:
         return {"status": "no_conversations", "date": str(impression_date)}
 
@@ -5096,6 +5101,7 @@ async def generate_daily_impression_for_date(impression_date):
         return {
             "status": "ok",
             "date": str(impression_date),
+            "start_hour": start_hour,
             "messages_used": len(messages),
             "impression": _serialize_daily_impression(saved),
             "raw": raw,
@@ -5146,7 +5152,8 @@ async def api_generate_daily_impression(request: Request):
     if not date_str:
         return {"error": "请提供日期"}
     impression_date = datetime.strptime(date_str, "%Y-%m-%d").date()
-    return await generate_daily_impression_for_date(impression_date)
+    start_hour = data.get("start_hour", data.get("startHour", 0))
+    return await generate_daily_impression_for_date(impression_date, start_hour=start_hour)
 
 
 @app.put("/api/daily-impressions/{date_str}")

@@ -2755,7 +2755,7 @@ function renderExtractedMemories() {
             + '<input type="checkbox" checked class="extract-check" value="' + i + '" style="margin-top:3px;">'
             + '<div style="flex:1;">'
             + '<div style="font-size:13px;color:#374151;">' + escapeHtml(m.content) + '</div>'
-            + '<div style="font-size:11px;color:#9ca3af;margin-top:2px;">重要度: ' + imp + (m.room ? ' · 房间: ' + escapeHtml(m.room) : '') + (m.date ? ' · 日期: ' + escapeHtml(m.date) : '') + '</div>'
+            + '<div style="font-size:11px;color:#9ca3af;margin-top:2px;">重要度: ' + imp + (m.room ? ' · 房间: ' + escapeHtml(m.room) : '') + (m.date ? ' · 日期: ' + escapeHtml(m.date) : '') + (m.pinned_until ? ' · 📌便利贴到 ' + escapeHtml(String(m.pinned_until).slice(0, 10)) : '') + '</div>'
             + '</div></label>';
     }).join('');
 }
@@ -2785,6 +2785,7 @@ async function doImportExtractedToPalace() {
                     arousal: m.arousal ?? null,
                     date: m.date || new Date().toISOString().slice(0, 10),
                     origin: 'extraction',
+                    pinned_until: m.pinned_until || null,
                     metadata: {source: 'chat-extract-selection'}
                 })
             });

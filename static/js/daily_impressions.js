@@ -78,7 +78,20 @@ function _dailyCurrentMonthKey() {
 
 function _dailySetToolbarVisible(visible) {
     const toolbar = document.getElementById('dailyPageToolbarCard');
+    const overviewStart = document.getElementById('dailyPageOverviewStartCard');
     if (toolbar) toolbar.style.display = visible ? '' : 'none';
+    if (overviewStart) overviewStart.style.display = visible ? 'none' : '';
+}
+
+function _dailySyncStartTime(sourceId) {
+    const mainInput = document.getElementById('dailyPageStartTime');
+    const overviewInput = document.getElementById('dailyPageOverviewStartTime');
+    if (!mainInput || !overviewInput) return;
+    if (sourceId === 'dailyPageOverviewStartTime') {
+        mainInput.value = overviewInput.value || '00:00';
+    } else {
+        overviewInput.value = mainInput.value || '00:00';
+    }
 }
 
 function _dailyUpdatePageTitle() {
@@ -340,6 +353,7 @@ async function generateDailyImpressionFromPage() {
     const dateInput = document.getElementById('dailyPageDate');
     const startTimeInput = document.getElementById('dailyPageStartTime');
     const msg = document.getElementById('daily-page-msg');
+    _dailySyncStartTime('dailyPageOverviewStartTime');
     const date = dateInput ? dateInput.value : '';
     const startHourRaw = startTimeInput && startTimeInput.value ? startTimeInput.value.split(':')[0] : '0';
     const startHour = Math.max(0, Math.min(23, parseInt(startHourRaw, 10) || 0));
@@ -382,7 +396,13 @@ async function generateDailyImpressionFromPage() {
         const pageDate = document.getElementById('dailyPageDate');
         if (pageDate && !pageDate.value) pageDate.value = new Date().toISOString().slice(0, 10);
         const startTime = document.getElementById('dailyPageStartTime');
+        const overviewStartTime = document.getElementById('dailyPageOverviewStartTime');
         if (startTime && !startTime.value) startTime.value = '00:00';
+        if (overviewStartTime && !overviewStartTime.value) overviewStartTime.value = (startTime && startTime.value) || '00:00';
+        if (startTime && overviewStartTime) {
+            startTime.onchange = () => _dailySyncStartTime('dailyPageStartTime');
+            overviewStartTime.onchange = () => _dailySyncStartTime('dailyPageOverviewStartTime');
+        }
     });
 
     const originalOpen = window.openDailyImpressionModal;

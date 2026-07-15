@@ -1150,9 +1150,7 @@ async function showMemoryPalaceVectorStats() {
 
 
 async function clearArchivedMemoryPalaceVectors() {
-    if (!confirm('确定清除已归档记忆的向量吗？
-
-这不会删除记忆本体，但归档记忆如果恢复，可能需要重新补向量。')) return;
+    if (!confirm('确定清除已归档记忆的向量吗？\n\n这不会删除记忆本体，但归档记忆如果恢复，可能需要重新补向量。')) return;
     const btn = document.getElementById('mpClearArchivedVectorsBtn');
     if (btn) {
         btn.disabled = true;

@@ -288,9 +288,10 @@ async function loadExportStats() {
     const el = document.getElementById('export-stats');
     const mpEl = document.getElementById('mp-export-stats');
     try {
-        const resp = await fetch('/api/daily-impressions?limit=9999');
+        const resp = await fetch('/api/daily-impressions/stats');
         const data = await resp.json();
-        const count = (data.impressions || []).length;
+        if (data.error || data.status === 'error') throw new Error(data.error || '统计失败');
+        const count = data.total || 0;
         if (el) el.textContent = '当前共有 ' + count + ' 条日印象';
     } catch(e) {
         if (el) el.textContent = '无法加载统计';

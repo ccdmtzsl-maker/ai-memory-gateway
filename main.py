@@ -8795,6 +8795,39 @@ async def api_memory_palace_vector_stats():
         return {"error": str(e)}
 
 
+@app.post("/api/memory-palace/vectors/clear-archived")
+async def api_memory_palace_clear_archived_vectors():
+    """清除已归档记忆节点对应的向量，不删除记忆本体。"""
+    if not MEMORY_ENABLED:
+        return {"error": "记忆系统未启用"}
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            before = await conn.fetchval("""
+                SELECT COUNT(*)
+                FROM memory_palace_vectors v
+                JOIN memory_palace_nodes n ON n.id = v.memory_id
+                WHERE n.archived = TRUE
+            """)
+            result = await conn.execute("""
+                DELETE FROM memory_palace_vectors v
+                USING memory_palace_nodes n
+                WHERE v.memory_id = n.id
+                  AND n.archived = TRUE
+            """)
+            deleted = int(str(result).split()[-1]) if result else 0
+            after = await conn.fetchval("""
+                SELECT COUNT(*)
+                FROM memory_palace_vectors v
+                JOIN memory_palace_nodes n ON n.id = v.memory_id
+                WHERE n.archived = TRUE
+            """)
+        return {"status": "ok", "deleted": deleted, "before": int(before or 0), "after": int(after or 0)}
+    except Exception as e:
+        print(f"[mp-clear-archived-vectors] 清理失败: {e}")
+        return {"status": "error", "error": str(e), "deleted": 0}
+
+
 @app.post("/api/memory-palace/backfill-embeddings")
 async def api_mp_backfill_embeddings():
     """给记忆宫殿中缺少向量的节点补算 embedding（不覆盖已有向量）。"""

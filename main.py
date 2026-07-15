@@ -29,7 +29,7 @@ from fastapi.responses import StreamingResponse, JSONResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from database import init_tables, close_pool, save_message, get_pool, get_gateway_config, set_gateway_config, get_all_gateway_config, get_conversation_messages, get_session_cache_state, save_session_cache_state, delete_session_cache_state, save_token_usage, ensure_token_usage_table, get_conversations_paginated, delete_conversation, batch_delete_conversations, merge_sessions_to_target, list_all_session_cache_states, export_all_conversations, import_conversations, get_last_user_content, update_last_assistant_message, db_row_to_message, search_conversations, update_message_content, rename_session_id, get_conversation_messages_by_date, upsert_daily_impression, get_daily_impression, list_daily_impressions
+from database import init_tables, close_pool, save_message, get_pool, get_gateway_config, set_gateway_config, get_all_gateway_config, get_conversation_messages, get_session_cache_state, save_session_cache_state, delete_session_cache_state, save_token_usage, ensure_token_usage_table, get_conversations_paginated, delete_conversation, batch_delete_conversations, merge_sessions_to_target, list_all_session_cache_states, export_all_conversations, import_conversations, get_last_user_content, update_last_assistant_message, update_last_assistant_if_same_user, db_row_to_message, search_conversations, update_message_content, rename_session_id, get_conversation_messages_by_date, upsert_daily_impression, get_daily_impression, list_daily_impressions
 from database import list_memory_palace_rooms, list_memory_palace_nodes, get_memory_palace_node, create_memory_palace_node, update_memory_palace_node, delete_memory_palace_node, clear_expired_memory_palace_pins, get_user_impression, upsert_user_impression, delete_user_impression, normalize_user_impression
 import database as _db_module  # 用于 /api/settings 热更新 database.py 全局变量
 from memory_extractor import get_extraction_prompt, set_extraction_prompt, _DEFAULT_EXTRACTION_PROMPT
@@ -3875,14 +3875,11 @@ async def process_memories_background(session_id: str, user_msg: str, assistant_
                 print(f"🔧 存储: user + assistant (含{len(assistant_tool_calls)}个tool_calls)" + (" (含reasoning)" if assistant_reasoning else ""))
             else:
                 # 纯文字对话：re-roll检测 + 存user + assistant
-                last_user = await get_last_user_content(session_id)
-                if last_user and last_user.strip() == clean_user_msg.strip():
-                    updated = await update_last_assistant_message(session_id, assistant_msg, model)
-                    if updated:
-                        print(f"🔄 检测到re-roll，已覆盖最后一条assistant回复")
-                    else:
-                        await save_message(session_id, "user", clean_user_msg, model)
-                        await save_message(session_id, "assistant", assistant_msg, model, metadata=assistant_meta)
+                updated = await update_last_assistant_if_same_user(
+                    session_id, clean_user_msg, assistant_msg, model, metadata=assistant_meta
+                )
+                if updated:
+                    print(f"🔄 检测到re-roll，已覆盖最后一条assistant回复")
                 else:
                     await save_message(session_id, "user", clean_user_msg, model)
                     await save_message(session_id, "assistant", assistant_msg, model, metadata=assistant_meta)

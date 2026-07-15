@@ -3659,16 +3659,56 @@ async def run_partition_auto_extract_after_response(session_id: str, character_i
         await _run_partition_auto_extract_after_response_locked(session_id, character_id=character_id)
 
 
+async def _fetch_partition_boundary_messages(session_id: str, limit: int = 10000) -> list:
+    """仅读取分区轮转所需的轻量字段，避免为自动提取边界判断拉取全部正文。"""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("""
+            SELECT id, role, created_at
+            FROM conversations
+            WHERE session_id = $1
+            ORDER BY created_at ASC, id ASC
+            LIMIT $2
+        """, session_id, int(limit or 10000))
+    return [{"id": r["id"], "role": r["role"], "created_at": r["created_at"], "content": ""} for r in rows]
+
+
+async def _fetch_partition_extract_messages_by_ids(session_id: str, message_ids: list) -> list:
+    """只读取实际需要送入记忆宫殿提取器的消息正文。"""
+    ids = []
+    for mid in message_ids or []:
+        try:
+            ids.append(int(mid))
+        except Exception:
+            pass
+    ids = list(dict.fromkeys(ids))
+    if not ids:
+        return []
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("""
+            SELECT id, session_id, role, content, created_at
+            FROM conversations
+            WHERE session_id = $1 AND id = ANY($2::bigint[])
+            ORDER BY created_at ASC, id ASC
+        """, session_id, ids)
+    return [dict(r) for r in rows]
+
+
 async def _run_partition_auto_extract_after_response_locked(session_id: str, character_id: str = "default"):
     """实际执行回复后分区维护；调用方已保证同会话串行。"""
     try:
-        db_history = await get_conversation_messages(session_id, limit=10000)
-        db_msgs = []
-        for m in (db_history or []):
-            msg = db_row_to_message(m)
-            msg['created_at'] = m.get('created_at')
-            msg['id'] = m.get('id')
-            db_msgs.append(msg)
+        # 需要保留 A 区 use_package 工具链时，继续走旧的完整历史路径，避免裁掉 metadata/tool_calls。
+        if CACHE_PARTITION_KEEP_A_TOOLS:
+            db_history = await get_conversation_messages(session_id, limit=10000)
+            db_msgs = []
+            for m in (db_history or []):
+                msg = db_row_to_message(m)
+                msg['created_at'] = m.get('created_at')
+                msg['id'] = m.get('id')
+                db_msgs.append(msg)
+        else:
+            db_msgs = await _fetch_partition_boundary_messages(session_id, limit=10000)
 
         non_system = [m for m in db_msgs if m.get('role') not in ('system', 'developer')]
         rounds = group_by_rounds(non_system)
@@ -3730,14 +3770,26 @@ async def _run_partition_auto_extract_after_response_locked(session_id: str, cha
             evicted_round_groups = rounds[:min(a_start_round, total_rounds)]
             evicted_msgs = [msg for rnd in evicted_round_groups for msg in rnd]
             if evicted_msgs:
-                log_memory_palace_auto_extract(
-                    "run",
-                    f"🧠 回复后分区自动提取检查缓存区外内容：session={session_id}, rounds< {a_start_round}, 消息{len(evicted_msgs)}条",
-                    session_id=session_id,
-                )
-                result = await extract_memory_palace_from_partition_messages(evicted_msgs, session_id, character_id=character_id)
-                if isinstance(result, dict) and result.get("status") == "error":
-                    log_memory_palace_auto_extract("error", f"⚠️ 回复后分区自动提取失败，下次回复后重试：session={session_id}, error={result.get('error')}", session_id=session_id)
+                if CACHE_PARTITION_KEEP_A_TOOLS:
+                    extract_msgs = evicted_msgs
+                else:
+                    cursor = await get_memory_palace_extraction_cursor(session_id, character_id=character_id)
+                    last_id = int(cursor.get("last_message_id") or 0)
+                    candidate_ids = [int(m.get("id")) for m in evicted_msgs if m.get("id") and int(m.get("id")) > last_id]
+                    batch_limit = max(1, int(CACHE_PARTITION_EXTRACT_LIMIT or 120))
+                    if len(candidate_ids) > batch_limit:
+                        candidate_ids = candidate_ids[-batch_limit:]
+                    extract_msgs = await _fetch_partition_extract_messages_by_ids(session_id, candidate_ids)
+
+                if extract_msgs:
+                    log_memory_palace_auto_extract(
+                        "run",
+                        f"🧠 回复后分区自动提取检查缓存区外内容：session={session_id}, rounds< {a_start_round}, 消息{len(extract_msgs)}条",
+                        session_id=session_id,
+                    )
+                    result = await extract_memory_palace_from_partition_messages(extract_msgs, session_id, character_id=character_id)
+                    if isinstance(result, dict) and result.get("status") == "error":
+                        log_memory_palace_auto_extract("error", f"⚠️ 回复后分区自动提取失败，下次回复后重试：session={session_id}, error={result.get('error')}", session_id=session_id)
     except Exception as e:
         log_memory_palace_auto_extract("error", f"⚠️ 回复后分区自动提取异常，下次回复后重试：session={session_id}, error={e}", session_id=session_id)
 

@@ -5235,6 +5235,83 @@ async def api_daily_impressions_stats():
         return JSONResponse({"status": "error", "error": str(e)}, status_code=500)
 
 
+@app.get("/api/daily-impressions/months")
+async def api_daily_impression_months():
+    """日印象月份概览：只返回月份、数量和日期范围，不返回全部正文。"""
+    if not MEMORY_ENABLED:
+        return {"error": "记忆系统未启用"}
+    cache_key = "daily:months"
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT to_char(impression_date, 'YYYY-MM') AS month,
+                       COUNT(*) AS count,
+                       MIN(impression_date) AS earliest_date,
+                       MAX(impression_date) AS latest_date,
+                       MAX(updated_at) AS latest_updated_at,
+                       array_agg(mood ORDER BY impression_date DESC) FILTER (WHERE mood IS NOT NULL AND mood <> '') AS moods
+                FROM daily_impressions
+                GROUP BY month
+                ORDER BY month DESC
+            """)
+        months = []
+        for r in rows:
+            moods = []
+            for m in (r.get("moods") or []):
+                if m and m not in moods:
+                    moods.append(m)
+                if len(moods) >= 3:
+                    break
+            months.append({
+                "month": r.get("month"),
+                "count": int(r.get("count") or 0),
+                "earliest_date": r["earliest_date"].isoformat() if r.get("earliest_date") else None,
+                "latest_date": r["latest_date"].isoformat() if r.get("latest_date") else None,
+                "latest_updated_at": r["latest_updated_at"].isoformat() if r.get("latest_updated_at") else None,
+                "moods": moods,
+            })
+        result = {"status": "ok", "months": months}
+        return _cache_set(cache_key, result, ttl=30)
+    except Exception as e:
+        return JSONResponse({"status": "error", "error": str(e)}, status_code=500)
+
+
+@app.get("/api/daily-impressions/month/{month}")
+async def api_daily_impressions_by_month(month: str):
+    """按月读取日印象；进入页面默认只加载本月。month 格式 YYYY-MM。"""
+    if not MEMORY_ENABLED:
+        return {"error": "记忆系统未启用"}
+    month = str(month or "").strip()
+    if not re.match(r"^\d{4}-\d{2}$", month):
+        return JSONResponse({"status": "error", "error": "month 必须是 YYYY-MM"}, status_code=400)
+    cache_key = f"daily:month:{month}"
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
+    try:
+        start_date = datetime.strptime(month + "-01", "%Y-%m-%d").date()
+        if start_date.month == 12:
+            end_date = start_date.replace(year=start_date.year + 1, month=1)
+        else:
+            end_date = start_date.replace(month=start_date.month + 1)
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT *
+                FROM daily_impressions
+                WHERE impression_date >= $1 AND impression_date < $2
+                ORDER BY impression_date DESC
+            """, start_date, end_date)
+        result = {"status": "ok", "month": month, "impressions": [_serialize_daily_impression(r) for r in rows]}
+        return _cache_set(cache_key, result, ttl=15)
+    except Exception as e:
+        return JSONResponse({"status": "error", "error": str(e)}, status_code=500)
+
+
 @app.get("/api/daily-impressions/{date_str}")
 async def api_get_daily_impression(date_str: str):
     if not MEMORY_ENABLED:

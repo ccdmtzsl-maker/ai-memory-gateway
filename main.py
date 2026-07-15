@@ -29,7 +29,7 @@ from fastapi.responses import StreamingResponse, JSONResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from database import init_tables, close_pool, save_message, get_pool, get_gateway_config, set_gateway_config, get_all_gateway_config, get_conversation_messages, get_session_cache_state, save_session_cache_state, delete_session_cache_state, save_token_usage, ensure_token_usage_table, get_conversations_paginated, delete_conversation, batch_delete_conversations, merge_sessions_to_target, list_all_session_cache_states, export_all_conversations, import_conversations, get_last_user_content, update_last_assistant_message, update_last_assistant_if_same_user, db_row_to_message, search_conversations, update_message_content, rename_session_id, get_conversation_messages_by_date, upsert_daily_impression, get_daily_impression, list_daily_impressions
+from database import init_tables, close_pool, save_message, get_pool, get_gateway_config, set_gateway_config, get_all_gateway_config, get_conversation_messages, get_session_cache_state, save_session_cache_state, delete_session_cache_state, save_token_usage, ensure_token_usage_table, get_conversations_paginated, get_conversation_messages_after_id, delete_conversation, batch_delete_conversations, merge_sessions_to_target, list_all_session_cache_states, export_all_conversations, import_conversations, get_last_user_content, update_last_assistant_message, update_last_assistant_if_same_user, db_row_to_message, search_conversations, update_message_content, rename_session_id, get_conversation_messages_by_date, upsert_daily_impression, get_daily_impression, list_daily_impressions
 from database import list_memory_palace_rooms, list_memory_palace_nodes, get_memory_palace_node, create_memory_palace_node, update_memory_palace_node, delete_memory_palace_node, clear_expired_memory_palace_pins, get_user_impression, upsert_user_impression, delete_user_impression, normalize_user_impression
 import database as _db_module  # 用于 /api/settings 热更新 database.py 全局变量
 from memory_extractor import get_extraction_prompt, set_extraction_prompt, _DEFAULT_EXTRACTION_PROMPT
@@ -3319,6 +3319,7 @@ async def build_partitioned_messages(
     all_messages: list,
     base_prompt: str,
     user_message: str,
+    active_history_only: bool = False,
 ) -> list:
     """
     分区缓存模式：构建带breakpoint的messages数组。
@@ -3352,7 +3353,8 @@ async def build_partitioned_messages(
     
     state = await get_session_cache_state(session_id)
     summary_parts = state['summary_parts']
-    a_start_round = state['a_start_round']
+    cumulative_a_start_round = int(state.get('a_start_round') or 0)
+    a_start_round = 0 if active_history_only else cumulative_a_start_round
     retained_tool_chains = _dedupe_retained_use_package_chains(list(state.get('retained_tool_chains') or []))
     keep_was_enabled = bool(state.get('keep_a_tools_enabled'))
 
@@ -3361,10 +3363,10 @@ async def build_partitioned_messages(
     if not CACHE_PARTITION_KEEP_A_TOOLS:
         if retained_tool_chains or keep_was_enabled:
             retained_tool_chains = []
-            await save_session_cache_state(session_id, summary_parts, a_start_round, [], False)
+            await save_session_cache_state(session_id, summary_parts, cumulative_a_start_round, [], False)
     elif not keep_was_enabled:
         retained_tool_chains = []
-        await save_session_cache_state(session_id, summary_parts, a_start_round, [], True)
+        await save_session_cache_state(session_id, summary_parts, cumulative_a_start_round, [], True)
 
     if total_rounds < X:
         return await _build_basic_cached(history, base_prompt, user_message, current_user_msg)
@@ -3380,6 +3382,7 @@ async def build_partitioned_messages(
     b_rounds_count = len(b_round_groups)
     
     rotation_count = 0
+    evicted_through_candidate = int(state.get('evicted_through_message_id') or 0)
     retained_audit_before = None
     retained_audit_captured = []
     max_rotations = CACHE_MAX_ROTATIONS if CACHE_PARTITION_TRIGGER == "time" else 999
@@ -3388,6 +3391,10 @@ async def build_partitioned_messages(
         trigger_info = f"B区{b_rounds_count}轮 >= X={X}" if CACHE_PARTITION_TRIGGER != "time" else f"A区首条消息超出{CACHE_PARTITION_WINDOW}分钟窗口"
         print(f"🔄 轮转#{rotation_count}: session={session_id}, {trigger_info}")
         log_memory_palace_auto_extract("run", f"🧠 分区轮转推进缓存边界：session={session_id}, {trigger_info}, 当前A区{len(a_msgs)}条", session_id=session_id)
+        if a_msgs:
+            evicted_ids = [int(m.get('id')) for m in a_msgs if m.get('id') is not None]
+            if evicted_ids:
+                evicted_through_candidate = max(evicted_through_candidate, max(evicted_ids))
         if CACHE_PARTITION_KEEP_A_TOOLS:
             captured = _extract_use_package_chains(a_msgs)
             if captured:
@@ -3399,6 +3406,7 @@ async def build_partitioned_messages(
                 print(f"🔧 A区轮转: 捕获{len(captured)}组use_package调用链，按包名去重后保留{len(retained_tool_chains)}组（原{before_count}组）")
 
         a_start_round += X
+        cumulative_a_start_round += X
         a_end_round = a_start_round + X
         a_round_groups = rounds[a_start_round : a_end_round]
         b_round_groups = rounds[a_end_round :]
@@ -3407,7 +3415,10 @@ async def build_partitioned_messages(
         b_rounds_count = len(b_round_groups)
     
     if rotation_count > 0:
-        await save_session_cache_state(session_id, summary_parts, a_start_round, retained_tool_chains, CACHE_PARTITION_KEEP_A_TOOLS)
+        await save_session_cache_state(
+            session_id, summary_parts, cumulative_a_start_round, retained_tool_chains,
+            CACHE_PARTITION_KEEP_A_TOOLS, evicted_through_message_id=evicted_through_candidate,
+        )
         add_dashboard_log("info", f"🔧 A区use_package保留[处理前]: 已有={_retained_package_names(retained_audit_before or retained_tool_chains)}, 本次捕获={_retained_package_names(retained_audit_captured)}", category="chat", session_id=session_id)
         add_dashboard_log("info", f"🔧 A区use_package保留[处理后]: 最终={_retained_package_names(retained_tool_chains)}（按包名仅留最新）", category="chat", session_id=session_id)
         print(f"🔄 轮转完成(共{rotation_count}次): 摘要已架空, A区{len(a_msgs)}条, B区{len(b_msgs)}条")
@@ -3657,6 +3668,29 @@ async def run_partition_auto_extract_after_response(session_id: str, character_i
     lock = _partition_auto_maintenance_locks.setdefault(lock_key, asyncio.Lock())
     async with lock:
         await _run_partition_auto_extract_after_response_locked(session_id, character_id=character_id)
+
+
+async def _ensure_partition_message_boundary(session_id: str, state: dict = None) -> tuple:
+    """兼容旧状态：把既有 a_start_round 一次性迁移成永久消息 ID 边界。"""
+    state = state or await get_session_cache_state(session_id)
+    boundary = int(state.get("evicted_through_message_id") or 0)
+    old_round_boundary = int(state.get("a_start_round") or 0)
+    if boundary > 0 or old_round_boundary <= 0:
+        return state, boundary
+    light = await _fetch_partition_boundary_messages(session_id, limit=10000)
+    rounds = group_by_rounds([m for m in light if m.get("role") not in ("system", "developer")])
+    evicted = [m for rnd in rounds[:min(old_round_boundary, len(rounds))] for m in rnd]
+    ids = [int(m.get("id")) for m in evicted if m.get("id") is not None]
+    if ids:
+        boundary = max(ids)
+        await save_session_cache_state(
+            session_id, state.get("summary_parts") or [], old_round_boundary,
+            state.get("retained_tool_chains") or [], state.get("keep_a_tools_enabled"),
+            evicted_through_message_id=boundary,
+        )
+        state = dict(state)
+        state["evicted_through_message_id"] = boundary
+    return state, boundary
 
 
 async def _fetch_partition_boundary_messages(session_id: str, limit: int = 10000) -> list:
@@ -4073,17 +4107,19 @@ async def chat_completions(request: Request):
             add_dashboard_log("info", f"🔧 tool_chain[incoming_xml_normalized] converted={_incoming_xml_tool_converted}", category="chat", session_id=session_id)
 
 
-        # 从DB读取历史
+        # 只读取永久分区边界之后的活跃历史；被挤出的旧消息不会因尾部删除而重新进入。
+        partition_state = await get_session_cache_state(session_id)
+        partition_state, partition_boundary_id = await _ensure_partition_message_boundary(session_id, partition_state)
         try:
-            db_history = await get_conversation_messages(session_id, limit=10000)
+            db_history = await get_conversation_messages_after_id(session_id, partition_boundary_id, limit=10000)
             db_msgs = []
             for m in (db_history or []):
                 msg = db_row_to_message(m)
-                msg['created_at'] = m.get('created_at')  # 保留时间戳供分区时间窗口判断
+                msg['created_at'] = m.get('created_at')
                 msg['id'] = m.get('id')
                 db_msgs.append(msg)
         except Exception as e:
-            print(f"[warning] 分区模式读取历史失败: {e}")
+            print(f"[warning] 分区模式读取活跃历史失败: {e}")
             db_msgs = []
         
         # 提取客户端 system prompt。分区缓存会重组 messages，不能直接保留原 system 消息，
@@ -4354,7 +4390,9 @@ async def chat_completions(request: Request):
             if persisted_tools:
                 print(f"🔧 分区模式: 已先写入{persisted_tools}条tool结果到DB，再重建历史")
                 try:
-                    db_history = await get_conversation_messages(session_id, limit=10000)
+                    latest_state = await get_session_cache_state(session_id)
+                    latest_boundary_id = int(latest_state.get("evicted_through_message_id") or partition_boundary_id or 0)
+                    db_history = await get_conversation_messages_after_id(session_id, latest_boundary_id, limit=10000)
                     db_msgs = []
                     for m in (db_history or []):
                         msg = db_row_to_message(m)
@@ -4444,7 +4482,7 @@ async def chat_completions(request: Request):
         print(f"📦 分区模式: DB历史{len(db_msgs)}条 + 本轮增量{len(client_increment)}条")
         
         messages = await build_partitioned_messages(
-            session_id, all_msgs, partition_base_prompt, user_message
+            session_id, all_msgs, partition_base_prompt, user_message, active_history_only=True
         )
         messages = _repair_tool_call_ids_by_adjacency(messages, session_id=session_id, reason="final_messages")
         messages = _normalize_tool_chains_by_id(messages)

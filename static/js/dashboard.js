@@ -1640,9 +1640,6 @@ function renderThreadMemoryModalContent() {
         return;
     }
     const lines = [];
-    lines.push('已进入记忆宫殿的内容：' + nodes.length + ' / ' + total + ' 条');
-    if (_threadMemoryState.hasMore) lines.push('向下滚动到底部会继续加载更多。');
-    lines.push('');
     for (const n of nodes) {
         lines.push(formatThreadMemoryNode(n));
         lines.push('');

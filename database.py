@@ -849,6 +849,20 @@ async def get_conversation_messages(session_id: str, limit: int = 100):
         return [dict(r) for r in rows]
 
 
+async def get_conversation_messages_after_id(session_id: str, after_id: int = 0, limit: int = 10000):
+    """读取永久分区边界之后的活跃消息；after_id 之前的消息不会重新进入活跃区。"""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("""
+            SELECT id, role, content, metadata, created_at
+            FROM conversations
+            WHERE session_id = $1 AND id > $2
+            ORDER BY created_at ASC, id ASC
+            LIMIT $3
+        """, session_id, max(0, int(after_id or 0)), max(1, int(limit or 10000)))
+        return [dict(r) for r in rows]
+
+
 async def get_conversation_messages_by_date(event_date, start_hour: int = 0):
     """按本地时间窗口读取对话消息（用于日印象）。
 

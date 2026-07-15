@@ -149,6 +149,7 @@ async def init_tables():
                 a_start_round   INTEGER DEFAULT 0,
                 retained_tool_chains JSONB DEFAULT '[]'::jsonb,
                 keep_a_tools_enabled BOOLEAN DEFAULT FALSE,
+                evicted_through_message_id BIGINT DEFAULT 0,
                 updated_at      TIMESTAMPTZ DEFAULT NOW()
             );
         """)
@@ -159,6 +160,10 @@ async def init_tables():
         await conn.execute("""
             ALTER TABLE session_cache_state
             ADD COLUMN IF NOT EXISTS keep_a_tools_enabled BOOLEAN DEFAULT FALSE;
+        """)
+        await conn.execute("""
+            ALTER TABLE session_cache_state
+            ADD COLUMN IF NOT EXISTS evicted_through_message_id BIGINT DEFAULT 0;
         """)
         
         # 日印象表（每天一条叙事摘要，不影响碎片/事件/核心三层结构）
@@ -882,7 +887,7 @@ async def get_session_cache_state(session_id: str) -> dict:
     pool = await get_pool()
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
-            "SELECT summary, a_start_round, retained_tool_chains, keep_a_tools_enabled, updated_at FROM session_cache_state WHERE session_id = $1",
+            "SELECT summary, a_start_round, retained_tool_chains, keep_a_tools_enabled, evicted_through_message_id, updated_at FROM session_cache_state WHERE session_id = $1",
             session_id
         )
         if row:
@@ -915,27 +920,43 @@ async def get_session_cache_state(session_id: str) -> dict:
                 'a_start_round': row['a_start_round'] or 0,
                 'retained_tool_chains': retained_tool_chains,
                 'keep_a_tools_enabled': bool(row['keep_a_tools_enabled']),
+                'evicted_through_message_id': int(row['evicted_through_message_id'] or 0),
                 'updated_at': row['updated_at'],
             }
-        return {'summary_parts': [], 'a_start_round': 0, 'retained_tool_chains': [], 'keep_a_tools_enabled': False, 'updated_at': None}
+        return {'summary_parts': [], 'a_start_round': 0, 'retained_tool_chains': [], 'keep_a_tools_enabled': False, 'evicted_through_message_id': 0, 'updated_at': None}
 
 
-async def save_session_cache_state(session_id: str, summary_parts: list, a_start_round: int, retained_tool_chains: list = None, keep_a_tools_enabled: bool = None):
+async def save_session_cache_state(
+    session_id: str,
+    summary_parts: list,
+    a_start_round: int,
+    retained_tool_chains: list = None,
+    keep_a_tools_enabled: bool = None,
+    evicted_through_message_id: int = None,
+):
     import json
     summary_json = json.dumps(summary_parts, ensure_ascii=False)
     retained_json = json.dumps(retained_tool_chains, ensure_ascii=False) if retained_tool_chains is not None else None
     keep_enabled = bool(keep_a_tools_enabled) if keep_a_tools_enabled is not None else None
+    evicted_through = int(evicted_through_message_id) if evicted_through_message_id is not None else None
     pool = await get_pool()
     async with pool.acquire() as conn:
         await conn.execute("""
-            INSERT INTO session_cache_state (session_id, summary, a_start_round, retained_tool_chains, keep_a_tools_enabled, updated_at)
-            VALUES ($1, $2, $3, COALESCE($4::jsonb, '[]'::jsonb), COALESCE($5, FALSE), NOW())
+            INSERT INTO session_cache_state (
+                session_id, summary, a_start_round, retained_tool_chains, keep_a_tools_enabled,
+                evicted_through_message_id, updated_at
+            )
+            VALUES ($1, $2, $3, COALESCE($4::jsonb, '[]'::jsonb), COALESCE($5, FALSE), COALESCE($6, 0), NOW())
             ON CONFLICT (session_id)
             DO UPDATE SET summary = $2, a_start_round = $3,
                           retained_tool_chains = COALESCE($4::jsonb, session_cache_state.retained_tool_chains),
                           keep_a_tools_enabled = COALESCE($5, session_cache_state.keep_a_tools_enabled),
+                          evicted_through_message_id = CASE
+                              WHEN $6::bigint IS NULL THEN session_cache_state.evicted_through_message_id
+                              ELSE GREATEST(session_cache_state.evicted_through_message_id, $6::bigint)
+                          END,
                           updated_at = NOW()
-        """, session_id, summary_json, a_start_round, retained_json, keep_enabled)
+        """, session_id, summary_json, a_start_round, retained_json, keep_enabled, evicted_through)
 
 
 

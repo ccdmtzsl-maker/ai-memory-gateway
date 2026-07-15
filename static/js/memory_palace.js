@@ -172,6 +172,23 @@ function toggleMemoryPalaceTools() {
     renderMemoryPalaceToolsState();
 }
 
+function toggleMemoryPalaceVectorMenu(event) {
+    if (event) event.stopPropagation();
+    const menu = document.getElementById('mpVectorMaintenanceMenu');
+    if (!menu) return;
+    menu.style.display = menu.style.display === 'none' || !menu.style.display ? 'block' : 'none';
+}
+
+function closeMemoryPalaceVectorMenu() {
+    const menu = document.getElementById('mpVectorMaintenanceMenu');
+    if (menu) menu.style.display = 'none';
+}
+
+document.addEventListener('click', (event) => {
+    const wrap = document.getElementById('mpVectorMaintenanceWrap');
+    if (wrap && !wrap.contains(event.target)) closeMemoryPalaceVectorMenu();
+});
+
 async function loadMemoryPalaceNodes(room) {
     const el = document.getElementById('mpNodeList');
     if (el) el.innerHTML = '<div style="color:var(--text-muted);padding:16px;">加载中...</div>';
@@ -1096,7 +1113,7 @@ function setMemoryPalaceBackfillButton(running) {
     const btn = document.getElementById('mpBackfillBtn');
     if (!btn) return;
     btn.disabled = !!running;
-    btn.textContent = running ? '补全中...' : '补全向量';
+    btn.textContent = running ? '补全中...' : '补全缺失向量';
 }
 
 function showMemoryPalaceBackfillStatus(text, type) {
@@ -1127,6 +1144,36 @@ async function showMemoryPalaceVectorStats() {
         if (btn) {
             btn.disabled = false;
             btn.textContent = '查看向量数';
+        }
+    }
+}
+
+
+async function clearArchivedMemoryPalaceVectors() {
+    if (!confirm('确定清除已归档记忆的向量吗？
+
+这不会删除记忆本体，但归档记忆如果恢复，可能需要重新补向量。')) return;
+    const btn = document.getElementById('mpClearArchivedVectorsBtn');
+    if (btn) {
+        btn.disabled = true;
+        btn.textContent = '清理中...';
+    }
+    showMemoryPalaceBackfillStatus('正在清除已归档记忆的向量...');
+    try {
+        const resp = await fetch('/api/memory-palace/vectors/clear-archived', {
+            method: 'POST',
+            headers: {'Content-Type':'application/json'},
+            body: JSON.stringify({})
+        });
+        const data = await resp.json();
+        if (data.error || data.status === 'error') throw new Error(data.error || '清理失败');
+        showMemoryPalaceBackfillStatus('✅ 已清除归档向量 ' + (data.deleted || 0) + ' 条。剩余归档向量 ' + (data.after || 0) + ' 条。');
+    } catch (e) {
+        showMemoryPalaceBackfillStatus('❌ 清除归档向量失败：' + e.message, 'error');
+    } finally {
+        if (btn) {
+            btn.disabled = false;
+            btn.textContent = '清除归档向量';
         }
     }
 }

@@ -1772,7 +1772,10 @@ async def list_memory_palace_nodes(
             params.append(room)
         params.extend([limit, offset])
         sql = f"""
-            SELECT *
+            SELECT id, character_id, content, room, tags, importance, mood, valence, arousal,
+                   date, created_at, updated_at, last_accessed_at, access_count,
+                   origin, source_id, pinned_until, session_id, event_box_id,
+                   archived, is_box_summary
             FROM memory_palace_nodes
             WHERE {' AND '.join(conditions)}
             ORDER BY date DESC NULLS LAST, created_at DESC, updated_at DESC

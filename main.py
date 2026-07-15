@@ -16,6 +16,7 @@ import os
 import json
 import uuid
 import asyncio
+import time
 import re
 import httpx
 from datetime import datetime, timedelta, timezone
@@ -84,6 +85,59 @@ _round_counter = 0
 
 # Dashboard 后台日志：只保留最近若干条，避免占内存。
 _dashboard_logs = deque(maxlen=200)
+
+# 轻量进程内读缓存：只用于 Dashboard / 记忆管理页这类短期重复读。
+# 不用于主聊天历史构造，避免影响强一致的 tool / re-roll 流程。
+_READ_CACHE = {}
+_READ_CACHE_MAX_ITEMS = 256
+
+def _cache_get(key: str):
+    try:
+        item = _READ_CACHE.get(str(key))
+        if not item:
+            return None
+        if float(item.get("expires_at") or 0) <= time.time():
+            _READ_CACHE.pop(str(key), None)
+            return None
+        return item.get("value")
+    except Exception:
+        return None
+
+
+def _cache_set(key: str, value, ttl: int = 10):
+    try:
+        key = str(key)
+        if len(_READ_CACHE) >= _READ_CACHE_MAX_ITEMS:
+            now = time.time()
+            expired = [k for k, v in _READ_CACHE.items() if float(v.get("expires_at") or 0) <= now]
+            for k in expired:
+                _READ_CACHE.pop(k, None)
+            if len(_READ_CACHE) >= _READ_CACHE_MAX_ITEMS:
+                _READ_CACHE.pop(next(iter(_READ_CACHE)), None)
+        _READ_CACHE[key] = {"value": value, "expires_at": time.time() + max(1, int(ttl or 10))}
+    except Exception:
+        pass
+    return value
+
+
+def _cache_delete_prefix(prefix: str):
+    try:
+        prefix = str(prefix)
+        for key in list(_READ_CACHE.keys()):
+            if key.startswith(prefix):
+                _READ_CACHE.pop(key, None)
+    except Exception:
+        pass
+
+
+def invalidate_daily_impression_cache():
+    _cache_delete_prefix("daily:")
+
+
+def invalidate_memory_palace_cache(character_id: str = "default"):
+    character_id = character_id or "default"
+    _cache_delete_prefix(f"mp:{character_id}:")
+    _cache_delete_prefix("mp:stats:")
 
 # Dashboard 调试：只保留最近一次实际转发给上游模型的请求体。
 # 不主动打印，避免日志刷屏；需要时由后台日志页手动查看。
@@ -4717,13 +4771,17 @@ async def export_memory_palace_backup_data():
 async def api_memory_palace_export_stats():
     if not MEMORY_ENABLED:
         return {"error": "记忆系统未启用"}
+    cache_key = "mp:stats:export"
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
     try:
         pool = await get_pool()
         async with pool.acquire() as conn:
             counts = {}
             for table in _MEMORY_PALACE_BACKUP_TABLES:
                 counts[table] = await conn.fetchval(f"SELECT COUNT(*) FROM {table}")
-        return {
+        result = {
             "status": "ok",
             "counts": counts,
             "total_nodes": counts.get("memory_palace_nodes", 0),
@@ -4731,6 +4789,7 @@ async def api_memory_palace_export_stats():
             "total_links": counts.get("memory_palace_links", 0),
             "total_event_boxes": counts.get("memory_palace_event_boxes", 0),
         }
+        return _cache_set(cache_key, result, ttl=30)
     except Exception as e:
         return {"error": str(e)}
 
@@ -4903,12 +4962,16 @@ async def api_memory_palace_import_confirm(request: Request):
         return {"status":"error", "error":"记忆系统未启用"}
     try:
         data = await request.json()
-        return await confirm_memory_palace_import(
+        character_id = data.get("character_id") or "default"
+        result = await confirm_memory_palace_import(
             data.get("import_token") or "",
             strategy=data.get("strategy") or "merge_skip_duplicates",
             include=data.get("include") or {},
-            character_id=data.get("character_id") or "default",
+            character_id=character_id,
         )
+        if result.get("status") != "error":
+            invalidate_memory_palace_cache(character_id)
+        return result
     except Exception as e:
         return {"status":"error", "error": str(e)}
 
@@ -5133,14 +5196,24 @@ def _serialize_daily_impression(row):
 async def api_list_daily_impressions(limit: int = 30):
     if not MEMORY_ENABLED:
         return {"error": "记忆系统未启用"}
+    limit = max(1, min(int(limit or 30), 10000))
+    cache_key = f"daily:list:{limit}"
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
     rows = await list_daily_impressions(limit)
-    return {"status": "ok", "impressions": [_serialize_daily_impression(r) for r in rows]}
+    result = {"status": "ok", "impressions": [_serialize_daily_impression(r) for r in rows]}
+    return _cache_set(cache_key, result, ttl=15)
 
 
 @app.get("/api/daily-impressions/stats")
 async def api_daily_impressions_stats():
     if not MEMORY_ENABLED:
         return {"error": "记忆系统未启用"}
+    cache_key = "daily:stats"
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
     try:
         pool = await get_pool()
         async with pool.acquire() as conn:
@@ -5151,12 +5224,13 @@ async def api_daily_impressions_stats():
                 ORDER BY date DESC
                 LIMIT 1
             """)
-        return {
+        result = {
             "status": "ok",
             "total": int(total or 0),
             "latest_date": latest["date"].isoformat() if latest and latest.get("date") else None,
             "latest_updated_at": latest["updated_at"].isoformat() if latest and latest.get("updated_at") else None,
         }
+        return _cache_set(cache_key, result, ttl=30)
     except Exception as e:
         return JSONResponse({"status": "error", "error": str(e)}, status_code=500)
 
@@ -5182,7 +5256,10 @@ async def api_generate_daily_impression(request: Request):
         return {"error": "请提供日期"}
     impression_date = datetime.strptime(date_str, "%Y-%m-%d").date()
     start_hour = data.get("start_hour", data.get("startHour", 0))
-    return await generate_daily_impression_for_date(impression_date, start_hour=start_hour)
+    result = await generate_daily_impression_for_date(impression_date, start_hour=start_hour)
+    if not result.get("error") and result.get("status") != "error":
+        invalidate_daily_impression_cache()
+    return result
 
 
 @app.put("/api/daily-impressions/{date_str}")
@@ -5204,6 +5281,7 @@ async def api_update_daily_impression(date_str: str, request: Request):
             mood=mood,
             source_fragment_ids=None,
         )
+        invalidate_daily_impression_cache()
         return {"status": "ok", "impression": _serialize_daily_impression(saved)}
     except Exception as e:
         return {"error": str(e)}
@@ -5221,6 +5299,7 @@ async def api_delete_daily_impression(date_str: str):
                 "DELETE FROM daily_impressions WHERE impression_date = $1",
                 impression_date
             )
+        invalidate_daily_impression_cache()
         return {"status": "ok", "deleted": deleted}
     except Exception as e:
         return {"error": str(e)}
@@ -6067,7 +6146,13 @@ async def api_user_impression_generate_preview(request: Request):
 async def api_memory_palace_rooms(character_id: str = "default"):
     if not MEMORY_ENABLED:
         return {"error": "记忆系统未启用"}
-    return {"rooms": await list_memory_palace_rooms(character_id=character_id)}
+    character_id = character_id or "default"
+    cache_key = f"mp:{character_id}:rooms"
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
+    result = {"rooms": await list_memory_palace_rooms(character_id=character_id)}
+    return _cache_set(cache_key, result, ttl=10)
 
 
 @app.get("/api/memory-palace/nodes")
@@ -6080,10 +6165,19 @@ async def api_memory_palace_nodes(
 ):
     if not MEMORY_ENABLED:
         return {"error": "记忆系统未启用"}
+    character_id = character_id or "default"
+    limit = max(1, min(int(limit or 100), 300))
+    offset = max(0, int(offset or 0))
+    room_key = room or ""
+    cache_key = f"mp:{character_id}:nodes:{room_key}:{bool(archived)}:{limit}:{offset}"
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
     nodes = await list_memory_palace_nodes(
         room=room, character_id=character_id, archived=archived, limit=limit, offset=offset,
     )
-    return {"nodes": nodes}
+    result = {"nodes": nodes}
+    return _cache_set(cache_key, result, ttl=10)
 
 
 
@@ -6167,8 +6261,13 @@ def _serialize_event_box_node(row: dict) -> dict:
 async def api_memory_palace_event_boxes(character_id: str = "default", limit: int = 100, offset: int = 0):
     if not MEMORY_ENABLED:
         return {"error": "记忆系统未启用"}
+    character_id = character_id or "default"
     limit = max(1, min(int(limit or 100), 300))
     offset = max(0, int(offset or 0))
+    cache_key = f"mp:{character_id}:event_boxes:{limit}:{offset}"
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
     try:
         pool = await get_pool()
         async with pool.acquire() as conn:
@@ -6182,7 +6281,8 @@ async def api_memory_palace_event_boxes(character_id: str = "default", limit: in
             """, character_id, limit, offset)
             total = await conn.fetchval("SELECT COUNT(*) FROM memory_palace_event_boxes WHERE character_id = $1", character_id)
         boxes = [_serialize_event_box(dict(r)) for r in rows]
-        return {"status": "ok", "total": int(total or 0), "boxes": boxes}
+        result = {"status": "ok", "total": int(total or 0), "boxes": boxes}
+        return _cache_set(cache_key, result, ttl=10)
     except Exception as e:
         return {"status": "error", "error": str(e), "boxes": []}
 
@@ -6309,6 +6409,8 @@ async def api_memory_palace_compress_event_boxes(request: Request):
         if isinstance(box_ids, str):
             box_ids = [box_ids]
         compressed = await maybe_compress_memory_palace_event_boxes(box_ids if box_ids else None, character_id=character_id, threshold=data.get("threshold"))
+        if compressed:
+            invalidate_memory_palace_cache(character_id)
         return {"status": "ok", "compressed": compressed}
     except Exception as e:
         return {"status": "error", "error": str(e), "compressed": 0}
@@ -6903,6 +7005,7 @@ async def api_memory_palace_create_node(request: Request):
         await build_memory_palace_links_for_node(node)
     except Exception as e:
         print(f"⚠️ 记忆宫殿自动关联失败 {node_id}: {e}")
+    invalidate_memory_palace_cache(data.get("character_id") or "default")
     return {"status": "ok", "node": node}
 
 
@@ -6916,6 +7019,7 @@ async def api_memory_palace_update_node(node_id: str, request: Request):
     node = await update_memory_palace_node(node_id, data)
     if not node:
         return JSONResponse({"error": "记忆不存在"}, status_code=404)
+    invalidate_memory_palace_cache(data.get("character_id") or node.get("character_id") or "default")
     return {"status": "ok", "node": node}
 
 
@@ -6924,6 +7028,7 @@ async def api_memory_palace_delete_node(node_id: str):
     if not MEMORY_ENABLED:
         return {"error": "记忆系统未启用"}
     result = await delete_memory_palace_node(node_id)
+    invalidate_memory_palace_cache("default")
     return {"status": "ok", "deleted": result}
 
 
@@ -8096,7 +8201,10 @@ async def api_memory_palace_import_preview(request: Request):
         items = data.get("items") or []
         if not isinstance(items, list) or not items:
             return {"status": "error", "error": "没有选中要导入的项目"}
-        return await import_memory_palace_preview_items(items, character_id=character_id)
+        result = await import_memory_palace_preview_items(items, character_id=character_id)
+        if result.get("status") != "error":
+            invalidate_memory_palace_cache(character_id)
+        return result
     except Exception as e:
         return {"status": "error", "error": str(e)}
 
@@ -8466,6 +8574,8 @@ async def import_daily_impressions(request: Request):
                 source_fragment_ids=item.get("source_fragment_ids"),
             )
             imported += 1
+        if imported:
+            invalidate_daily_impression_cache()
         return {"status": "ok", "imported": imported, "skipped": skipped}
     except Exception as e:
         return {"error": str(e)}

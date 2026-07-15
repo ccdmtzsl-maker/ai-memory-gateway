@@ -5137,6 +5137,30 @@ async def api_list_daily_impressions(limit: int = 30):
     return {"status": "ok", "impressions": [_serialize_daily_impression(r) for r in rows]}
 
 
+@app.get("/api/daily-impressions/stats")
+async def api_daily_impressions_stats():
+    if not MEMORY_ENABLED:
+        return {"error": "记忆系统未启用"}
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            total = await conn.fetchval("SELECT COUNT(*) FROM daily_impressions")
+            latest = await conn.fetchrow("""
+                SELECT date, updated_at
+                FROM daily_impressions
+                ORDER BY date DESC
+                LIMIT 1
+            """)
+        return {
+            "status": "ok",
+            "total": int(total or 0),
+            "latest_date": latest["date"].isoformat() if latest and latest.get("date") else None,
+            "latest_updated_at": latest["updated_at"].isoformat() if latest and latest.get("updated_at") else None,
+        }
+    except Exception as e:
+        return JSONResponse({"status": "error", "error": str(e)}, status_code=500)
+
+
 @app.get("/api/daily-impressions/{date_str}")
 async def api_get_daily_impression(date_str: str):
     if not MEMORY_ENABLED:

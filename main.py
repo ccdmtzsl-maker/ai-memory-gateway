@@ -3729,101 +3729,127 @@ async def _fetch_partition_extract_messages_by_ids(session_id: str, message_ids:
     return [dict(r) for r in rows]
 
 
+async def _fetch_partition_extract_messages_range(
+    session_id: str, after_id: int, through_id: int, limit: int,
+) -> list:
+    """读取游标之后、永久缓存边界以内的待提取正文。"""
+    after_id = max(0, int(after_id or 0))
+    through_id = max(0, int(through_id or 0))
+    if through_id <= after_id:
+        return []
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("""
+            SELECT id, session_id, role, content, created_at
+            FROM conversations
+            WHERE session_id = $1 AND id > $2 AND id <= $3
+              AND content IS NOT NULL AND content <> ''
+            ORDER BY id DESC
+            LIMIT $4
+        """, session_id, after_id, through_id, max(1, int(limit or 120)))
+    return [dict(r) for r in reversed(rows)]
+
+
 async def _run_partition_auto_extract_after_response_locked(session_id: str, character_id: str = "default"):
-    """实际执行回复后分区维护；调用方已保证同会话串行。"""
+    """回复后维护永久分区边界，并提取 cursor 与边界之间的消息。"""
     try:
-        # 需要保留 A 区 use_package 工具链时，继续走旧的完整历史路径，避免裁掉 metadata/tool_calls。
-        if CACHE_PARTITION_KEEP_A_TOOLS:
-            db_history = await get_conversation_messages(session_id, limit=10000)
-            db_msgs = []
-            for m in (db_history or []):
-                msg = db_row_to_message(m)
-                msg['created_at'] = m.get('created_at')
-                msg['id'] = m.get('id')
-                db_msgs.append(msg)
-        else:
-            db_msgs = await _fetch_partition_boundary_messages(session_id, limit=10000)
-
-        non_system = [m for m in db_msgs if m.get('role') not in ('system', 'developer')]
-        rounds = group_by_rounds(non_system)
-        total_rounds = len(rounds)
-        if total_rounds <= 0:
-            return
-
         state = await get_session_cache_state(session_id)
-        summary_parts = state['summary_parts']
-        a_start_round = int(state.get('a_start_round') or 0)
+        state, boundary_id = await _ensure_partition_message_boundary(session_id, state)
+        summary_parts = state.get('summary_parts') or []
+        cumulative_a_start_round = int(state.get('a_start_round') or 0)
         retained_tool_chains = _dedupe_retained_use_package_chains(list(state.get('retained_tool_chains') or []))
         keep_was_enabled = bool(state.get('keep_a_tools_enabled'))
+
+        # 后台只观察永久边界之后的活跃区。删除尾部不会让 boundary_id 之前的消息重新出现。
+        if CACHE_PARTITION_KEEP_A_TOOLS:
+            active_rows = await get_conversation_messages_after_id(session_id, boundary_id, limit=10000)
+            active_msgs = []
+            for row in active_rows or []:
+                msg = db_row_to_message(row)
+                msg['created_at'] = row.get('created_at')
+                msg['id'] = row.get('id')
+                active_msgs.append(msg)
+        else:
+            pool = await get_pool()
+            async with pool.acquire() as conn:
+                rows = await conn.fetch("""
+                    SELECT id, role, created_at
+                    FROM conversations
+                    WHERE session_id = $1 AND id > $2
+                    ORDER BY created_at ASC, id ASC
+                    LIMIT 10000
+                """, session_id, boundary_id)
+            active_msgs = [{"id": r['id'], "role": r['role'], "created_at": r['created_at'], "content": ""} for r in rows]
+
+        non_system = [m for m in active_msgs if m.get('role') not in ('system', 'developer')]
+        rounds = group_by_rounds(non_system)
+
         if not CACHE_PARTITION_KEEP_A_TOOLS:
             if retained_tool_chains or keep_was_enabled:
                 retained_tool_chains = []
-                await save_session_cache_state(session_id, summary_parts, a_start_round, [], False)
+                await save_session_cache_state(session_id, summary_parts, cumulative_a_start_round, [], False)
         elif not keep_was_enabled:
             retained_tool_chains = []
-            await save_session_cache_state(session_id, summary_parts, a_start_round, [], True)
-        X = CACHE_PARTITION_X
+            await save_session_cache_state(session_id, summary_parts, cumulative_a_start_round, [], True)
 
-        a_end_round = a_start_round + X
-        a_round_groups = rounds[a_start_round : a_end_round]
-        b_round_groups = rounds[a_end_round :]
+        X = CACHE_PARTITION_X
+        local_start_round = 0
+        a_round_groups = rounds[:X]
+        b_round_groups = rounds[X:]
         a_msgs = [msg for rnd in a_round_groups for msg in rnd]
         b_rounds_count = len(b_round_groups)
-
         rotation_count = 0
+        boundary_candidate = boundary_id
         retained_audit_before = None
         retained_audit_captured = []
         max_rotations = CACHE_MAX_ROTATIONS if CACHE_PARTITION_TRIGGER == "time" else 999
+
         while _should_rotate(b_rounds_count, X, a_msgs) and rotation_count < max_rotations:
             rotation_count += 1
             trigger_info = f"B区{b_rounds_count}轮 >= X={X}" if CACHE_PARTITION_TRIGGER != "time" else f"A区首条消息超出{CACHE_PARTITION_WINDOW}分钟窗口"
             log_memory_palace_auto_extract("run", f"🧠 回复后分区轮转推进缓存边界：session={session_id}, {trigger_info}, 当前A区{len(a_msgs)}条", session_id=session_id)
+            evicted_ids = [int(m.get('id')) for m in a_msgs if m.get('id') is not None]
+            if evicted_ids:
+                boundary_candidate = max(boundary_candidate, max(evicted_ids))
             if CACHE_PARTITION_KEEP_A_TOOLS:
                 captured = _extract_use_package_chains(a_msgs)
                 if captured:
                     if retained_audit_before is None:
                         retained_audit_before = list(retained_tool_chains)
                     retained_audit_captured.extend(captured)
-                    before_count = len(retained_tool_chains)
                     retained_tool_chains = _dedupe_retained_use_package_chains(retained_tool_chains + captured)
-                    print(f"🔧 回复后A区轮转: 捕获{len(captured)}组use_package调用链，按包名去重后保留{len(retained_tool_chains)}组（原{before_count}组）")
-            a_start_round += X
-            a_end_round = a_start_round + X
-            a_round_groups = rounds[a_start_round : a_end_round]
-            b_round_groups = rounds[a_end_round :]
+            local_start_round += X
+            cumulative_a_start_round += X
+            a_round_groups = rounds[local_start_round:local_start_round + X]
+            b_round_groups = rounds[local_start_round + X:]
             a_msgs = [msg for rnd in a_round_groups for msg in rnd]
             b_rounds_count = len(b_round_groups)
 
         if rotation_count > 0:
-            await save_session_cache_state(session_id, summary_parts, a_start_round, retained_tool_chains, CACHE_PARTITION_KEEP_A_TOOLS)
+            await save_session_cache_state(
+                session_id, summary_parts, cumulative_a_start_round, retained_tool_chains,
+                CACHE_PARTITION_KEEP_A_TOOLS, evicted_through_message_id=boundary_candidate,
+            )
+            boundary_id = boundary_candidate
             add_dashboard_log("info", f"🔧 A区use_package保留[处理前]: 已有={_retained_package_names(retained_audit_before or retained_tool_chains)}, 本次捕获={_retained_package_names(retained_audit_captured)}", category="chat", session_id=session_id)
             add_dashboard_log("info", f"🔧 A区use_package保留[处理后]: 最终={_retained_package_names(retained_tool_chains)}（按包名仅留最新）", category="chat", session_id=session_id)
-            log_memory_palace_auto_extract("run", f"🧠 回复后分区轮转完成：session={session_id}, 共{rotation_count}次, a_start_round={a_start_round}", session_id=session_id)
+            log_memory_palace_auto_extract("run", f"🧠 回复后分区轮转完成：session={session_id}, 共{rotation_count}次, boundary={boundary_id}", session_id=session_id)
 
-        if a_start_round > 0:
-            evicted_round_groups = rounds[:min(a_start_round, total_rounds)]
-            evicted_msgs = [msg for rnd in evicted_round_groups for msg in rnd]
-            if evicted_msgs:
-                if CACHE_PARTITION_KEEP_A_TOOLS:
-                    extract_msgs = evicted_msgs
-                else:
-                    cursor = await get_memory_palace_extraction_cursor(session_id, character_id=character_id)
-                    last_id = int(cursor.get("last_message_id") or 0)
-                    candidate_ids = [int(m.get("id")) for m in evicted_msgs if m.get("id") and int(m.get("id")) > last_id]
-                    batch_limit = max(1, int(CACHE_PARTITION_EXTRACT_LIMIT or 120))
-                    if len(candidate_ids) > batch_limit:
-                        candidate_ids = candidate_ids[-batch_limit:]
-                    extract_msgs = await _fetch_partition_extract_messages_by_ids(session_id, candidate_ids)
-
-                if extract_msgs:
-                    log_memory_palace_auto_extract(
-                        "run",
-                        f"🧠 回复后分区自动提取检查缓存区外内容：session={session_id}, rounds< {a_start_round}, 消息{len(extract_msgs)}条",
-                        session_id=session_id,
-                    )
-                    result = await extract_memory_palace_from_partition_messages(extract_msgs, session_id, character_id=character_id)
-                    if isinstance(result, dict) and result.get("status") == "error":
-                        log_memory_palace_auto_extract("error", f"⚠️ 回复后分区自动提取失败，下次回复后重试：session={session_id}, error={result.get('error')}", session_id=session_id)
+        # 主请求可能已经推进边界；无论由哪一边推进，都只提取 cursor 与永久边界之间的正文。
+        cursor = await get_memory_palace_extraction_cursor(session_id, character_id=character_id)
+        last_id = int(cursor.get('last_message_id') or 0)
+        extract_msgs = await _fetch_partition_extract_messages_range(
+            session_id, last_id, boundary_id, max(1, int(CACHE_PARTITION_EXTRACT_LIMIT or 120)),
+        )
+        if extract_msgs:
+            log_memory_palace_auto_extract(
+                "run",
+                f"🧠 回复后分区自动提取检查缓存区外内容：session={session_id}, cursor={last_id}, boundary={boundary_id}, 消息{len(extract_msgs)}条",
+                session_id=session_id,
+            )
+            result = await extract_memory_palace_from_partition_messages(extract_msgs, session_id, character_id=character_id)
+            if isinstance(result, dict) and result.get('status') == 'error':
+                log_memory_palace_auto_extract("error", f"⚠️ 回复后分区自动提取失败，下次回复后重试：session={session_id}, error={result.get('error')}", session_id=session_id)
     except Exception as e:
         log_memory_palace_auto_extract("error", f"⚠️ 回复后分区自动提取异常，下次回复后重试：session={session_id}, error={e}", session_id=session_id)
 

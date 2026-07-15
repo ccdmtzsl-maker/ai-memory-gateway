@@ -658,13 +658,13 @@ async def get_last_user_content(session_id: str) -> str:
 
 
 async def update_last_assistant_message(session_id: str, new_content: str, model: str = ""):
-    """覆盖指定session最后一条assistant消息的content（用于re-roll去重）"""
+    """覆盖指定session最后一条assistant消息的content（用于re-roll去重）。"""
     pool = await get_pool()
     async with pool.acquire() as conn:
         row = await conn.fetchrow("""
             SELECT id FROM conversations
             WHERE session_id = $1 AND role = 'assistant'
-            ORDER BY created_at DESC
+            ORDER BY created_at DESC, id DESC
             LIMIT 1
         """, session_id)
         if row:
@@ -674,6 +674,38 @@ async def update_last_assistant_message(session_id: str, new_content: str, model
             )
             return True
         return False
+
+
+async def update_last_assistant_if_same_user(session_id: str, user_content: str, new_content: str, model: str = "", metadata: str = None):
+    """如果最后一条 user 与当前 user 相同，则一次 SQL 内覆盖最后一条 assistant，用于 re-roll 去重。"""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow("""
+            WITH last_user AS (
+                SELECT content
+                FROM conversations
+                WHERE session_id = $1 AND role = 'user'
+                ORDER BY created_at DESC, id DESC
+                LIMIT 1
+            ),
+            last_assistant AS (
+                SELECT id
+                FROM conversations
+                WHERE session_id = $1 AND role = 'assistant'
+                ORDER BY created_at DESC, id DESC
+                LIMIT 1
+            ),
+            updated AS (
+                UPDATE conversations c
+                SET content = $3, model = $4, metadata = $5
+                FROM last_user, last_assistant
+                WHERE c.id = last_assistant.id
+                  AND btrim(COALESCE(last_user.content, '')) = btrim(COALESCE($2, ''))
+                RETURNING c.id
+            )
+            SELECT id FROM updated
+        """, session_id, user_content or "", new_content or "", model or "", metadata)
+        return bool(row)
 
 
 async def get_recent_messages(session_id: str, limit: int = 20):
@@ -1128,25 +1160,41 @@ async def get_conversations_paginated(page: int = 1, per_page: int = 20):
 
         rows = await conn.fetch("""
             WITH session_info AS (
-                SELECT session_id, MIN(created_at) as first_time, MAX(created_at) as last_time, COUNT(*) as message_count
-                FROM conversations GROUP BY session_id ORDER BY last_time DESC LIMIT $1 OFFSET $2
+                SELECT session_id,
+                       MIN(created_at) as first_time,
+                       MAX(created_at) as last_time,
+                       COUNT(*) as message_count
+                FROM conversations
+                GROUP BY session_id
+                ORDER BY last_time DESC
+                LIMIT $1 OFFSET $2
+            ),
+            first_user AS (
+                SELECT DISTINCT ON (c.session_id) c.session_id, c.content AS preview
+                FROM conversations c
+                JOIN session_info si ON si.session_id = c.session_id
+                WHERE c.role = 'user'
+                ORDER BY c.session_id, c.created_at ASC, c.id ASC
+            ),
+            usage AS (
+                SELECT tu.session_id, SUM(tu.total_tokens) as total_all
+                FROM token_usage tu
+                JOIN session_info si ON si.session_id = tu.session_id
+                WHERE tu.usage_type = 'chat'
+                GROUP BY tu.session_id
             )
             SELECT si.*,
-                   COALESCE(tu.total_all, 0) as total_tokens
+                   COALESCE(u.total_all, 0) as total_tokens,
+                   COALESCE(fu.preview, '') as preview
             FROM session_info si
-            LEFT JOIN (
-                SELECT session_id, SUM(total_tokens) as total_all FROM token_usage WHERE usage_type = 'chat' GROUP BY session_id
-            ) tu ON si.session_id = tu.session_id
+            LEFT JOIN usage u ON si.session_id = u.session_id
+            LEFT JOIN first_user fu ON si.session_id = fu.session_id
             ORDER BY si.last_time DESC
         """, per_page, offset)
         
         results = []
         for r in rows:
-            preview_row = await conn.fetchrow(
-                "SELECT content FROM conversations WHERE session_id = $1 AND role = 'user' ORDER BY created_at LIMIT 1",
-                r['session_id']
-            )
-            preview = preview_row['content'][:80] if preview_row else ''
+            preview = (r['preview'] or '')[:80]
             title = (preview[:30] + '...' if len(preview) > 30 else preview) or r['session_id']
             results.append({
                 'session_id': r['session_id'],

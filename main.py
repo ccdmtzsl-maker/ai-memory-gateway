@@ -1713,14 +1713,15 @@ async def retrieve_memory_palace_rows_for_prompt(query: str = "", limit: int = 5
         print(f"⚠️ Memory Palace spread activation failed: {e}")
     now = datetime.now(timezone.utc)
     pinned = []
-    selected_ids = {x["id"] for x in selected}
     for row in rows:
         pu = _memory_palace_aware_dt(row["pinned_until"])
-        if pu and pu > now and row["id"] not in selected_ids:
+        if pu and pu > now:
             item = dict(row)
             item["score"] = 999.0
             pinned.append(item)
     pinned.sort(key=lambda x: x["pinned_until"] or now)
+    pinned_ids = {x["id"] for x in pinned}
+    selected = [x for x in selected if x.get("id") not in pinned_ids]
     final_rows = pinned + selected
     if touch_access and final_rows:
         try:

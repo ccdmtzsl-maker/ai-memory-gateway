@@ -7956,60 +7956,57 @@ async def save_memory_palace_embedding_if_missing(memory_id: str, content: str) 
 
 
 async def get_memory_palace_vector_stats() -> dict:
-    """只读统计记忆宫殿向量状态。"""
+    """只读统计记忆宫殿向量状态。缺失/空向量只按未归档节点计算，归档节点单独统计。"""
     pool = await get_pool()
+    valid_vector_sql = """
+        v.memory_id IS NOT NULL
+        AND NULLIF(TRIM(COALESCE(v.embedding_json, '')), '') IS NOT NULL
+        AND LOWER(TRIM(v.embedding_json)) NOT IN ('[]', 'null')
+        AND TRIM(v.embedding_json) ~ '^\[[[:space:]]*-?[0-9]'
+    """
+    invalid_vector_sql = """
+        v.memory_id IS NULL
+        OR NULLIF(TRIM(COALESCE(v.embedding_json, '')), '') IS NULL
+        OR LOWER(TRIM(v.embedding_json)) IN ('[]', 'null')
+        OR TRIM(v.embedding_json) !~ '^\[[[:space:]]*-?[0-9]'
+    """
     async with pool.acquire() as conn:
-        row = await conn.fetchrow("""
+        row = await conn.fetchrow(f"""
             SELECT
                 COUNT(n.id)::int AS total_nodes,
-                COUNT(n.id) FILTER (
-                    WHERE v.memory_id IS NOT NULL
-                      AND NULLIF(TRIM(COALESCE(v.embedding_json, '')), '') IS NOT NULL
-                      AND LOWER(TRIM(v.embedding_json)) NOT IN ('[]', 'null')
-                      AND TRIM(v.embedding_json) ~ '^\\[[[:space:]]*-?[0-9]'
-                )::int AS total_vectors,
-                COUNT(n.id) FILTER (
-                    WHERE v.memory_id IS NULL
-                       OR NULLIF(TRIM(COALESCE(v.embedding_json, '')), '') IS NULL
-                       OR LOWER(TRIM(v.embedding_json)) IN ('[]', 'null')
-                       OR TRIM(v.embedding_json) !~ '^\\[[[:space:]]*-?[0-9]'
-                )::int AS missing_vectors,
-                COUNT(n.id) FILTER (
-                    WHERE v.memory_id IS NOT NULL AND (
-                        NULLIF(TRIM(COALESCE(v.embedding_json, '')), '') IS NULL
-                        OR LOWER(TRIM(v.embedding_json)) IN ('[]', 'null')
-                        OR TRIM(v.embedding_json) !~ '^\\[[[:space:]]*-?[0-9]'
-                    )
-                )::int AS invalid_vector_rows,
-                COUNT(n.id) FILTER (
-                    WHERE n.embedded = TRUE AND (
-                        v.memory_id IS NULL
-                        OR NULLIF(TRIM(COALESCE(v.embedding_json, '')), '') IS NULL
-                        OR LOWER(TRIM(v.embedding_json)) IN ('[]', 'null')
-                        OR TRIM(v.embedding_json) !~ '^\\[[[:space:]]*-?[0-9]'
-                    )
-                )::int AS embedded_true_without_vector,
-                COUNT(n.id) FILTER (
-                    WHERE COALESCE(n.embedded, FALSE) = FALSE
-                      AND v.memory_id IS NOT NULL
-                      AND NULLIF(TRIM(COALESCE(v.embedding_json, '')), '') IS NOT NULL
-                      AND LOWER(TRIM(v.embedding_json)) NOT IN ('[]', 'null')
-                      AND TRIM(v.embedding_json) ~ '^\\[[[:space:]]*-?[0-9]'
-                )::int AS embedded_false_with_vector,
-                COUNT(n.id) FILTER (WHERE COALESCE(NULLIF(TRIM(n.content), ''), '') = '')::int AS empty_content_nodes
+                COUNT(n.id) FILTER (WHERE n.archived = FALSE)::int AS active_nodes,
+                COUNT(n.id) FILTER (WHERE n.archived = TRUE)::int AS archived_nodes,
+                COUNT(n.id) FILTER (WHERE n.archived = FALSE AND ({valid_vector_sql}))::int AS total_vectors,
+                COUNT(n.id) FILTER (WHERE n.archived = FALSE AND ({invalid_vector_sql}))::int AS missing_vectors,
+                COUNT(n.id) FILTER (WHERE n.archived = FALSE AND v.memory_id IS NOT NULL AND ({invalid_vector_sql}))::int AS invalid_vector_rows,
+                COUNT(n.id) FILTER (WHERE n.archived = TRUE AND ({valid_vector_sql}))::int AS archived_vectors,
+                COUNT(n.id) FILTER (WHERE n.archived = TRUE AND ({invalid_vector_sql}))::int AS archived_missing_vectors,
+                COUNT(n.id) FILTER (WHERE n.archived = FALSE AND n.embedded = TRUE AND ({invalid_vector_sql}))::int AS embedded_true_without_vector,
+                COUNT(n.id) FILTER (WHERE n.archived = FALSE AND COALESCE(n.embedded, FALSE) = FALSE AND ({valid_vector_sql}))::int AS embedded_false_with_vector,
+                COUNT(n.id) FILTER (WHERE n.archived = FALSE AND COALESCE(NULLIF(TRIM(n.content), ''), '') = '')::int AS empty_content_nodes
             FROM memory_palace_nodes n
             LEFT JOIN memory_palace_vectors v ON v.memory_id = n.id
         """)
+        orphan_vectors = await conn.fetchval("""
+            SELECT COUNT(*)::int
+            FROM memory_palace_vectors v
+            LEFT JOIN memory_palace_nodes n ON n.id = v.memory_id
+            WHERE n.id IS NULL
+        """)
         return {
             "total_nodes": row["total_nodes"] or 0,
+            "active_nodes": row["active_nodes"] or 0,
+            "archived_nodes": row["archived_nodes"] or 0,
             "total_vectors": row["total_vectors"] or 0,
             "missing_vectors": row["missing_vectors"] or 0,
             "invalid_vector_rows": row["invalid_vector_rows"] or 0,
+            "archived_vectors": row["archived_vectors"] or 0,
+            "archived_missing_vectors": row["archived_missing_vectors"] or 0,
+            "orphan_vectors": orphan_vectors or 0,
             "embedded_true_without_vector": row["embedded_true_without_vector"] or 0,
             "embedded_false_with_vector": row["embedded_false_with_vector"] or 0,
             "empty_content_nodes": row["empty_content_nodes"] or 0,
         }
-
 
 @app.post("/api/memory-palace/extract-preview-sessions")
 async def api_memory_palace_extract_preview_sessions(request: Request):
@@ -8844,6 +8841,7 @@ async def api_mp_backfill_embeddings():
                 SET embedded=TRUE, updated_at=NOW()
                 FROM memory_palace_vectors v
                 WHERE v.memory_id = n.id
+                  AND n.archived = FALSE
                   AND n.embedded = FALSE
                   AND NULLIF(TRIM(COALESCE(v.embedding_json, '')), '') IS NOT NULL
                   AND LOWER(TRIM(v.embedding_json)) NOT IN ('[]', 'null')
@@ -8854,7 +8852,8 @@ async def api_mp_backfill_embeddings():
                 SELECT n.id, n.content
                 FROM memory_palace_nodes n
                 LEFT JOIN memory_palace_vectors v ON v.memory_id = n.id
-                WHERE (
+                WHERE n.archived = FALSE
+                  AND (
                     v.memory_id IS NULL
                     OR NULLIF(TRIM(COALESCE(v.embedding_json, '')), '') IS NULL
                     OR LOWER(TRIM(v.embedding_json)) IN ('[]', 'null')
@@ -8867,7 +8866,7 @@ async def api_mp_backfill_embeddings():
         return {"error": f"查询待补算节点失败: {e}"}
     if not rows:
         stats = await get_memory_palace_vector_stats()
-        return {"status": "done", "message": f"当前向量：节点 {stats.get('total_nodes', 0)} 条，有效向量 {stats.get('total_vectors', 0)} 条，缺失/空向量 {stats.get('missing_vectors', 0)} 条", "total": 0, "done": 0, "stats": stats}
+        return {"status": "done", "message": f"当前向量：未归档节点 {stats.get('active_nodes', 0)} 条，有效向量 {stats.get('total_vectors', 0)} 条，缺失/空向量 {stats.get('missing_vectors', 0)} 条；归档节点 {stats.get('archived_nodes', 0)} 条", "total": 0, "done": 0, "stats": stats}
     before_stats = await get_memory_palace_vector_stats()
     _mp_backfill_status["running"] = True
     _mp_backfill_status["total"] = len(rows)
@@ -8878,7 +8877,7 @@ async def api_mp_backfill_embeddings():
     _mp_backfill_status["failed"] = 0
     _mp_backfill_status["error"] = None
     _mp_backfill_status["message"] = (
-        f"当前节点 {before_stats.get('total_nodes', 0)} 条，向量 {before_stats.get('total_vectors', 0)} 条，"
+        f"当前未归档节点 {before_stats.get('active_nodes', 0)} 条，向量 {before_stats.get('total_vectors', 0)} 条，"
         f"缺失 {before_stats.get('missing_vectors', len(rows))} 条；准备补全 {len(rows)} 条"
     )
     _mp_backfill_status["before_stats"] = before_stats

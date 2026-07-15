@@ -1585,7 +1585,8 @@ async function openSummaryModal(sessionId) {
     if (titleEl) titleEl.textContent = '对话线记忆';
     const sidEl = document.getElementById('summary-modal-sid');
     if (sidEl) sidEl.textContent = sessionId;
-    if (editor) editor.readOnly = false;
+    if (editor) { editor.readOnly = false; editor.onscroll = null; }
+    _threadMemoryState = {sessionId: '', nodes: [], total: 0, offset: 0, hasMore: false, loading: false};
     if (saveBtn) saveBtn.style.display = '';
     if (clearBtn) clearBtn.style.display = '';
     
@@ -1614,8 +1615,86 @@ async function openSummaryModal(sessionId) {
 
 
 
+const THREAD_MEMORY_PAGE_SIZE = 20;
+let _threadMemoryState = {sessionId: '', nodes: [], total: 0, offset: 0, hasMore: false, loading: false};
+
+function formatThreadMemoryNode(n) {
+    const lines = [];
+    const dateText = String(n.date || n.created_at || '').slice(0, 10);
+    const tags = n.tags ? '｜标签:' + n.tags : '';
+    const pin = n.pinned_until ? '｜📌便利贴到 ' + String(n.pinned_until).slice(0, 10) : '';
+    lines.push('【' + (n.room || 'living_room') + '】' + dateText + '｜重要性:' + (n.importance || 5) + '｜情绪:' + (n.mood || 'neutral') + tags + pin);
+    lines.push(String(n.content || '').trim());
+    return lines.join('\n');
+}
+
+function renderThreadMemoryModalContent() {
+    const editor = document.getElementById('summary-editor');
+    const countEl = document.getElementById('summary-char-count');
+    if (!editor) return;
+    const nodes = _threadMemoryState.nodes || [];
+    const total = Number(_threadMemoryState.total || nodes.length || 0);
+    if (!nodes.length) {
+        editor.value = '这个对话线还没有导入记忆宫殿。\n\n可以去「对话记录」勾选该对话，然后点击「提取记忆」，预览后导入。';
+        if (countEl) countEl.textContent = '0 条记忆';
+        return;
+    }
+    const lines = [];
+    lines.push('已进入记忆宫殿的内容：' + nodes.length + ' / ' + total + ' 条');
+    if (_threadMemoryState.hasMore) lines.push('向下滚动到底部会继续加载更多。');
+    lines.push('');
+    for (const n of nodes) {
+        lines.push(formatThreadMemoryNode(n));
+        lines.push('');
+    }
+    if (_threadMemoryState.loading) {
+        lines.push('正在加载更多...');
+    } else if (_threadMemoryState.hasMore) {
+        lines.push('—— 继续向下滚动加载更多 ——');
+    } else {
+        lines.push('—— 已显示全部 ——');
+    }
+    editor.value = lines.join('\n');
+    if (countEl) countEl.textContent = nodes.length + ' / ' + total + ' 条记忆';
+}
+
+async function loadThreadMemoryPage(sessionId, append) {
+    const editor = document.getElementById('summary-editor');
+    if (_threadMemoryState.loading) return;
+    _threadMemoryState.loading = true;
+    if (append) renderThreadMemoryModalContent();
+    try {
+        const offset = append ? _threadMemoryState.nodes.length : 0;
+        const url = '/api/memory-palace/session-nodes?session_id=' + encodeURIComponent(sessionId) +
+            '&character_id=default&limit=' + THREAD_MEMORY_PAGE_SIZE + '&offset=' + offset;
+        const resp = await fetch(url);
+        const data = await resp.json();
+        if (!editor) return;
+        if (data.error || data.status === 'error') {
+            editor.value = '加载失败：' + (data.error || '未知错误');
+            return;
+        }
+        const nodes = data.nodes || [];
+        if (append) {
+            _threadMemoryState.nodes = _threadMemoryState.nodes.concat(nodes);
+        } else {
+            _threadMemoryState.nodes = nodes;
+        }
+        _threadMemoryState.total = Number(data.total || _threadMemoryState.nodes.length || 0);
+        _threadMemoryState.offset = Number(data.offset || offset || 0) + nodes.length;
+        _threadMemoryState.hasMore = !!data.has_more;
+        _threadMemoryState.sessionId = sessionId;
+    } catch(e) {
+        if (editor) editor.value = '请求失败：' + e.message;
+    } finally {
+        _threadMemoryState.loading = false;
+        renderThreadMemoryModalContent();
+    }
+}
+
 async function openThreadMemoryModal(sessionId) {
     _summaryEditSid = sessionId;
+    _threadMemoryState = {sessionId: sessionId, nodes: [], total: 0, offset: 0, hasMore: false, loading: false};
     const titleEl = document.getElementById('summary-modal-title');
     const editor = document.getElementById('summary-editor');
     const countEl = document.getElementById('summary-char-count');
@@ -1626,40 +1705,18 @@ async function openThreadMemoryModal(sessionId) {
     if (editor) {
         editor.value = '正在加载记忆宫殿内容...';
         editor.readOnly = true;
+        editor.onscroll = function() {
+            if (_summaryEditSid !== sessionId) return;
+            if (!_threadMemoryState.hasMore || _threadMemoryState.loading) return;
+            const distance = editor.scrollHeight - (editor.scrollTop + editor.clientHeight);
+            if (distance < 80) loadThreadMemoryPage(sessionId, true);
+        };
     }
     if (countEl) countEl.textContent = '';
     if (modal) modal.style.display = 'flex';
     if (saveBtn) saveBtn.style.display = 'none';
     if (clearBtn) clearBtn.style.display = 'none';
-    try {
-        const resp = await fetch('/api/memory-palace/session-nodes?session_id=' + encodeURIComponent(sessionId) + '&character_id=default&limit=100');
-        const data = await resp.json();
-        if (!editor) return;
-        if (data.error || data.status === 'error') {
-            editor.value = '加载失败：' + (data.error || '未知错误');
-            return;
-        }
-        const nodes = data.nodes || [];
-        if (!nodes.length) {
-            editor.value = '这个对话线还没有导入记忆宫殿。\n\n可以去「对话记录」勾选该对话，然后点击「提取记忆」，预览后导入。';
-            return;
-        }
-        const lines = [];
-        lines.push('已进入记忆宫殿的内容：' + nodes.length + ' 条');
-        lines.push('');
-        for (const n of nodes) {
-            const dateText = String(n.date || n.created_at || '').slice(0, 10);
-            const tags = n.tags ? '｜标签:' + n.tags : '';
-            const pin = n.pinned_until ? '｜📌便利贴到 ' + String(n.pinned_until).slice(0, 10) : '';
-            lines.push('【' + (n.room || 'living_room') + '】' + dateText + '｜重要性:' + (n.importance || 5) + '｜情绪:' + (n.mood || 'neutral') + tags + pin);
-            lines.push(String(n.content || '').trim());
-            lines.push('');
-        }
-        editor.value = lines.join('\n');
-        if (countEl) countEl.textContent = nodes.length + ' 条记忆';
-    } catch(e) {
-        if (editor) editor.value = '请求失败：' + e.message;
-    }
+    await loadThreadMemoryPage(sessionId, false);
 }
 
 function closeSummaryModal() {

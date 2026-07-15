@@ -1133,10 +1133,12 @@ async function showMemoryPalaceVectorStats() {
         const data = await resp.json();
         if (data.error) throw new Error(data.error);
         showMemoryPalaceBackfillStatus(
-            '📊 当前向量：节点 ' + (data.total_nodes || 0) +
+            '📊 当前向量：未归档节点 ' + (data.active_nodes || 0) +
             ' 条，有效向量 ' + (data.total_vectors || 0) +
             ' 条，缺失/空向量 ' + (data.missing_vectors || 0) +
-            ' 条，空向量行 ' + (data.invalid_vector_rows || 0) + ' 条'
+            ' 条；归档节点 ' + (data.archived_nodes || 0) +
+            ' 条，归档向量 ' + (data.archived_vectors || 0) +
+            ' 条，孤儿向量 ' + (data.orphan_vectors || 0) + ' 条'
         );
     } catch (e) {
         showMemoryPalaceBackfillStatus('❌ 查询向量数量失败：' + e.message, 'error');
@@ -1195,7 +1197,7 @@ async function backfillMemoryPalaceEmbeddings() {
         if (data.error) throw new Error(data.error);
         if (data.status === 'done') {
             const st = data.stats || {};
-            showMemoryPalaceBackfillStatus('✅ ' + (data.message || ('向量索引完整：节点 ' + (st.total_nodes || 0) + ' 条，向量 ' + (st.total_vectors || 0) + ' 条，缺失 ' + (st.missing_vectors || 0) + ' 条')));
+            showMemoryPalaceBackfillStatus('✅ ' + (data.message || ('向量索引完整：未归档节点 ' + (st.active_nodes || 0) + ' 条，向量 ' + (st.total_vectors || 0) + ' 条，缺失 ' + (st.missing_vectors || 0) + ' 条')));
             _mpBackfillRunning = false;
             setMemoryPalaceBackfillButton(false);
             return;

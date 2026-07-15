@@ -3838,17 +3838,10 @@ async def _run_partition_auto_extract_after_response_locked(session_id: str, cha
         # 主请求可能已经推进边界；无论由哪一边推进，都只提取 cursor 与永久边界之间的正文。
         cursor = await get_memory_palace_extraction_cursor(session_id, character_id=character_id)
         last_id = int(cursor.get('last_message_id') or 0)
-        pending_boundary_count = max(0, int(boundary_id or 0) - last_id)
         if boundary_id <= last_id:
             log_memory_palace_auto_extract(
                 "info",
-                f"🧠 回复后分区自动提取检查：session={session_id}, cursor={last_id}, boundary={boundary_id}, 无需提取（游标已追上缓存区外边界）",
-                session_id=session_id,
-            )
-        else:
-            log_memory_palace_auto_extract(
-                "run",
-                f"🧠 回复后分区自动提取检查：session={session_id}, cursor={last_id}, boundary={boundary_id}, 存在未提取区间(cursor < id <= boundary, 估算跨度{pending_boundary_count})",
+                f"🧠 分区自动提取等待：被挤出内容已在游标内 session={session_id}, cursor={last_id}, tail={boundary_id}",
                 session_id=session_id,
             )
         extract_msgs = await _fetch_partition_extract_messages_range(
@@ -3857,7 +3850,7 @@ async def _run_partition_auto_extract_after_response_locked(session_id: str, cha
         if extract_msgs:
             log_memory_palace_auto_extract(
                 "run",
-                f"🧠 回复后分区自动提取读取原文：session={session_id}, cursor={last_id}, boundary={boundary_id}, 消息{len(extract_msgs)}条",
+                f"🧠 回复后分区自动提取检查缓存区外内容：session={session_id}, cursor={last_id}, tail={boundary_id}, 消息{len(extract_msgs)}条",
                 session_id=session_id,
             )
             result = await extract_memory_palace_from_partition_messages(extract_msgs, session_id, character_id=character_id)
@@ -3866,7 +3859,7 @@ async def _run_partition_auto_extract_after_response_locked(session_id: str, cha
         elif boundary_id > last_id:
             log_memory_palace_auto_extract(
                 "info",
-                f"🧠 回复后分区自动提取等待：session={session_id}, cursor={last_id}, boundary={boundary_id}, 区间内没有可读取正文或已被删除",
+                f"🧠 分区自动提取等待：没有游标后的新消息 session={session_id}, cursor={last_id}",
                 session_id=session_id,
             )
     except Exception as e:

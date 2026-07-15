@@ -6257,16 +6257,33 @@ async def api_memory_palace_nodes(
 
 
 @app.get("/api/memory-palace/session-nodes")
-async def api_memory_palace_session_nodes(session_id: str, character_id: str = "default", limit: int = 100):
+async def api_memory_palace_session_nodes(
+    session_id: str,
+    character_id: str = "default",
+    limit: int = 100,
+    offset: int = 0,
+):
     if not MEMORY_ENABLED:
         return {"error": "记忆系统未启用"}
     session_id = str(session_id or "").strip()
     if not session_id:
         return {"error": "session_id 不能为空"}
-    limit = max(1, min(int(limit or 100), 300))
+    character_id = character_id or "default"
+    limit = max(1, min(int(limit or 100), 100))
+    offset = max(0, int(offset or 0))
     try:
         pool = await get_pool()
         async with pool.acquire() as conn:
+            total = await conn.fetchval("""
+                SELECT COUNT(*)
+                FROM memory_palace_nodes
+                WHERE character_id = $1
+                  AND archived = FALSE
+                  AND (
+                    session_id = $2
+                    OR COALESCE(metadata::jsonb ->> 'source_session', '') = $2
+                  )
+            """, character_id, session_id)
             rows = await conn.fetch("""
                 SELECT id, content, room, tags, importance, mood, valence, arousal,
                        date, created_at, updated_at, pinned_until, session_id, metadata
@@ -6278,8 +6295,8 @@ async def api_memory_palace_session_nodes(session_id: str, character_id: str = "
                     OR COALESCE(metadata::jsonb ->> 'source_session', '') = $2
                   )
                 ORDER BY COALESCE(date, created_at::date) DESC, created_at DESC
-                LIMIT $3
-            """, character_id, session_id, limit)
+                LIMIT $3 OFFSET $4
+            """, character_id, session_id, limit, offset)
         nodes = []
         for r in rows:
             item = dict(r)
@@ -6295,7 +6312,17 @@ async def api_memory_palace_session_nodes(session_id: str, character_id: str = "
                 except Exception:
                     pass
             nodes.append(item)
-        return {"status": "ok", "session_id": session_id, "count": len(nodes), "nodes": nodes}
+        total = int(total or 0)
+        return {
+            "status": "ok",
+            "session_id": session_id,
+            "count": len(nodes),
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+            "has_more": offset + len(nodes) < total,
+            "nodes": nodes,
+        }
     except Exception as e:
         return {"status": "error", "error": str(e), "nodes": []}
 

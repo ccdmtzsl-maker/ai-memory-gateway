@@ -64,6 +64,8 @@ document.addEventListener('DOMContentLoaded', () => {
     initTabs();
     // 加载导出统计
     loadExportStats();
+    // 默认打开后台日志页时，直接加载日志内容
+    loadDashboardLogs();
 });
 
 // ============================================

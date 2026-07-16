@@ -203,8 +203,11 @@ function bindMemoryPalaceVectorMenuStops() {
 }
 
 function handleMemoryPalaceVectorMenuOutside(event) {
-    const wrap = document.getElementById('mpVectorMaintenanceWrap');
-    if (wrap && !wrap.contains(event.target)) closeMemoryPalaceVectorMenu();
+    var wrap = document.getElementById('mpVectorMaintenanceWrap');
+    var menu = document.getElementById('mpVectorMaintenanceMenu');
+    if (wrap && wrap.contains(event.target)) return;
+    if (menu && menu.contains(event.target)) return;
+    closeMemoryPalaceVectorMenu();
 }
 
 document.addEventListener('pointerdown', handleMemoryPalaceVectorMenuOutside, true);

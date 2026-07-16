@@ -176,6 +176,9 @@ function toggleMemoryPalaceVectorMenu(event) {
     if (event) { event.preventDefault(); event.stopPropagation(); }
     var menu = document.getElementById("mpVectorMaintenanceMenu");
     if (!menu) return;
+    if (menu.parentNode !== document.body) {
+        document.body.appendChild(menu);
+    }
     bindMemoryPalaceVectorMenuStops();
     var showing = (menu.style.display === "none" || !menu.style.display);
     if (showing) {
@@ -185,12 +188,9 @@ function toggleMemoryPalaceVectorMenu(event) {
             var scrollTop = window.pageYOffset || document.documentElement.scrollTop;
             var scrollLeft = window.pageXOffset || document.documentElement.scrollLeft;
             menu.style.position = "absolute";
-            menu.style.top = (rect.bottom + scrollTop + 8) + "px";
             var menuWidth = 160;
-            var leftPos = rect.left + scrollLeft;
-            if (leftPos + menuWidth > document.documentElement.scrollWidth) {
-                leftPos = rect.right + scrollLeft - menuWidth;
-            }
+            var leftPos = rect.right + scrollLeft - menuWidth;
+            menu.style.top = (rect.bottom + scrollTop + 8) + "px";
             menu.style.left = Math.max(8, leftPos) + "px";
             menu.style.right = "auto";
         }

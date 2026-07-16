@@ -174,10 +174,20 @@ function toggleMemoryPalaceTools() {
 
 function toggleMemoryPalaceVectorMenu(event) {
     if (event) { event.preventDefault(); event.stopPropagation(); }
-    const menu = document.getElementById('mpVectorMaintenanceMenu');
+    var menu = document.getElementById("mpVectorMaintenanceMenu");
     if (!menu) return;
     bindMemoryPalaceVectorMenuStops();
-    menu.style.display = menu.style.display === 'none' || !menu.style.display ? 'block' : 'none';
+    var showing = (menu.style.display === "none" || !menu.style.display);
+    if (showing) {
+        var btn = document.getElementById("mpVectorMaintenanceBtn");
+        if (btn) {
+            var rect = btn.getBoundingClientRect();
+            menu.style.top = (rect.bottom + 8) + "px";
+            menu.style.right = Math.max(8, window.innerWidth - rect.right) + "px";
+            menu.style.left = "auto";
+        }
+    }
+    menu.style.display = showing ? "block" : "none";
 }
 
 function closeMemoryPalaceVectorMenu() {

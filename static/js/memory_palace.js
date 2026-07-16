@@ -218,8 +218,7 @@ function handleMemoryPalaceVectorMenuOutside(event) {
     closeMemoryPalaceVectorMenu();
 }
 
-document.addEventListener('pointerdown', handleMemoryPalaceVectorMenuOutside, true);
-document.addEventListener('touchstart', handleMemoryPalaceVectorMenuOutside, true);
+document.addEventListener('click', handleMemoryPalaceVectorMenuOutside);
 
 async function loadMemoryPalaceNodes(room) {
     const el = document.getElementById('mpNodeList');

@@ -173,9 +173,10 @@ function toggleMemoryPalaceTools() {
 }
 
 function toggleMemoryPalaceVectorMenu(event) {
-    if (event) event.stopPropagation();
+    if (event) { event.preventDefault(); event.stopPropagation(); }
     const menu = document.getElementById('mpVectorMaintenanceMenu');
     if (!menu) return;
+    bindMemoryPalaceVectorMenuStops();
     menu.style.display = menu.style.display === 'none' || !menu.style.display ? 'block' : 'none';
 }
 
@@ -184,10 +185,20 @@ function closeMemoryPalaceVectorMenu() {
     if (menu) menu.style.display = 'none';
 }
 
-document.addEventListener('click', (event) => {
+function bindMemoryPalaceVectorMenuStops() {
+    const menu = document.getElementById('mpVectorMaintenanceMenu');
+    if (!menu || menu.dataset.mpBound === '1') return;
+    menu.dataset.mpBound = '1';
+    ['click','pointerdown','touchstart'].forEach(t => menu.addEventListener(t, e => e.stopPropagation()));
+}
+
+function handleMemoryPalaceVectorMenuOutside(event) {
     const wrap = document.getElementById('mpVectorMaintenanceWrap');
     if (wrap && !wrap.contains(event.target)) closeMemoryPalaceVectorMenu();
-});
+}
+
+document.addEventListener('pointerdown', handleMemoryPalaceVectorMenuOutside, true);
+document.addEventListener('touchstart', handleMemoryPalaceVectorMenuOutside, true);
 
 async function loadMemoryPalaceNodes(room) {
     const el = document.getElementById('mpNodeList');
@@ -1133,7 +1144,7 @@ async function showMemoryPalaceVectorStats() {
         const data = await resp.json();
         if (data.error) throw new Error(data.error);
         showMemoryPalaceBackfillStatus(
-            '📊 当前向量：未归档节点 ' + (data.active_nodes || 0) +
+            '📊 当前向量：有效节点 ' + (data.active_nodes || 0) +
             ' 条，有效向量 ' + (data.total_vectors || 0) +
             ' 条，缺失/空向量 ' + (data.missing_vectors || 0) +
             ' 条；归档节点 ' + (data.archived_nodes || 0) +
@@ -1197,7 +1208,7 @@ async function backfillMemoryPalaceEmbeddings() {
         if (data.error) throw new Error(data.error);
         if (data.status === 'done') {
             const st = data.stats || {};
-            showMemoryPalaceBackfillStatus('✅ ' + (data.message || ('向量索引完整：未归档节点 ' + (st.active_nodes || 0) + ' 条，向量 ' + (st.total_vectors || 0) + ' 条，缺失 ' + (st.missing_vectors || 0) + ' 条')));
+            showMemoryPalaceBackfillStatus('✅ ' + (data.message || ('向量索引完整：有效节点 ' + (st.active_nodes || 0) + ' 条，向量 ' + (st.total_vectors || 0) + ' 条，缺失 ' + (st.missing_vectors || 0) + ' 条')));
             _mpBackfillRunning = false;
             setMemoryPalaceBackfillButton(false);
             return;

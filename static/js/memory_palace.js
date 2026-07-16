@@ -182,9 +182,17 @@ function toggleMemoryPalaceVectorMenu(event) {
         var btn = document.getElementById("mpVectorMaintenanceBtn");
         if (btn) {
             var rect = btn.getBoundingClientRect();
-            menu.style.top = (rect.bottom + 8) + "px";
-            menu.style.right = Math.max(8, window.innerWidth - rect.right) + "px";
-            menu.style.left = "auto";
+            var scrollTop = window.pageYOffset || document.documentElement.scrollTop;
+            var scrollLeft = window.pageXOffset || document.documentElement.scrollLeft;
+            menu.style.position = "absolute";
+            menu.style.top = (rect.bottom + scrollTop + 8) + "px";
+            var menuWidth = 160;
+            var leftPos = rect.left + scrollLeft;
+            if (leftPos + menuWidth > document.documentElement.scrollWidth) {
+                leftPos = rect.right + scrollLeft - menuWidth;
+            }
+            menu.style.left = Math.max(8, leftPos) + "px";
+            menu.style.right = "auto";
         }
     }
     menu.style.display = showing ? "block" : "none";

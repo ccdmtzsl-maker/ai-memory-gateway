@@ -2804,7 +2804,7 @@ def extract_environment_bundle_from_text(text: str) -> tuple[str, str, str]:
         filename_match = re.search(r'filename="([^"]+)"', attrs)
         filename = filename_match.group(1) if filename_match else ""
 
-        markers = ("【当前时间】", "【当前电量】", "【当前天气】", "【应用使用时长】", "【当前屏幕应用】")
+        markers = ("【当前时间】", "【当前电量】", "【最近真实热点", "【当前天气】", "【应用使用时长】", "【当前屏幕应用】")
         if not any(m in body for m in markers) and not filename.startswith("Time:"):
             return match.group(0)
 
@@ -2819,6 +2819,27 @@ def extract_environment_bundle_from_text(text: str) -> tuple[str, str, str]:
         battery_match = re.search(r'【当前电量】.*?电量:\s*([^\n]+).*?状态:\s*([^\n]+)', body, re.S)
         if battery_match:
             env_lines.append(f"电量: {battery_match.group(1).strip()}，{battery_match.group(2).strip()}")
+
+        hot_news_block = re.search(r'(📰\s*)?【最近真实热点[^】]*】(.*?)(?=\n\s*【当前天气】|\n\s*【应用使用时长】|\n\s*【当前屏幕应用】|$)', body, re.S)
+        if hot_news_block:
+            hot_lines = []
+            prefix = (hot_news_block.group(1) or "").strip()
+            title = "【最近真实热点 · 背景认知】"
+            if prefix:
+                title = prefix + " " + title
+            hot_lines.append(title)
+            hot_body = hot_news_block.group(2).strip()
+            for line in hot_body.splitlines():
+                line = line.rstrip()
+                if not line.strip():
+                    hot_lines.append("")
+                    continue
+                if line.strip().startswith("更新时间："):
+                    continue
+                hot_lines.append(line)
+            hot_text = "\n".join(hot_lines).strip()
+            if hot_text:
+                env_lines.append("热点:\n" + hot_text)
 
         weather_block = re.search(r'【当前天气】(.*?)(?:【|$)', body, re.S)
         if weather_block:

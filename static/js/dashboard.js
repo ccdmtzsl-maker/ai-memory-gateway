@@ -905,7 +905,26 @@ function createConvMessageElement(msg) {
     return wrap;
 }
 
+function setConvDetailEditScrollLock(locked) {
+    const container = document.getElementById('conv-detail-messages');
+    if (!container) return;
+    if (locked) {
+        if (container.dataset.prevOverflowY === undefined) {
+            container.dataset.prevOverflowY = container.style.overflowY || '';
+        }
+        container.style.overflowY = 'hidden';
+    } else {
+        if (container.dataset.prevOverflowY !== undefined) {
+            container.style.overflowY = container.dataset.prevOverflowY;
+            delete container.dataset.prevOverflowY;
+        } else {
+            container.style.overflowY = 'auto';
+        }
+    }
+}
+
 function closeConvDetail() {
+    setConvDetailEditScrollLock(false);
     document.getElementById('conv-detail-panel').style.display = 'none';
 }
 
@@ -913,13 +932,18 @@ function closeConvDetail() {
 function toggleEditMessage(msgId) {
     const contentEl = document.getElementById('msg-content-' + msgId);
     const editEl = document.getElementById('msg-edit-' + msgId);
+    const opening = editEl.style.display === 'none';
     
-    if (editEl.style.display === 'none') {
+    if (opening) {
         contentEl.style.display = 'none';
         editEl.style.display = 'block';
+        setConvDetailEditScrollLock(true);
+        const textarea = document.getElementById('msg-textarea-' + msgId);
+        if (textarea) textarea.focus();
     } else {
         contentEl.style.display = '';
         editEl.style.display = 'none';
+        setConvDetailEditScrollLock(false);
     }
 }
 
@@ -962,6 +986,7 @@ async function deleteSingleMessage(msgId) {
         }
         const msgEl = document.getElementById('msg-' + msgId);
         if (msgEl) msgEl.remove();
+        setConvDetailEditScrollLock(false);
         const titleEl = document.getElementById('conv-detail-title');
         if (titleEl) {
             const m = titleEl.textContent.match(/(\d+)\s*\/\s*(\d+)/);

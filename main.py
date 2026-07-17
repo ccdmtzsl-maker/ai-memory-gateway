@@ -183,6 +183,8 @@ CHARACTER_NAME = os.getenv("CHARACTER_NAME", "澈")
 
 # 记忆宫殿默认注入数量；是否启用跟随 MEMORY_ENABLED 总开关
 MEMORY_PALACE_DEFAULT_LIMIT = int(os.getenv("MEMORY_PALACE_DEFAULT_LIMIT", "5"))
+# 记忆宫殿自动注入深度：0=保持现状插在最新消息后；N=向上数 N 条普通对话消息后插入
+MEMORY_PALACE_INJECTION_DEPTH = int(os.getenv("MEMORY_PALACE_INJECTION_DEPTH", "0"))
 
 # 关键词触发上下文（轻量世界书）：仅当前轮临时注入 system，不写入历史。
 KEYWORD_CONTEXT_ENABLED = os.getenv("KEYWORD_CONTEXT_ENABLED", "false").lower() == "true"
@@ -277,6 +279,20 @@ async def get_runtime_memory_palace_default_limit() -> int:
         return max(1, min(int(MEMORY_PALACE_DEFAULT_LIMIT or 5), 30))
     except Exception:
         return 5
+
+
+async def get_runtime_memory_palace_injection_depth() -> int:
+    """获取记忆宫殿自动注入深度：0=最新消息后；N=向上数 N 条普通对话消息后。"""
+    try:
+        db_value = await get_gateway_config("MEMORY_PALACE_INJECTION_DEPTH", "")
+        if db_value is not None and str(db_value).strip() != "":
+            return max(0, min(int(db_value), 50))
+    except Exception as e:
+        print(f"[memory_config] 读取 MEMORY_PALACE_INJECTION_DEPTH 配置失败，回退到运行时变量: {e}")
+    try:
+        return max(0, min(int(MEMORY_PALACE_INJECTION_DEPTH or 0), 50))
+    except Exception:
+        return 0
 
 
 async def get_runtime_keyword_context_enabled() -> bool:
@@ -390,6 +406,7 @@ async def lifespan(app: FastAPI):
                         "RESPONSE_TRANSFORM_RULES": str,
                         "REASONING_EFFORT": str,
                         "MEMORY_PALACE_DEFAULT_LIMIT": int,
+                        "MEMORY_PALACE_INJECTION_DEPTH": int,
             "KEYWORD_CONTEXT_ENABLED": lambda v: _parse_bool(v),
             "KEYWORD_CONTEXT_RULES": str,
                     }
@@ -2076,13 +2093,44 @@ def _is_operit_memory_context_message(msg: dict) -> bool:
     return any(marker in text for marker in markers)
 
 
-def _insert_memory_palace_system_message(messages: list, text: str) -> None:
-    injection_msg = {"role": "system", "content": text.strip()}
+def _default_memory_palace_insert_index(messages: list) -> int:
     insert_at = len(messages)
     for idx in range(len(messages) - 1, -1, -1):
         msg = messages[idx]
         if isinstance(msg, dict) and _is_operit_memory_context_message(msg):
             insert_at = idx
+    return insert_at
+
+
+def _is_memory_palace_depth_anchor(msg: dict) -> bool:
+    if not isinstance(msg, dict):
+        return False
+    role = msg.get("role")
+    if role not in ("user", "assistant"):
+        return False
+    # 不把 assistant(tool_calls) 当注入锚点，避免把 system 消息插进工具调用链附近。
+    if role == "assistant" and msg.get("tool_calls"):
+        return False
+    return True
+
+
+def _memory_palace_insert_index_by_depth(messages: list, depth: int) -> int:
+    default_insert_at = _default_memory_palace_insert_index(messages)
+    try:
+        depth = max(0, int(depth or 0))
+    except Exception:
+        depth = 0
+    if depth <= 0 or not isinstance(messages, list):
+        return default_insert_at
+    anchors = [idx for idx, msg in enumerate(messages) if _is_memory_palace_depth_anchor(msg)]
+    if len(anchors) <= depth:
+        return default_insert_at
+    return anchors[-1 - depth] + 1
+
+
+def _insert_memory_palace_system_message(messages: list, text: str, depth: int = 0) -> None:
+    injection_msg = {"role": "system", "content": text.strip()}
+    insert_at = _memory_palace_insert_index_by_depth(messages, depth)
     messages.insert(insert_at, injection_msg)
 
 
@@ -2099,7 +2147,8 @@ async def inject_memory_palace_auto_context(messages: list, query: str = "", cha
     if not context or "暂无可用记忆" in context:
         return False
     injection = "[以下是本轮自动召回的记忆宫殿上下文，供回应时参考，不要逐字复述]\n" + context
-    _insert_memory_palace_system_message(messages, injection)
+    depth = await get_runtime_memory_palace_injection_depth()
+    _insert_memory_palace_system_message(messages, injection, depth=depth)
     return True
 
 # ============================================================
@@ -9468,6 +9517,7 @@ async def get_settings():
             "USER_NICKNAME":      db.get("USER_NICKNAME") or str(USER_NICKNAME),
             "CHARACTER_NAME":      db.get("CHARACTER_NAME") or str(CHARACTER_NAME),
             "MEMORY_PALACE_DEFAULT_LIMIT": int(db.get("MEMORY_PALACE_DEFAULT_LIMIT") or MEMORY_PALACE_DEFAULT_LIMIT),
+            "MEMORY_PALACE_INJECTION_DEPTH": int(db.get("MEMORY_PALACE_INJECTION_DEPTH") or MEMORY_PALACE_INJECTION_DEPTH),
             "KEYWORD_CONTEXT_ENABLED": _parse_bool(db.get("KEYWORD_CONTEXT_ENABLED"), KEYWORD_CONTEXT_ENABLED),
             "KEYWORD_CONTEXT_RULES": db.get("KEYWORD_CONTEXT_RULES") or str(KEYWORD_CONTEXT_RULES),
 
@@ -9579,6 +9629,7 @@ async def save_settings(request: Request):
             "USER_NICKNAME":         str,
             "CHARACTER_NAME":         str,
             "MEMORY_PALACE_DEFAULT_LIMIT": int,
+            "MEMORY_PALACE_INJECTION_DEPTH": int,
             "KEYWORD_CONTEXT_ENABLED": lambda v: _parse_bool(v),
             "KEYWORD_CONTEXT_RULES": str,
         }

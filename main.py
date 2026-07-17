@@ -2725,6 +2725,7 @@ def _clean_current_user_content_preserve_multimodal(content, history: list = Non
     - 不匹配环境/记忆/proxy 规则的 <attachment> 由 extract_* 内部原样返回，不删除。
     """
     env_parts = []
+    hot_news_parts = []
     operit_memory_parts = []
     time_text = ""
 
@@ -2733,12 +2734,14 @@ def _clean_current_user_content_preserve_multimodal(content, history: list = Non
         if not isinstance(text, str):
             return text
 
-        cleaned, env_text, attachment_time = extract_environment_bundle_from_text(text)
+        cleaned, env_text, hot_news_text, attachment_time = extract_environment_bundle_from_text(text)
         cleaned, operit_memory_text = extract_operit_memory_attachment_from_text(cleaned)
         cleaned, proxy_env_text, proxy_time = extract_proxy_sender_context_from_text(cleaned)
 
         if env_text:
             env_parts.append(env_text)
+        if hot_news_text:
+            hot_news_parts.append(hot_news_text)
         if proxy_env_text:
             env_parts.append(proxy_env_text)
         if operit_memory_text:
@@ -2783,22 +2786,24 @@ def _clean_current_user_content_preserve_multimodal(content, history: list = Non
         cleaned_content = cleaned_text
 
     env_text_final = "\n\n".join(part for part in env_parts if part)
+    hot_news_final = "\n\n".join(part for part in hot_news_parts if part)
     operit_memory_final = "\n\n".join(part for part in operit_memory_parts if part)
-    return cleaned_content, env_text_final, operit_memory_final
+    return cleaned_content, env_text_final, hot_news_final, operit_memory_final
 
 
-def extract_environment_bundle_from_text(text: str) -> tuple[str, str, str]:
+def extract_environment_bundle_from_text(text: str) -> tuple[str, str, str, str]:
     """识别并压缩 Operit 注入的 text/plain 环境附件。
-    返回: (清理后的用户文本, 轻量环境上下文, 附件时间戳)
+    返回: (清理后的用户文本, 轻量环境上下文, 热点上下文, 附件时间戳)
     """
     if not isinstance(text, str) or "<attachment" not in text:
-        return text, "", ""
+        return text, "", "", ""
 
     env_lines = []
+    hot_news_parts = []
     attachment_time = ""
 
     def repl(match):
-        nonlocal attachment_time, env_lines
+        nonlocal attachment_time, env_lines, hot_news_parts
         attrs = match.group(1) or ""
         body = match.group(2) or ""
         filename_match = re.search(r'filename="([^"]+)"', attrs)
@@ -2839,7 +2844,7 @@ def extract_environment_bundle_from_text(text: str) -> tuple[str, str, str]:
                 hot_lines.append(line)
             hot_text = "\n".join(hot_lines).strip()
             if hot_text:
-                env_lines.append("\n" + hot_text)
+                hot_news_parts.append(hot_text)
 
         weather_block = re.search(r'【当前天气】(.*?)(?:【|$)', body, re.S)
         if weather_block:
@@ -2874,7 +2879,8 @@ def extract_environment_bundle_from_text(text: str) -> tuple[str, str, str]:
 
     cleaned = re.sub(r'<attachment([^>]*)>(.*?)</attachment>', repl, text, flags=re.S).strip()
     env_text = "【当前环境】\n" + "\n".join(env_lines) if env_lines else ""
-    return cleaned, env_text, attachment_time
+    hot_news_text = "\n\n".join(part for part in hot_news_parts if part)
+    return cleaned, env_text, hot_news_text, attachment_time
 
 
 def extract_operit_memory_attachment_from_text(text: str) -> tuple[str, str]:
@@ -3545,7 +3551,7 @@ async def build_partitioned_messages(
         result.append(m)
     
     if current_user_msg:
-        current_content, env_text, operit_memory_text = _clean_current_user_content_preserve_multimodal(
+        current_content, env_text, hot_news_text, operit_memory_text = _clean_current_user_content_preserve_multimodal(
             current_user_msg.get('content', ''),
             history=history,
             shorten_time=True,
@@ -3559,6 +3565,9 @@ async def build_partitioned_messages(
         keyword_context_text = await build_keyword_context_text(current_content)
         if keyword_context_text:
             result.append({"role": "system", "content": keyword_context_text})
+
+        if hot_news_text:
+            result.append({"role": "system", "content": hot_news_text})
 
         # Operit 原生记忆附件放在最底部，按用户手动检索结果使用。
         if operit_memory_text:
@@ -3597,7 +3606,7 @@ async def _build_basic_cached(
         result.append(m)
     
     if current_user_msg:
-        current_content, env_text, operit_memory_text = _clean_current_user_content_preserve_multimodal(
+        current_content, env_text, hot_news_text, operit_memory_text = _clean_current_user_content_preserve_multimodal(
             current_user_msg.get('content', ''),
             history=history,
             shorten_time=False,
@@ -3611,6 +3620,9 @@ async def _build_basic_cached(
         keyword_context_text = await build_keyword_context_text(current_content)
         if keyword_context_text:
             result.append({"role": "system", "content": keyword_context_text})
+
+        if hot_news_text:
+            result.append({"role": "system", "content": hot_news_text})
 
         # Operit 原生记忆附件放在最底部，按用户手动检索结果使用。
         if operit_memory_text:
@@ -3633,7 +3645,7 @@ def clean_user_message_for_log(user_msg: str, history: list = None) -> str:
     cleaned = user_msg
     time_text = ""
 
-    cleaned, _env_text, attachment_time = extract_environment_bundle_from_text(cleaned)
+    cleaned, _env_text, _hot_news_text, attachment_time = extract_environment_bundle_from_text(cleaned)
     if attachment_time:
         time_text = attachment_time
 

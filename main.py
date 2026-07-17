@@ -2839,7 +2839,7 @@ def extract_environment_bundle_from_text(text: str) -> tuple[str, str, str]:
                 hot_lines.append(line)
             hot_text = "\n".join(hot_lines).strip()
             if hot_text:
-                env_lines.append("热点:\n" + hot_text)
+                env_lines.append("\n" + hot_text)
 
         weather_block = re.search(r'【当前天气】(.*?)(?:【|$)', body, re.S)
         if weather_block:

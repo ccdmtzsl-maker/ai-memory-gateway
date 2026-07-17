@@ -883,7 +883,7 @@ function createConvMessageElement(msg) {
 
     const textarea = document.createElement('textarea');
     textarea.id = msgId ? `msg-textarea-${msgId}` : '';
-    textarea.style.cssText = 'width:100%;min-height:100px;padding:8px;border:1px solid var(--border);border-radius:6px;font-size:14px;line-height:1.6;resize:vertical;font-family:inherit;';
+    textarea.style.cssText = 'width:100%;min-height:180px;padding:10px 12px;border:1px solid var(--border);border-radius:8px;font-size:14px;line-height:1.7;resize:vertical;font-family:inherit;box-sizing:border-box;';
     textarea.value = displayContent;
     edit.appendChild(textarea);
 

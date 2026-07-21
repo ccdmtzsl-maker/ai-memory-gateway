@@ -1982,10 +1982,13 @@ async def format_special_memory_for_prompt(limit: int = 3, character_id: str = "
     except Exception as e:
         print(f"[Special_Memory] 读取常驻自我认知失败: {e}")
         return ""
+    # Selection follows importance desc + newest first, but prompt rendering should
+    # read like an evolution timeline: old -> new among the selected items.
+    rows = sorted(rows, key=lambda r: _memory_palace_aware_dt(r.get("created_at")) or datetime.min.replace(tzinfo=timezone.utc))
     items = [str(r.get("content") or "").strip() for r in rows if str(r.get("content") or "").strip()]
     if not items:
         return ""
-    lines = ["### Special_Memory", "", "以下是角色已经内化的常驻自我认知："]
+    lines = ["### Special_Memory", "", "以下是角色已经内化的常驻自我认知，按形成时间从旧到新排列："]
     for item in items:
         lines.append(f"- {item}")
     return "\n".join(lines)

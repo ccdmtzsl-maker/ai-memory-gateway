@@ -1951,6 +1951,62 @@ async def format_memory_palace_for_prompt(limit: int = 5, room: str = None, quer
     return "\n".join(lines)
 
 
+async def format_special_memory_for_prompt(limit: int = 3, character_id: str = "default") -> str:
+    """Format resident self-insight memories for {{Special_Memory}}.
+
+    This is intentionally short: it only lists stable self cognition produced by
+    cognitive digestion, suitable for manually placing inside the character prompt.
+    """
+    try:
+        limit = max(1, min(int(limit or 3), 8))
+    except Exception:
+        limit = 3
+    if not await get_runtime_memory_palace_enabled():
+        return ""
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT content, importance, created_at
+                FROM memory_palace_nodes
+                WHERE character_id = $1
+                  AND archived = FALSE
+                  AND room = 'self_room'
+                  AND (
+                    COALESCE(tags, '') ILIKE '%常驻%'
+                    OR COALESCE(tags, '') ILIKE '%自我领悟%'
+                  )
+                ORDER BY COALESCE(importance, 5) DESC, created_at DESC
+                LIMIT $2
+            """, character_id, limit)
+    except Exception as e:
+        print(f"[Special_Memory] 读取常驻自我认知失败: {e}")
+        return ""
+    items = [str(r.get("content") or "").strip() for r in rows if str(r.get("content") or "").strip()]
+    if not items:
+        return ""
+    lines = ["### Special_Memory", "", "以下是角色已经内化的常驻自我认知："]
+    for item in items:
+        lines.append(f"- {item}")
+    return "\n".join(lines)
+
+
+async def replace_special_memory_variables(prompt: str, character_id: str = "default") -> str:
+    if not isinstance(prompt, str) or "{{Special_Memory" not in prompt:
+        return prompt
+    pattern = re.compile(r"\{\{Special_Memory(?::(\d+))?\}\}")
+    result = []
+    last = 0
+    for match in pattern.finditer(prompt):
+        raw_limit = match.group(1)
+        limit = int(raw_limit) if raw_limit and raw_limit.isdigit() else 3
+        result.append(prompt[last:match.start()])
+        result.append(await format_special_memory_for_prompt(limit=limit, character_id=character_id))
+        last = match.end()
+    result.append(prompt[last:])
+    return "".join(result)
+
+
 async def replace_memory_palace_variables(prompt: str, query: str = "", character_id: str = "default", recent_messages=None, session_id: str = "") -> str:
     if not isinstance(prompt, str) or "{{memory_palace" not in prompt:
         return prompt
@@ -1974,6 +2030,7 @@ async def replace_memory_palace_variables(prompt: str, query: str = "", characte
 async def replace_explicit_memory_variables(prompt: str, query: str = "", character_id: str = "default", recent_messages=None, session_id: str = "") -> str:
     prompt = await replace_daily_impression_variables(prompt)
     prompt = await replace_user_impression_variables(prompt, character_id=character_id)
+    prompt = await replace_special_memory_variables(prompt, character_id=character_id)
     prompt = await replace_memory_palace_variables(prompt, query=query, character_id=character_id, recent_messages=recent_messages, session_id=session_id)
     return prompt
 

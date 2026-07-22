@@ -757,7 +757,7 @@ async function loadConvMessages(sessionId, append = false) {
     const offset = append ? convDetailLoadedCount : 0;
     
     try {
-        const resp = await fetch(`/api/conversations/${encodeURIComponent(sessionId)}/messages?limit=50&offset=${offset}`);
+        const resp = await fetch(`/api/conversations/${encodeURIComponent(sessionId)}/messages?limit=30&offset=${offset}`);
         const data = await resp.json();
         
         if (data.error) {

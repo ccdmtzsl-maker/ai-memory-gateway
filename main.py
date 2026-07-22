@@ -1988,7 +1988,7 @@ async def format_special_memory_for_prompt(limit: int = 3, character_id: str = "
     items = [str(r.get("content") or "").strip() for r in rows if str(r.get("content") or "").strip()]
     if not items:
         return "### Special_Memory\n\n（暂无常驻自我认知）"
-    lines = ["### Special_Memory", "", "以下是角色已经内化的常驻自我认知，按形成时间从旧到新排列："]
+    lines = ["### Special_Memory", "", "以下是你内化的自我认知，是你长期记忆的一部分："]
     for item in items:
         lines.append(f"- {item}")
     return "\n".join(lines)

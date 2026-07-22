@@ -9102,9 +9102,11 @@ async def api_conversations(page: int = 1, per_page: int = 20):
 
 
 @app.get("/api/conversations/{session_id}/messages")
-async def api_conversation_messages(session_id: str, limit: int = 50, offset: int = 0):
+async def api_conversation_messages(session_id: str, limit: int = 30, offset: int = 0):
     if not MEMORY_ENABLED:
         return {"error": "记忆系统未启用"}
+    limit = max(1, min(int(limit or 30), 30))
+    offset = max(0, int(offset or 0))
     try:
         pool = await get_pool()
         async with pool.acquire() as conn:

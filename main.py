@@ -4320,7 +4320,7 @@ async def chat_completions(request: Request):
                     client_system_parts.append(str(c))
         client_system_prompt = "\n\n".join(p for p in client_system_parts if p).strip()
         partition_base_prompt = client_system_prompt or SYSTEM_PROMPT
-        partition_has_explicit_memory_palace = bool(re.search(r"\{\{\s*(?:memory_palace|special_memory)", partition_base_prompt or "", re.I))
+        partition_has_explicit_memory_palace = bool(re.search(r"\{\{\s*memory_palace", partition_base_prompt or "", re.I))
         partition_base_prompt = await replace_explicit_memory_variables(partition_base_prompt, query=user_message, recent_messages=messages, session_id=session_id)
 
         # 提取客户端新消息（非系统级消息），可能是user、tool、或带tool_calls的assistant
@@ -4673,6 +4673,23 @@ async def chat_completions(request: Request):
         body["messages"] = messages
     
     else:
+        # 非分区模式：对 system 消息做变量替换（与分区模式一致）
+        non_partition_has_explicit_memory_palace = False
+        for m in messages:
+            if m.get("role") in ("system", "developer"):
+                c = m.get("content", "")
+                if isinstance(c, str):
+                    if re.search(r"\{\{\s*memory_palace", c, re.I):
+                        non_partition_has_explicit_memory_palace = True
+                    m["content"] = await replace_explicit_memory_variables(c, query=user_message, recent_messages=messages, session_id=session_id)
+                elif isinstance(c, list):
+                    for item in c:
+                        if isinstance(item, dict) and item.get("type") == "text":
+                            txt = item.get("text", "")
+                            if re.search(r"\{\{\s*memory_palace", txt, re.I):
+                                non_partition_has_explicit_memory_palace = True
+                            item["text"] = await replace_explicit_memory_variables(txt, query=user_message, recent_messages=messages, session_id=session_id)
+        body["messages"] = messages
         await inject_keyword_context_auto_context(messages, user_message)
         await inject_memory_palace_auto_context(messages, query=user_message, recent_messages=messages, explicit_present=non_partition_has_explicit_memory_palace, session_id=session_id)
 

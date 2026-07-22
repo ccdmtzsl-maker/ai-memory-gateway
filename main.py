@@ -132,12 +132,21 @@ def _cache_delete_prefix(prefix: str):
 
 def invalidate_daily_impression_cache():
     _cache_delete_prefix("daily:")
+    _cache_delete_prefix("prompt_var:daily:")
 
 
 def invalidate_memory_palace_cache(character_id: str = "default"):
     character_id = character_id or "default"
     _cache_delete_prefix(f"mp:{character_id}:")
     _cache_delete_prefix("mp:stats:")
+    _cache_delete_prefix(f"prompt_var:special:{character_id}:")
+
+
+def invalidate_user_impression_prompt_cache(character_id: str = "default"):
+    """Clear user impression prompt variable cache after updates."""
+    character_id = character_id or "default"
+    _cache_delete_prefix(f"prompt_var:user_impression:{character_id}")
+
 
 # Dashboard 调试：只保留最近一次实际转发给上游模型的请求体。
 # 不主动打印，避免日志刷屏；需要时由后台日志页手动查看。
@@ -524,6 +533,10 @@ async def auth_middleware(request: Request, call_next):
 
 async def format_daily_impressions_for_prompt(limit: int = 3) -> str:
     limit = max(1, min(int(limit or 3), 10))
+    cache_key = f"prompt_var:daily:{limit}"
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
     rows = await list_daily_impressions(limit=limit)
     rows = list(reversed(rows))
     if not rows:
@@ -541,12 +554,19 @@ async def format_daily_impressions_for_prompt(limit: int = 3) -> str:
         if mood:
             meta += f"｜氛围：{mood}"
         lines.append(f"- {meta}\n  {summary}")
-    return "\n".join(lines)
+    result = "\n".join(lines)
+    _cache_set(cache_key, result, ttl=30)
+    return result
 
 
 async def format_user_impression_for_prompt(character_id: str = "default") -> str:
     """按 SullyOS ContextBuilder 原格式注入用户画像摘要。"""
-    item = await get_user_impression(character_id=character_id or "default")
+    character_id = character_id or "default"
+    cache_key = f"prompt_var:user_impression:{character_id}"
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
+    item = await get_user_impression(character_id=character_id)
     raw_imp = (item or {}).get("impression") if item else None
     imp = normalize_user_impression(raw_imp)
     if not imp:
@@ -587,7 +607,9 @@ async def format_user_impression_for_prompt(character_id: str = "default") -> st
         lines.append(f"- 压力信号（ta状态不对的征兆）: {_join_list(emotion.get('stress_signals'))}")
     lines.append(f"- 舒适区: {emotion.get('comfort_zone') or ''}")
     lines.append(f"- 最近观察到的变化: {change_text}")
-    return "\n".join(lines) + "\n"
+    result = "\n".join(lines) + "\n"
+    _cache_set(cache_key, result, ttl=30)
+    return result
 
 
 async def replace_user_impression_variables(prompt: str, character_id: str = "default") -> str:
@@ -1961,6 +1983,10 @@ async def format_special_memory_for_prompt(limit: int = 3, character_id: str = "
         limit = max(1, min(int(limit or 3), 8))
     except Exception:
         limit = 3
+    cache_key = f"prompt_var:special:{character_id or 'default'}:{limit}"
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
     if not await get_runtime_memory_palace_enabled():
         return ""
     try:
@@ -1991,7 +2017,9 @@ async def format_special_memory_for_prompt(limit: int = 3, character_id: str = "
     lines = ["### Special_Memory", "", "以下是你内化的自我认知，是你长期记忆的一部分："]
     for item in items:
         lines.append(f"- {item}")
-    return "\n".join(lines)
+    result = "\n".join(lines)
+    _cache_set(cache_key, result, ttl=30)
+    return result
 
 
 async def replace_special_memory_variables(prompt: str, character_id: str = "default") -> str:
@@ -6396,6 +6424,7 @@ async def api_confirm_user_impression(request: Request):
             source_mode=mode,
             source_message_count=source_message_count,
         )
+        invalidate_user_impression_prompt_cache(character_id)
         return {"status": "ok", **saved}
     except Exception as e:
         return JSONResponse({"status": "error", "error": str(e)}, status_code=500)
@@ -6406,6 +6435,7 @@ async def api_delete_user_impression(character_id: str = "default"):
     if not MEMORY_ENABLED:
         return {"error": "记忆系统未启用"}
     result = await delete_user_impression(character_id=character_id or "default")
+    invalidate_user_impression_prompt_cache(character_id or "default")
     return {"status": "ok", "character_id": character_id or "default", "deleted": result}
 
 

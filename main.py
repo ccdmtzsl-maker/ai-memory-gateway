@@ -1987,7 +1987,7 @@ async def format_special_memory_for_prompt(limit: int = 3, character_id: str = "
     rows = sorted(rows, key=lambda r: _memory_palace_aware_dt(r.get("created_at")) or datetime.min.replace(tzinfo=timezone.utc))
     items = [str(r.get("content") or "").strip() for r in rows if str(r.get("content") or "").strip()]
     if not items:
-        return ""
+        return "### Special_Memory\n\n（暂无常驻自我认知）"
     lines = ["### Special_Memory", "", "以下是角色已经内化的常驻自我认知，按形成时间从旧到新排列："]
     for item in items:
         lines.append(f"- {item}")
@@ -1995,9 +1995,9 @@ async def format_special_memory_for_prompt(limit: int = 3, character_id: str = "
 
 
 async def replace_special_memory_variables(prompt: str, character_id: str = "default") -> str:
-    if not isinstance(prompt, str) or "{{Special_Memory" not in prompt:
+    if not isinstance(prompt, str) or not re.search(r"\{\{\s*special_memory", prompt, re.I):
         return prompt
-    pattern = re.compile(r"\{\{Special_Memory(?::(\d+))?\}\}")
+    pattern = re.compile(r"\{\{\s*Special_Memory\s*(?::\s*(\d+)\s*)?\}\}", re.I)
     result = []
     last = 0
     for match in pattern.finditer(prompt):
@@ -4320,7 +4320,7 @@ async def chat_completions(request: Request):
                     client_system_parts.append(str(c))
         client_system_prompt = "\n\n".join(p for p in client_system_parts if p).strip()
         partition_base_prompt = client_system_prompt or SYSTEM_PROMPT
-        partition_has_explicit_memory_palace = "{{memory_palace" in (partition_base_prompt or "")
+        partition_has_explicit_memory_palace = bool(re.search(r"\{\{\s*(?:memory_palace|special_memory)", partition_base_prompt or "", re.I))
         partition_base_prompt = await replace_explicit_memory_variables(partition_base_prompt, query=user_message, recent_messages=messages, session_id=session_id)
 
         # 提取客户端新消息（非系统级消息），可能是user、tool、或带tool_calls的assistant

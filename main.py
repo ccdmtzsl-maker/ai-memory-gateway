@@ -555,7 +555,7 @@ async def format_daily_impressions_for_prompt(limit: int = 3) -> str:
             meta += f"｜氛围：{mood}"
         lines.append(f"- {meta}\n  {summary}")
     result = "\n".join(lines)
-    _cache_set(cache_key, result, ttl=30)
+    _cache_set(cache_key, result, ttl=900)
     return result
 
 
@@ -608,7 +608,7 @@ async def format_user_impression_for_prompt(character_id: str = "default") -> st
     lines.append(f"- 舒适区: {emotion.get('comfort_zone') or ''}")
     lines.append(f"- 最近观察到的变化: {change_text}")
     result = "\n".join(lines) + "\n"
-    _cache_set(cache_key, result, ttl=30)
+    _cache_set(cache_key, result, ttl=900)
     return result
 
 
@@ -2018,7 +2018,7 @@ async def format_special_memory_for_prompt(limit: int = 3, character_id: str = "
     for item in items:
         lines.append(f"- {item}")
     result = "\n".join(lines)
-    _cache_set(cache_key, result, ttl=30)
+    _cache_set(cache_key, result, ttl=900)
     return result
 
 
@@ -5101,7 +5101,7 @@ async def api_memory_palace_export_stats():
             "total_links": counts.get("memory_palace_links", 0),
             "total_event_boxes": counts.get("memory_palace_event_boxes", 0),
         }
-        return _cache_set(cache_key, result, ttl=30)
+        return _cache_set(cache_key, result, ttl=900)
     except Exception as e:
         return {"error": str(e)}
 
@@ -5542,7 +5542,7 @@ async def api_daily_impressions_stats():
             "latest_date": latest["date"].isoformat() if latest and latest.get("date") else None,
             "latest_updated_at": latest["updated_at"].isoformat() if latest and latest.get("updated_at") else None,
         }
-        return _cache_set(cache_key, result, ttl=30)
+        return _cache_set(cache_key, result, ttl=900)
     except Exception as e:
         return JSONResponse({"status": "error", "error": str(e)}, status_code=500)
 
@@ -5587,7 +5587,7 @@ async def api_daily_impression_months():
                 "moods": moods,
             })
         result = {"status": "ok", "months": months}
-        return _cache_set(cache_key, result, ttl=30)
+        return _cache_set(cache_key, result, ttl=900)
     except Exception as e:
         return JSONResponse({"status": "error", "error": str(e)}, status_code=500)
 

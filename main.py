@@ -143,9 +143,10 @@ def invalidate_memory_palace_cache(character_id: str = "default"):
 
 
 def invalidate_user_impression_prompt_cache(character_id: str = "default"):
-    """Clear user impression prompt variable cache after updates."""
+    """Clear user impression prompt/dashboard cache after updates."""
     character_id = character_id or "default"
     _cache_delete_prefix(f"prompt_var:user_impression:{character_id}")
+    _cache_delete_prefix(f"user_impression:{character_id}")
 
 
 # Dashboard 调试：只保留最近一次实际转发给上游模型的请求体。
@@ -172,6 +173,32 @@ def add_dashboard_log(level: str, message: str, category: str = "memory", sessio
     }
     _dashboard_logs.appendleft(item)
     print(message)
+
+
+def _serialize_dashboard_conversation_message(row) -> dict:
+    """Serialize one conversation DB row for Dashboard message list."""
+    metadata = None
+    raw_metadata = row.get("metadata")
+    if raw_metadata:
+        try:
+            metadata = json.loads(raw_metadata)
+        except Exception:
+            metadata = raw_metadata
+    content = row.get("content")
+    if (
+        row.get("role") == "assistant"
+        and not metadata
+        and isinstance(content, str)
+        and content.startswith("工具调用:")
+    ):
+        content = " "
+    return {
+        "id": row["id"],
+        "role": row["role"],
+        "content": content,
+        "metadata": metadata,
+        "created_at": row["created_at"].isoformat() if row.get("created_at") else None,
+    }
 
 # 强制流式传输（部分客户端不发stream=true导致thinking数据丢失，开启后强制所有请求走流式）
 FORCE_STREAM = os.getenv("FORCE_STREAM", "false").lower() == "true"
@@ -6399,10 +6426,17 @@ def _get_user_impression_generation_lock(character_id: str):
 async def api_get_user_impression(character_id: str = "default"):
     if not MEMORY_ENABLED:
         return {"error": "记忆系统未启用"}
-    item = await get_user_impression(character_id=character_id or "default")
+    character_id = character_id or "default"
+    cache_key = f"user_impression:{character_id}"
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
+    item = await get_user_impression(character_id=character_id)
     if not item:
-        return {"status": "not_found", "character_id": character_id or "default", "impression": None}
-    return {"status": "ok", **item}
+        result = {"status": "not_found", "character_id": character_id, "impression": None}
+    else:
+        result = {"status": "ok", **item}
+    return _cache_set(cache_key, result, ttl=60)
 
 
 @app.post("/api/user-impression/confirm")
@@ -6712,32 +6746,84 @@ async def api_memory_palace_event_box_detail(box_id: str, character_id: str = "d
     try:
         pool = await get_pool()
         async with pool.acquire() as conn:
-            box = await conn.fetchrow("""
-                SELECT id, character_id, name, tags, summary_node_id, live_memory_ids, archived_memory_ids,
-                       compression_count, sealed, predecessor_box_id, created_at, updated_at, last_compressed_at
-                FROM memory_palace_event_boxes
-                WHERE character_id = $1 AND id = $2
-            """, character_id, box_id)
-            if not box:
-                return JSONResponse({"error": "事件盒不存在"}, status_code=404)
-            ids = []
-            summary_id = box.get("summary_node_id")
-            if summary_id:
-                ids.append(str(summary_id))
-            ids.extend(str(x) for x in (box.get("live_memory_ids") or []) if x)
-            ids.extend(str(x) for x in (box.get("archived_memory_ids") or []) if x)
-            ids = list(dict.fromkeys(ids))
-            nodes = []
-            if ids:
-                node_rows = await conn.fetch("""
+            rows = await conn.fetch("""
+                WITH box AS (
+                    SELECT id, character_id, name, tags, summary_node_id, live_memory_ids, archived_memory_ids,
+                           compression_count, sealed, predecessor_box_id, created_at, updated_at, last_compressed_at,
+                           array_remove(
+                               ARRAY[summary_node_id]
+                               || COALESCE(live_memory_ids, ARRAY[]::text[])
+                               || COALESCE(archived_memory_ids, ARRAY[]::text[]),
+                               NULL
+                           ) AS node_ids
+                    FROM memory_palace_event_boxes
+                    WHERE character_id = $1 AND id = $2
+                )
+                SELECT
+                    b.id AS box_id, b.character_id AS box_character_id, b.name AS box_name, b.tags AS box_tags,
+                    b.summary_node_id AS box_summary_node_id, b.live_memory_ids AS box_live_memory_ids,
+                    b.archived_memory_ids AS box_archived_memory_ids, b.compression_count AS box_compression_count,
+                    b.sealed AS box_sealed, b.predecessor_box_id AS box_predecessor_box_id,
+                    b.created_at AS box_created_at, b.updated_at AS box_updated_at,
+                    b.last_compressed_at AS box_last_compressed_at,
+                    n.id AS node_id, n.content AS node_content, n.room AS node_room, n.tags AS node_tags,
+                    n.importance AS node_importance, n.mood AS node_mood, n.valence AS node_valence,
+                    n.arousal AS node_arousal, n.date AS node_date, n.created_at AS node_created_at,
+                    n.updated_at AS node_updated_at, n.pinned_until AS node_pinned_until,
+                    n.session_id AS node_session_id, n.event_box_id AS node_event_box_id,
+                    n.archived AS node_archived, n.is_box_summary AS node_is_box_summary,
+                    n.metadata AS node_metadata
+                FROM box b
+                LEFT JOIN LATERAL (
                     SELECT id, content, room, tags, importance, mood, valence, arousal, date, created_at, updated_at,
                            pinned_until, session_id, event_box_id, archived, is_box_summary, metadata
                     FROM memory_palace_nodes
-                    WHERE character_id = $1 AND id = ANY($2::text[])
+                    WHERE character_id = $1 AND id = ANY(b.node_ids)
                     ORDER BY is_box_summary DESC, COALESCE(date, created_at::date) ASC, created_at ASC
-                """, character_id, ids)
-                nodes = [_serialize_event_box_node(dict(r)) for r in node_rows]
-        return {"status": "ok", "box": _serialize_event_box(dict(box)), "nodes": nodes}
+                ) n ON TRUE
+            """, character_id, box_id)
+            if not rows:
+                return JSONResponse({"error": "事件盒不存在"}, status_code=404)
+            first = rows[0]
+            box = {
+                "id": first.get("box_id"),
+                "character_id": first.get("box_character_id"),
+                "name": first.get("box_name"),
+                "tags": first.get("box_tags"),
+                "summary_node_id": first.get("box_summary_node_id"),
+                "live_memory_ids": first.get("box_live_memory_ids"),
+                "archived_memory_ids": first.get("box_archived_memory_ids"),
+                "compression_count": first.get("box_compression_count"),
+                "sealed": first.get("box_sealed"),
+                "predecessor_box_id": first.get("box_predecessor_box_id"),
+                "created_at": first.get("box_created_at"),
+                "updated_at": first.get("box_updated_at"),
+                "last_compressed_at": first.get("box_last_compressed_at"),
+            }
+            nodes = []
+            for r in rows:
+                if not r.get("node_id"):
+                    continue
+                nodes.append(_serialize_event_box_node({
+                    "id": r.get("node_id"),
+                    "content": r.get("node_content"),
+                    "room": r.get("node_room"),
+                    "tags": r.get("node_tags"),
+                    "importance": r.get("node_importance"),
+                    "mood": r.get("node_mood"),
+                    "valence": r.get("node_valence"),
+                    "arousal": r.get("node_arousal"),
+                    "date": r.get("node_date"),
+                    "created_at": r.get("node_created_at"),
+                    "updated_at": r.get("node_updated_at"),
+                    "pinned_until": r.get("node_pinned_until"),
+                    "session_id": r.get("node_session_id"),
+                    "event_box_id": r.get("node_event_box_id"),
+                    "archived": r.get("node_archived"),
+                    "is_box_summary": r.get("node_is_box_summary"),
+                    "metadata": r.get("node_metadata"),
+                }))
+        return {"status": "ok", "box": _serialize_event_box(box), "nodes": nodes}
     except Exception as e:
         return {"status": "error", "error": str(e), "nodes": []}
 
@@ -9031,29 +9117,7 @@ async def api_conversation_messages(session_id: str, limit: int = 50, offset: in
                 ORDER BY created_at DESC
                 LIMIT $2 OFFSET $3
             """, session_id, limit, offset)
-        msgs = []
-        for r in rows:
-            metadata = None
-            if r.get("metadata"):
-                try:
-                    metadata = json.loads(r["metadata"])
-                except Exception:
-                    metadata = r["metadata"]
-            content = r["content"]
-            if (
-                r.get("role") == "assistant"
-                and not metadata
-                and isinstance(content, str)
-                and content.startswith("工具调用:")
-            ):
-                content = " "
-            msgs.append({
-                "id": r["id"],
-                "role": r["role"],
-                "content": content,
-                "metadata": metadata,
-                "created_at": r["created_at"].isoformat() if r.get("created_at") else None,
-            })
+        msgs = [_serialize_dashboard_conversation_message(r) for r in rows]
         return {"messages": msgs, "total": total}
     except Exception as e:
         return {"error": str(e)}

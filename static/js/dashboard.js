@@ -2564,7 +2564,7 @@ function renderUserImpression() {
         return;
     }
     el.innerHTML = '<div style="display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:12px;">' +
-        '<div><div style="font-weight:800;">当前画像</div><div style="font-size:12px;color:var(--text-muted);margin-top:2px;">更新时间：' + uiEsc(_userImpressionCurrent.updated_at || '') + ' · 来源：' + uiEsc(_userImpressionCurrent.source_mode || '') + '</div></div>' +
+        '<div><div style="font-weight:800;">当前画像</div><div style="font-size:12px;color:var(--text-muted);margin-top:2px;">更新时间：' + uiEsc(_userImpressionCurrent.updated_at || '') + ' · 来源：' + uiEsc(_userImpressionCurrent.source_mode || '') + (_userImpressionCurrent.pending_memory_count ? ' · 待处理记忆：' + _userImpressionCurrent.pending_memory_count + '条' : '') + '</div></div>' +
         '<div style="display:flex;gap:8px;flex-wrap:wrap;"><button class="btn btn-secondary" onclick="openUserImpressionEditor()">编辑画像</button></div>' +
         '</div>' +
         renderUserImpressionObject(_userImpressionCurrent.impression);

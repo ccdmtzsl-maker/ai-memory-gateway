@@ -529,7 +529,7 @@ _PERF_DIAGNOSTIC_PREFIXES = (
 )
 
 # 性能诊断开关：默认关闭，需在设置页面手动开启。
-PERF_DIAGNOSTIC_ENABLED = os.getenv("PERF_DIAGNOSTIC_ENABLED", "false").lower() == "true"
+PERF_DIAGNOSTIC_ENABLED = os.getenv("PERF_DIAGNOSTIC_ENABLED", "true").lower() == "true"
 
 
 def _database_pool_snapshot() -> str:

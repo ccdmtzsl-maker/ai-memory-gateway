@@ -1071,11 +1071,7 @@ def _memory_palace_split_last_turn_queries(messages):
 
 async def _memory_palace_fetch_rows(room: str = None, character_id: str = "default", include_archived: bool = False):
     room = room if room in _MEMORY_PALACE_ROOM_LABELS else None
-    # update 模式且有消费水位线时，只取新增记忆，所有房间总计不超过70条
-    if mode == "update" and last_consumed_node_id:
-        incremental_limit = 70
-    else:
-        incremental_limit = None  # initial 模式用 room_limits
+    # update 模式用 SQL 过滤 id > last_consumed_node_id 只取新增，每个房间仍用 room_limits 控制上限（总计70）
 
     pool = await get_pool()
     async with pool.acquire() as conn:
@@ -6018,9 +6014,6 @@ async def _collect_user_impression_memory_material(character_id: str = "default"
     async with pool.acquire() as conn:
         for room, limit in room_limits.items():
             room_limit = limit
-            if mode == "update" and last_consumed_node_id:
-                # incremental mode: use fixed limits, not room-based limits
-                room_limit = incremental_limit
             rows = await conn.fetch("""
                 SELECT n.id, n.room, n.content, n.tags, n.importance, n.mood,
                        n.date, n.created_at, n.updated_at, n.access_count,

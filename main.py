@@ -6022,7 +6022,6 @@ async def _collect_user_impression_memory_material(character_id: str = "default"
             LEFT JOIN memory_palace_vectors v ON v.memory_id = n.id
             WHERE n.room IN ('user_room', 'bedroom', 'study', 'attic', 'windowsill')
               AND n.archived = FALSE
-              AND COALESCE(n.is_box_summary, FALSE) = FALSE
               AND n.content IS NOT NULL
               AND n.content <> ''
               AND n.id > $1
@@ -6086,7 +6085,6 @@ async def _collect_user_impression_memory_material(character_id: str = "default"
                 LEFT JOIN memory_palace_vectors v ON v.memory_id = n.id
                 WHERE n.room = $1
                   AND n.archived = FALSE
-                  AND COALESCE(n.is_box_summary, FALSE) = FALSE
                   AND n.content IS NOT NULL
                   AND n.content <> ''
             """, room)

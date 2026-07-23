@@ -182,7 +182,6 @@ function renderDailyMonthOverview(months) {
             '<div style="margin-top:auto;font-size:12px;color:rgba(15,23,42,.55);">点击查看这个月</div>' +
         '</div>';
     }).join('');
-    }
 }
 function renderDailyMonthItems(monthKey) {
     const list = document.getElementById('dailyPageList');

@@ -6554,12 +6554,14 @@ async def api_confirm_user_impression(request: Request):
         mode = data.get("mode") or data.get("source_mode") or "manual"
         source_message_count = int(data.get("source_message_count") or 0)
         normalized = normalize_user_impression(impression)
+        last_consumed_node_id = data.get("last_consumed_node_id") or None
         if not normalized:
             return JSONResponse({"status": "error", "error": "画像内容不完整"}, status_code=400)
         saved = await upsert_user_impression(
             character_id=character_id,
             impression=normalized,
             source_mode=mode,
+            last_consumed_node_id=last_consumed_node_id,
             source_message_count=source_message_count,
         )
         invalidate_user_impression_prompt_cache(character_id)

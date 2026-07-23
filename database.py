@@ -1154,7 +1154,19 @@ async def upsert_user_impression(character_id: str, impression: dict, source_mod
                 last_consumed_node_id = EXCLUDED.last_consumed_node_id
             RETURNING character_id, version, impression, source_mode, source_message_count, created_at, updated_at, last_consumed_node_id
         """, character_id, version, payload, source_mode, int(source_message_count or 0), last_consumed_node_id or None)
-    return _serialize_user_impression_row(row)
+    result = _serialize_user_impression_row(row)
+    if result:
+        last_cn = result.get("last_consumed_node_id")
+        pc = 0
+        if last_cn:
+            pool2 = await get_pool()
+            async with pool2.acquire() as conn2:
+                pc = await conn2.fetchval(
+                    "SELECT COUNT(*) FROM memory_palace_nodes WHERE id > $1 AND archived = FALSE",
+                    last_cn
+                )
+        result["pending_memory_count"] = pc
+    return result
 
 
 async def delete_user_impression(character_id: str = "default"):

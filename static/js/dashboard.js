@@ -2540,7 +2540,8 @@ async function saveUserImpressionEdit() {
                 character_id: _userImpressionCurrent.character_id || 'default',
                 mode: 'manual',
                 source_message_count: _userImpressionCurrent.source_message_count || 0,
-                impression
+                impression,
+                last_consumed_node_id: _userImpressionCurrent.last_consumed_node_id || null
             })
         });
         const data = await resp.json();
@@ -2712,7 +2713,8 @@ async function confirmUserImpressionPreview() {
                 character_id: _userImpressionPreview.character_id || 'default',
                 mode: _userImpressionPreview.mode || 'manual',
                 source_message_count: _userImpressionPreview.source_message_count || 0,
-                impression: _userImpressionPreview.impression
+                impression: _userImpressionPreview.impression,
+                last_consumed_node_id: _userImpressionPreview.last_consumed_node_id || null
             })
         });
         const data = await resp.json();

@@ -5995,11 +5995,11 @@ async def _collect_user_impression_memory_material(character_id: str = "default"
     阶段内使用向量 MMR 选择代表性且不重复的节点。
     """
     room_limits = {
-        "user_room": 30,
-        "bedroom": 15,
-        "study": 5,
-        "attic": 10,
-        "windowsill": 10,
+        "user_room": 80,
+        "bedroom": 25,
+        "study": 10,
+        "attic": 20,
+        "windowsill": 20,
     }
     room_labels = {
         "user_room": "用户房间",

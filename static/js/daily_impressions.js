@@ -237,8 +237,14 @@ async function enterDailyMonth(monthKey) {
     const list = document.getElementById('dailyPageList');
     const detail = document.getElementById('dailyPageDetail');
     _dailySelectedMonth = monthKey || '';
-    if (list) list.innerHTML = '加载中...';
     if (detail) detail.style.display = 'none';
+    // 已有该月数据时直接渲染，不闪加载中
+    const cached = _dailyImpressions.filter(x => _dailyMonthKey(x) === monthKey);
+    if (cached.length) {
+        renderDailyMonthItems(_dailySelectedMonth);
+        return;
+    }
+    if (list) list.innerHTML = '加载中...';
     try {
         await _fetchDailyMonth(_dailySelectedMonth);
         renderDailyMonthItems(_dailySelectedMonth);
@@ -251,8 +257,13 @@ async function backToDailyMonths() {
     const list = document.getElementById('dailyPageList');
     const detail = document.getElementById('dailyPageDetail');
     _dailySelectedMonth = '';
-    if (list) list.innerHTML = '加载中...';
     if (detail) detail.style.display = 'none';
+    // 已有月份概览数据时直接渲染，不闪加载中
+    if (_dailyMonths.length) {
+        renderDailyMonthOverview(_dailyMonths);
+        return;
+    }
+    if (list) list.innerHTML = '加载中...';
     try {
         const months = await _fetchDailyMonths();
         renderDailyMonthOverview(months);
@@ -265,11 +276,17 @@ async function loadDailyImpressionsPage() {
     const list = document.getElementById('dailyPageList');
     const detail = document.getElementById('dailyPageDetail');
     if (!list) return;
-    list.innerHTML = '加载中...';
     if (detail) detail.style.display = 'none';
     try {
         const currentMonth = _dailySelectedMonth || _dailyCurrentMonthKey();
         _dailySelectedMonth = currentMonth;
+        // 已有该月数据时直接渲染，不闪加载中
+        const cached = _dailyImpressions.filter(x => _dailyMonthKey(x) === currentMonth);
+        if (cached.length) {
+            renderDailyMonthItems(currentMonth);
+            return;
+        }
+        list.innerHTML = '加载中...';
         const items = await _fetchDailyMonth(currentMonth);
         if (items.length) {
             renderDailyMonthItems(currentMonth);

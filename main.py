@@ -511,6 +511,59 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="AI Memory Gateway", version="2.0.0", lifespan=lifespan)
 
+# Dashboard 性能诊断：只观察容易涉及数据库的页面接口，不修改连接池参数。
+_PERF_DIAGNOSTIC_PREFIXES = (
+    "/api/conversations",
+    "/api/chat/search",
+    "/api/chat/messages/",
+    "/api/messages/",
+    "/api/memory-palace/",
+    "/api/daily-impressions",
+    "/api/user-impression",
+)
+
+
+def _database_pool_snapshot() -> str:
+    """Return a non-blocking asyncpg pool snapshot without acquiring a connection."""
+    try:
+        pool = getattr(_db_module, "_pool", None)
+        if pool is None:
+            return "pool=未初始化"
+        size = int(pool.get_size())
+        idle = int(pool.get_idle_size())
+        max_size = int(pool.get_max_size())
+        return f"pool={size - idle}/{size}忙, idle={idle}, max={max_size}"
+    except Exception as e:
+        return f"pool=读取失败({e})"
+
+
+@app.middleware("http")
+async def dashboard_performance_diagnostic_middleware(request: Request, call_next):
+    path = request.url.path
+    watched = any(path.startswith(prefix) for prefix in _PERF_DIAGNOSTIC_PREFIXES)
+    # 后台日志接口必须排除，否则日志页轮询会记录自己。
+    if not watched or path.startswith("/api/dashboard/"):
+        return await call_next(request)
+
+    started = time.perf_counter()
+    pool_before = _database_pool_snapshot()
+    status_code = 500
+    try:
+        response = await call_next(request)
+        status_code = int(getattr(response, "status_code", 200) or 200)
+        return response
+    finally:
+        elapsed_ms = (time.perf_counter() - started) * 1000
+        pool_after = _database_pool_snapshot()
+        level = "error" if status_code >= 500 else ("run" if elapsed_ms >= 800 else "info")
+        query = request.url.query
+        target = f"{path}?{query}" if query else path
+        add_dashboard_log(
+            level,
+            f"⏱️ API性能 {request.method} {target} | {elapsed_ms:.0f}ms | HTTP {status_code} | 开始[{pool_before}] | 结束[{pool_after}]",
+            category="performance",
+        )
+
 # 静态文件和模板配置
 app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")

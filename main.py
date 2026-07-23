@@ -6114,7 +6114,7 @@ async def _collect_user_impression_memory_material(character_id: str = "default"
 
 async def _collect_user_impression_recent_messages(mode: str = "initial", session_id: str = None) -> dict:
     """收集用户画像生成用近期聊天。initial=15, update=50。"""
-    limit = 15 if mode == "initial" else 50
+    limit = 20 if mode == "initial" else 25
     pool = await get_pool()
     async with pool.acquire() as conn:
         if session_id:
@@ -6163,8 +6163,10 @@ async def build_user_impression_materials_preview(character_id: str = "default",
     system_prompt = (await get_system_prompt()).strip()
     user_nickname = await get_runtime_user_nickname() or "用户"
     character_name = await get_runtime_character_name() or "澈"
-    memory_material = await _collect_user_impression_memory_material(character_id, mode=mode)
-    daily_impressions_text = await format_daily_impressions_for_prompt(limit=3)
+    last_cn = (current or {}).get("last_consumed_node_id") if mode == "update" else None
+    memory_material = await _collect_user_impression_memory_material(character_id, mode=mode, last_consumed_node_id=last_cn)
+    di_limit = 10 if mode == "update" else 3
+    daily_impressions_text = await format_daily_impressions_for_prompt(limit=di_limit)
     recent_messages = await _collect_user_impression_recent_messages(mode=mode, session_id=session_id)
     current = await get_user_impression(character_id=character_id) if mode == "update" else None
 
@@ -6216,6 +6218,7 @@ async def build_user_impression_materials_preview(character_id: str = "default",
         "recent_messages": recent_messages,
         "current_impression": current if mode == "update" else None,
         "source_message_count": recent_messages["count"],
+        "last_consumed_node_id": (memory_material.get("max_node_id") if memory_material.get("items") else last_cn) or last_cn,
         "material_text_chars": len(material_text),
         "material_text_full": material_text,
         "material_text_preview": _ui_preview_text(material_text, 12000),

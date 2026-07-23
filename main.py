@@ -6012,6 +6012,70 @@ async def _collect_user_impression_memory_material(character_id: str = "default"
     selected_items = []
     by_room = {}
     async with pool.acquire() as conn:
+      if mode == "update" and last_consumed_node_id:
+        # update 模式：不分房间，所有新增记忆混在一起选最多 70 条
+        rows = await conn.fetch("""
+            SELECT n.id, n.room, n.content, n.tags, n.importance, n.mood,
+                   n.date, n.created_at, n.updated_at, n.access_count,
+                   v.embedding_json
+            FROM memory_palace_nodes n
+            LEFT JOIN memory_palace_vectors v ON v.memory_id = n.id
+            WHERE n.room IN ('user_room', 'bedroom', 'study', 'attic', 'windowsill')
+              AND n.archived = FALSE
+              AND COALESCE(n.is_box_summary, FALSE) = FALSE
+              AND n.content IS NOT NULL
+              AND n.content <> ''
+              AND n.id > $1
+        """, last_consumed_node_id)
+        candidates = []
+        for r in rows:
+            item = {
+                "id": r.get("id"),
+                "room": r.get("room"),
+                "room_label": room_labels.get(r.get("room"), r.get("room")),
+                "importance": int(r.get("importance") or 5),
+                "tags": r.get("tags") or "",
+                "mood": r.get("mood") or "",
+                "date": _ui_iso(r.get("date")),
+                "created_at": _ui_iso(r.get("created_at")),
+                "updated_at": _ui_iso(r.get("updated_at")),
+                "access_count": int(r.get("access_count") or 0),
+                "content": _ui_preview_text(r.get("content"), 500),
+                "_embedding": _user_impression_parse_embedding(r.get("embedding_json")),
+                "_timeline_key": _user_impression_timeline_key({"date": r.get("date"), "created_at": r.get("created_at")}),
+            }
+            candidates.append(item)
+        candidates.sort(key=lambda x: x.get("_timeline_key") or datetime(1970, 1, 1, tzinfo=timezone.utc))
+        target = min(70, len(candidates))
+        if len(candidates) <= target:
+            for item in candidates:
+                clean = dict(item)
+                clean.pop("_embedding", None)
+                clean.pop("_timeline_key", None)
+                selected_items.append(clean)
+        else:
+            stage_count = max(1, min(4, target, len(candidates)))
+            stages = _user_impression_split_timeline(candidates, stage_count)
+            quotas = _user_impression_allocate_update_stage_quotas(stages, target)
+            room_items = []
+            for idx, stage in enumerate(stages):
+                quota = quotas[idx] if idx < len(quotas) else 0
+                picked = _user_impression_select_stage_mmr(stage, quota)
+                room_items.extend(picked)
+            room_items.sort(key=lambda x: x.get("_timeline_key") or datetime(1970, 1, 1, tzinfo=timezone.utc))
+            for item in room_items:
+                clean = dict(item)
+                clean.pop("_embedding", None)
+                clean.pop("_timeline_key", None)
+                selected_items.append(clean)
+        by_room["all"] = {
+            "label": "全部房间（增量）",
+            "limit": 70,
+            "candidate_count": len(candidates),
+            "count": len(selected_items),
+            "strategy": "timeline_mmr_recent_biased" if len(candidates) > target else "all",
+        }
+      else:
         for room, limit in room_limits.items():
             room_limit = limit
             rows = await conn.fetch("""
@@ -6025,8 +6089,7 @@ async def _collect_user_impression_memory_material(character_id: str = "default"
                   AND COALESCE(n.is_box_summary, FALSE) = FALSE
                   AND n.content IS NOT NULL
                   AND n.content <> ''
-                  AND ($2::text IS NULL OR n.id > $2)
-            """, room, last_consumed_node_id if (mode == "update" and last_consumed_node_id) else None)
+            """, room)
             candidates = []
             for r in rows:
                 item = {

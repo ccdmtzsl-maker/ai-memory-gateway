@@ -489,6 +489,10 @@ async def init_tables():
             ON user_impressions (updated_at DESC);
         """)
 
+        await conn.execute("""
+            ALTER TABLE user_impressions
+            ADD COLUMN IF NOT EXISTS last_consumed_node_id TEXT DEFAULT NULL;
+        """)
     print("✅ 数据库表结构已就绪")
 
 
@@ -1956,4 +1960,3 @@ async def delete_memory_palace_node(node_id: str):
     async with pool.acquire() as conn:
         result = await conn.execute("DELETE FROM memory_palace_nodes WHERE id = $1", node_id)
     return result
-

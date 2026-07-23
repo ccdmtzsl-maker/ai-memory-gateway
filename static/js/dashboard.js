@@ -62,8 +62,7 @@ document.addEventListener('DOMContentLoaded', () => {
     initNavigation();
     // 初始化Tab切换
     initTabs();
-    // 加载导出统计
-    loadExportStats();
+    // 导出统计改为懒加载，只在切到导出页时才查
     // 默认打开后台日志页时，直接加载日志内容
     loadDashboardLogs();
 });

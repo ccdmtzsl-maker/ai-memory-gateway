@@ -5600,7 +5600,7 @@ async def api_list_daily_impressions(limit: int = 30):
         return cached
     rows = await list_daily_impressions(limit)
     result = {"status": "ok", "impressions": [_serialize_daily_impression(r) for r in rows]}
-    return _cache_set(cache_key, result, ttl=60)
+    return _cache_set(cache_key, result, ttl=900)
 
 
 @app.get("/api/daily-impressions/stats")
@@ -5704,7 +5704,7 @@ async def api_daily_impressions_by_month(month: str):
                 ORDER BY impression_date DESC
             """, start_date, end_date)
         result = {"status": "ok", "month": month, "impressions": [_serialize_daily_impression(r) for r in rows]}
-        return _cache_set(cache_key, result, ttl=60)
+        return _cache_set(cache_key, result, ttl=900)
     except Exception as e:
         return JSONResponse({"status": "error", "error": str(e)}, status_code=500)
 
@@ -6494,7 +6494,7 @@ async def api_get_user_impression(character_id: str = "default"):
         result = {"status": "not_found", "character_id": character_id, "impression": None}
     else:
         result = {"status": "ok", **item}
-    return _cache_set(cache_key, result, ttl=60)
+    return _cache_set(cache_key, result, ttl=900)
 
 
 @app.post("/api/user-impression/confirm")
@@ -6635,7 +6635,7 @@ async def api_memory_palace_rooms(character_id: str = "default"):
     if cached is not None:
         return cached
     result = {"rooms": await list_memory_palace_rooms(character_id=character_id)}
-    return _cache_set(cache_key, result, ttl=60)
+    return _cache_set(cache_key, result, ttl=900)
 
 
 @app.get("/api/memory-palace/nodes")
@@ -6660,7 +6660,7 @@ async def api_memory_palace_nodes(
         room=room, character_id=character_id, archived=archived, limit=limit, offset=offset,
     )
     result = {"nodes": nodes}
-    return _cache_set(cache_key, result, ttl=60)
+    return _cache_set(cache_key, result, ttl=900)
 
 
 
@@ -6792,7 +6792,7 @@ async def api_memory_palace_event_boxes(character_id: str = "default", limit: in
             total = await conn.fetchval("SELECT COUNT(*) FROM memory_palace_event_boxes WHERE character_id = $1", character_id)
         boxes = [_serialize_event_box(dict(r)) for r in rows]
         result = {"status": "ok", "total": int(total or 0), "boxes": boxes}
-        return _cache_set(cache_key, result, ttl=60)
+        return _cache_set(cache_key, result, ttl=900)
     except Exception as e:
         return {"status": "error", "error": str(e), "boxes": []}
 

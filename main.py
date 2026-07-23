@@ -9525,6 +9525,7 @@ async def api_create_thread(request: Request):
             source = await get_session_cache_state(copy_from)
             summary_parts = source.get('summary_parts', [])
         await save_session_cache_state(new_id, summary_parts, 0)
+        _cache_delete_prefix("conv:list:")
         total_len = sum(len(p) for p in summary_parts)
         return {"status": "ok", "session_id": new_id, "summary_length": total_len}
     except Exception as e:

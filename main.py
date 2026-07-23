@@ -155,6 +155,14 @@ def invalidate_conversation_list_cache():
     _cache_delete_prefix("conv:list:")
 
 
+_original_save_message = save_message
+
+async def save_message(session_id, role, content, model="", metadata=None):
+    result = await _original_save_message(session_id, role, content, model, metadata)
+    invalidate_conversation_list_cache()
+    return result
+
+
 # Dashboard 调试：只保留最近一次实际转发给上游模型的请求体。
 # 不主动打印，避免日志刷屏；需要时由后台日志页手动查看。
 _last_upstream_request_body = None

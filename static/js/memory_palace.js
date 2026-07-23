@@ -1205,7 +1205,7 @@ async function debugRetrieveMemoryPalace() {
 function initMemoryPalacePage() {
     initMemoryPalaceInteractions();
     document.querySelectorAll('.nav-item[data-section=\"memory-palace\"]').forEach(item => {
-        item.addEventListener('click', () => setTimeout(loadMemoryPalace, 0));
+        item.addEventListener('click', () => { _clearMpRenderCache(); setTimeout(loadMemoryPalace, 0); });
     });
     if (document.getElementById('section-memory-palace')?.classList.contains('active')) {
         _clearMpRenderCache();

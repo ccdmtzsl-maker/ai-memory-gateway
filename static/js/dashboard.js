@@ -2573,6 +2573,11 @@ function renderUserImpression() {
 
 async function loadUserImpression() {
     const el = document.getElementById('uiCurrentImpression');
+    // 已有数据时直接渲染，不闪加载中
+    if (_userImpressionCurrent !== null) {
+        renderUserImpression();
+        return;
+    }
     if (el) el.innerHTML = '加载中...';
     try {
         const resp = await fetch('/api/user-impression?character_id=default');

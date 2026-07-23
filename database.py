@@ -1207,19 +1207,30 @@ async def get_conversations_paginated(page: int = 1, per_page: int = 20):
     offset = (page - 1) * per_page
     pool = await get_pool()
     async with pool.acquire() as conn:
-        total_row = await conn.fetchrow(
-            "SELECT COUNT(DISTINCT session_id) as total FROM conversations"
-        )
+        total_row = await conn.fetchrow("""
+            SELECT COUNT(*) as total FROM (
+                SELECT session_id FROM session_cache_state
+                UNION
+                SELECT DISTINCT session_id FROM conversations
+            ) all_sessions
+        """)
         total = total_row['total'] if total_row else 0
 
         rows = await conn.fetch("""
-            WITH session_info AS (
-                SELECT session_id,
-                       MIN(created_at) as first_time,
-                       MAX(created_at) as last_time,
-                       COUNT(*) as message_count
-                FROM conversations
-                GROUP BY session_id
+            WITH all_sessions AS (
+                SELECT session_id FROM session_cache_state
+                UNION
+                SELECT DISTINCT session_id FROM conversations
+            ),
+            session_info AS (
+                SELECT s.session_id,
+                       COALESCE(MIN(c.created_at), scs.updated_at) as first_time,
+                       COALESCE(MAX(c.created_at), scs.updated_at) as last_time,
+                       COUNT(c.id) as message_count
+                FROM all_sessions s
+                LEFT JOIN conversations c ON c.session_id = s.session_id
+                LEFT JOIN session_cache_state scs ON scs.session_id = s.session_id
+                GROUP BY s.session_id, scs.updated_at
                 ORDER BY last_time DESC
                 LIMIT $1 OFFSET $2
             ),

@@ -1100,8 +1100,8 @@ def _serialize_user_impression_row(row):
         "source_mode": row.get("source_mode") or "initial",
         "source_message_count": int(row.get("source_message_count") or 0),
         "last_consumed_node_id": row.get("last_consumed_node_id"),
-        "created_at": row["created_at"].isoformat() if row.get("created_at") else None,
-        "updated_at": row["updated_at"].isoformat() if row.get("updated_at") else None,
+        "created_at": row["created_at"].strftime("%Y-%m-%d %H:%M") if row.get("created_at") else None,
+        "updated_at": row["updated_at"].strftime("%Y-%m-%d %H:%M") if row.get("updated_at") else None,
     }
 
 

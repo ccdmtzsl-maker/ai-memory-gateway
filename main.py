@@ -149,6 +149,11 @@ def invalidate_user_impression_prompt_cache(character_id: str = "default"):
     _cache_delete_prefix(f"user_impression:{character_id}")
 
 
+def invalidate_conversation_list_cache():
+    """Clear conversation list cache after any conversation mutation."""
+    _cache_delete_prefix("conv:list:")
+
+
 # Dashboard 调试：只保留最近一次实际转发给上游模型的请求体。
 # 不主动打印，避免日志刷屏；需要时由后台日志页手动查看。
 _last_upstream_request_body = None
@@ -9146,10 +9151,17 @@ async def import_daily_impressions(request: Request):
 async def api_conversations(page: int = 1, per_page: int = 20):
     if not MEMORY_ENABLED:
         return {"error": "记忆系统未启用"}
+    page = max(1, int(page))
+    per_page = max(1, min(int(per_page), 100))
+    cache_key = f"conv:list:{page}:{per_page}"
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
     try:
         results, total = await get_conversations_paginated(page, per_page)
         total_pages = max(1, -(-total // per_page))  # 向上取整
-        return {"conversations": results, "total": total, "page": page, "per_page": per_page, "total_pages": total_pages}
+        result = {"conversations": results, "total": total, "page": page, "per_page": per_page, "total_pages": total_pages}
+        return _cache_set(cache_key, result, ttl=900)
     except Exception as e:
         return {"error": str(e)}
 
@@ -9184,6 +9196,7 @@ async def api_delete_conversation(session_id: str):
         return {"error": "记忆系统未启用"}
     try:
         await delete_conversation(session_id)
+        invalidate_conversation_list_cache()
         return {"status": "ok"}
     except Exception as e:
         return {"error": str(e)}
@@ -9198,6 +9211,7 @@ async def api_batch_delete(request: Request):
         ids = body.get("session_ids", [])
         if ids:
             await batch_delete_conversations(ids)
+            invalidate_conversation_list_cache()
         return {"status": "ok", "deleted": len(ids)}
     except Exception as e:
         return {"error": str(e)}
@@ -9214,6 +9228,7 @@ async def api_merge_sessions(request: Request):
         if not source_ids or not target_id:
             return {"error": "source_ids 和 target_id 不能为空"}
         result = await merge_sessions_to_target(source_ids, target_id)
+        invalidate_conversation_list_cache()
         return {"status": "ok", **result}
     except Exception as e:
         return {"error": str(e)}
@@ -9297,6 +9312,7 @@ async def api_import_conversations(request: Request):
         if not isinstance(records, list):
             return {"error": "格式错误：需要 JSON 数组"}
         imported, skipped = await import_conversations(records)
+        invalidate_conversation_list_cache()
         return {"status": "ok", "imported": imported, "skipped": skipped, "total": imported + skipped}
     except Exception as e:
         return {"error": str(e)}

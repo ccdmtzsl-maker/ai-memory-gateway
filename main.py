@@ -445,6 +445,7 @@ async def lifespan(app: FastAPI):
                         "CACHE_PARTITION_WINDOW": int, "CACHE_PARTITION_KEEP_A_TOOLS": lambda v: _parse_bool(v), "TOOL_CHAIN_DEBUG": lambda v: _parse_bool(v), "CACHE_SUMMARY_MODEL": str,
                         "FORCE_STREAM": lambda v: _parse_bool(v),
                         "RESPONSE_TRANSFORM_ENABLED": lambda v: _parse_bool(v),
+                        "PERF_DIAGNOSTIC_ENABLED": lambda v: _parse_bool(v),
                         "RESPONSE_TRANSFORM_RULES": str,
                         "REASONING_EFFORT": str,
                         "MEMORY_PALACE_DEFAULT_LIMIT": int,
@@ -529,7 +530,7 @@ _PERF_DIAGNOSTIC_PREFIXES = (
 )
 
 # 性能诊断开关：默认关闭，需在设置页面手动开启。
-PERF_DIAGNOSTIC_ENABLED = os.getenv("PERF_DIAGNOSTIC_ENABLED", "true").lower() == "true"
+PERF_DIAGNOSTIC_ENABLED = os.getenv("PERF_DIAGNOSTIC_ENABLED", "false").lower() == "true"
 
 
 def _database_pool_snapshot() -> str:

@@ -1071,12 +1071,9 @@ def _memory_palace_split_last_turn_queries(messages):
 
 async def _memory_palace_fetch_rows(room: str = None, character_id: str = "default", include_archived: bool = False):
     room = room if room in _MEMORY_PALACE_ROOM_LABELS else None
-    # update 模式且有消费水位线时，只取新增记忆
-    incremental_limit = 40
-    anchor_limit = 10
+    # update 模式且有消费水位线时，只取新增记忆，所有房间总计不超过70条
     if mode == "update" and last_consumed_node_id:
-        incremental_limit = 40
-        anchor_limit = 10
+        incremental_limit = 70
     else:
         incremental_limit = None  # initial 模式用 room_limits
 
@@ -5997,16 +5994,16 @@ async def _collect_user_impression_memory_material(character_id: str = "default"
 
     候选策略：
 - initial 模式：每个画像房间独立处理，按 date/created_at 建完整时间轴，阶段均衡分配名额。
-- update 模式：如果传入了 last_consumed_node_id，只取该 ID 之后的新增记忆，最多 40 条。不足时补充少量高重要度旧记忆作为锚点。
+- update 模式：如果传入了 last_consumed_node_id，只取该 ID 之后的新增记忆，所有房间总计不超过 70 条。
     initial 模式按时间阶段均衡分配名额；update 模式按 0.1/0.2/0.3/0.4 偏向近期阶段；
     阶段内使用向量 MMR 选择代表性且不重复的节点。
     """
     room_limits = {
-        "user_room": 80,
-        "bedroom": 25,
-        "study": 10,
-        "attic": 20,
-        "windowsill": 20,
+        "user_room": 30,
+        "bedroom": 15,
+        "study": 5,
+        "attic": 10,
+        "windowsill": 10,
     }
     room_labels = {
         "user_room": "用户房间",
@@ -6057,7 +6054,7 @@ async def _collect_user_impression_memory_material(character_id: str = "default"
                 candidates.append(item)
 
             candidates.sort(key=lambda x: x.get("_timeline_key") or datetime(1970, 1, 1, tzinfo=timezone.utc))
-            target = min(int(limit), len(candidates))
+            target = min(int(room_limit), len(candidates))
             stage_debug = []
             stage_strategy = "all"
             if len(candidates) <= target:
@@ -6097,7 +6094,7 @@ async def _collect_user_impression_memory_material(character_id: str = "default"
                 selected_items.append(clean)
             by_room[room] = {
                 "label": room_labels.get(room, room),
-                "limit": limit,
+                "limit": room_limit,
                 "candidate_count": len(candidates),
                 "count": len(room_items),
                 "strategy": stage_strategy if len(candidates) > target else "all",
@@ -6109,13 +6106,13 @@ async def _collect_user_impression_memory_material(character_id: str = "default"
         "count": len(selected_items),
         "by_room": by_room,
         "items": selected_items,
-        "max_node_id": selected_items[-1]["id"] if selected_items else None,
+        "max_node_id": max((item["id"] for item in selected_items), default=None) if selected_items else None,
     }
 
 
 async def _collect_user_impression_recent_messages(mode: str = "initial", session_id: str = None) -> dict:
     """收集用户画像生成用近期聊天。initial=15, update=50。"""
-    limit = 20 if mode == "initial" else 25
+    limit = 20 if mode == "initial" else 40
     pool = await get_pool()
     async with pool.acquire() as conn:
         if session_id:
@@ -6166,7 +6163,7 @@ async def build_user_impression_materials_preview(character_id: str = "default",
     character_name = await get_runtime_character_name() or "澈"
     last_cn = (current or {}).get("last_consumed_node_id") if mode == "update" else None
     memory_material = await _collect_user_impression_memory_material(character_id, mode=mode, last_consumed_node_id=last_cn)
-    di_limit = 10 if mode == "update" else 3
+    di_limit = 7 if mode == "update" else 3
     daily_impressions_text = await format_daily_impressions_for_prompt(limit=di_limit)
     recent_messages = await _collect_user_impression_recent_messages(mode=mode, session_id=session_id)
     current = await get_user_impression(character_id=character_id) if mode == "update" else None

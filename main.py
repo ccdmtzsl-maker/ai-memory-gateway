@@ -5617,15 +5617,15 @@ async def api_daily_impressions_stats():
         async with pool.acquire() as conn:
             total = await conn.fetchval("SELECT COUNT(*) FROM daily_impressions")
             latest = await conn.fetchrow("""
-                SELECT date, updated_at
+                SELECT impression_date, updated_at
                 FROM daily_impressions
-                ORDER BY date DESC
+                ORDER BY impression_date DESC
                 LIMIT 1
             """)
         result = {
             "status": "ok",
             "total": int(total or 0),
-            "latest_date": latest["date"].isoformat() if latest and latest.get("date") else None,
+            "latest_date": latest["impression_date"].isoformat() if latest and latest.get("impression_date") else None,
             "latest_updated_at": latest["updated_at"].isoformat() if latest and latest.get("updated_at") else None,
         }
         return _cache_set(cache_key, result, ttl=900)

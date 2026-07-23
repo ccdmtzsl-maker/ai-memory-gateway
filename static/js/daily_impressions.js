@@ -4,6 +4,15 @@ let _editingDailyIndex = -1;
 let _dailySelectedMonth = '';
 let _dailyMonths = [];
 
+// 前端渲染缓存：月份 key → 已渲染好的 HTML，避免重复 innerHTML 重排
+let _dailyRenderCache = {};
+let _dailyOverviewRenderCache = null;
+
+function _clearDailyRenderCache() {
+    _dailyRenderCache = {};
+    _dailyOverviewRenderCache = null;
+}
+
 function _dailyTags(item) {
     return item.tags || item.topics || '';
 }
@@ -136,6 +145,11 @@ function renderDailyMonthOverview(months) {
     _dailySetToolbarVisible(false);
     _dailyUpdatePageTitle();
 
+    if (_dailyOverviewRenderCache) {
+        list.innerHTML = _dailyOverviewRenderCache;
+        return;
+    }
+
     const groups = (months || []).map(m => ({
         key: m.month || 'unknown',
         count: m.count || 0,
@@ -160,7 +174,7 @@ function renderDailyMonthOverview(months) {
         ['#f8fafc', '#475569']
     ];
 
-    list.innerHTML = groups.map((group, i) => {
+    const overviewHtml = groups.map((group, i) => {
         const p = palettes[i % palettes.length];
         const latest = group.latest_date || '';
         const earliest = group.earliest_date || '';
@@ -182,6 +196,8 @@ function renderDailyMonthOverview(months) {
             '<div style="margin-top:auto;font-size:12px;color:rgba(15,23,42,.55);">点击查看这个月</div>' +
         '</div>';
     }).join('');
+    _dailyOverviewRenderCache = overviewHtml;
+    list.innerHTML = overviewHtml;
 }
 function renderDailyMonthItems(monthKey) {
     const list = document.getElementById('dailyPageList');
@@ -191,12 +207,20 @@ function renderDailyMonthItems(monthKey) {
     _dailySetToolbarVisible(true);
     _dailyUpdatePageTitle();
 
+    // 有渲染缓存时直接复用，跳过 innerHTML 重排
+    if (_dailyRenderCache[monthKey]) {
+        list.innerHTML = _dailyRenderCache[monthKey];
+        return;
+    }
+
     const entries = _dailyImpressions
         .map((item, index) => ({item, index}))
         .filter(x => _dailyMonthKey(x.item) === monthKey);
 
     if (!entries.length) {
-        list.innerHTML = '<div class="card" style="grid-column:1/-1;padding:28px;text-align:center;color:var(--text-muted);">这个月份还没有日印象。</div>';
+        const emptyHtml = '<div class="card" style="grid-column:1/-1;padding:28px;text-align:center;color:var(--text-muted);">这个月份还没有日印象。</div>';
+        _dailyRenderCache[monthKey] = emptyHtml;
+        list.innerHTML = emptyHtml;
         return;
     }
 
@@ -211,7 +235,7 @@ function renderDailyMonthItems(monthKey) {
         ['#f8fafc', '#475569']
     ];
 
-    list.innerHTML = entries.map((entry, localIndex) => {
+    const html = entries.map((entry, localIndex) => {
         const item = entry.item;
         const tags = _dailyTags(item);
         const summary = item.summary || '';
@@ -231,6 +255,8 @@ function renderDailyMonthItems(monthKey) {
             (tags ? '<div style="font-size:12px;color:' + p[1] + ';font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;"># ' + escHtml(tags.replace(/、/g, ' # ')) + '</div>' : '') +
         '</div>';
     }).join('');
+    _dailyRenderCache[monthKey] = html;
+    list.innerHTML = html;
 }
 
 async function enterDailyMonth(monthKey) {
@@ -343,6 +369,7 @@ async function saveDailyPageDetail() {
         });
         const data = await resp.json();
         if (data.error) throw new Error(data.error);
+        _clearDailyRenderCache();
         await loadDailyImpressionsPage();
     } catch (e) {
         alert('保存失败：' + e.message);
@@ -362,6 +389,7 @@ async function deleteDailyPageDetail(index) {
         if (data.error) throw new Error(data.error);
         const detail = document.getElementById('dailyPageDetail');
         if (detail) detail.style.display = 'none';
+        _clearDailyRenderCache();
         await loadDailyImpressionsPage();
     } catch (e) {
         alert('删除失败：' + e.message);
@@ -411,6 +439,7 @@ async function generateDailyImpressionFromPage() {
         _lastDailyRaw = rawText || '';
         _dailySelectedMonth = String(date || '').slice(0, 7);
         if (msg) msg.innerHTML = '<div class="msg msg-success">✅ 已生成日印象（使用 ' + (data.messages_used || 0) + ' 条对话）</div>' + renderDailyRawBlock(_lastDailyRaw);
+        _clearDailyRenderCache();
         await loadDailyImpressionsPage();
     } catch (e) {
         if (msg) msg.innerHTML = '<div class="msg msg-error">❌ ' + escHtml(e.message) + '</div>' + renderDailyRawBlock(e.raw || e.message || '');

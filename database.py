@@ -1114,7 +1114,20 @@ async def get_user_impression(character_id: str = "default"):
             FROM user_impressions
             WHERE character_id = $1
         """, character_id)
-    return _serialize_user_impression_row(row)
+    pending_count = 0
+    if row:
+        last_cn = row.get("last_consumed_node_id")
+        if last_cn:
+            pool2 = await get_pool()
+            async with pool2.acquire() as conn2:
+                pending_count = await conn2.fetchval(
+                    "SELECT COUNT(*) FROM memory_palace_nodes WHERE id > $1 AND archived = FALSE",
+                    last_cn
+                )
+    result = _serialize_user_impression_row(row)
+    if result:
+        result["pending_memory_count"] = pending_count
+    return result
 
 
 async def upsert_user_impression(character_id: str, impression: dict, source_mode: str = "initial", source_message_count: int = 0, last_consumed_node_id: str = None):

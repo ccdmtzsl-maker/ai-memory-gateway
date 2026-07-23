@@ -140,6 +140,7 @@ def invalidate_memory_palace_cache(character_id: str = "default"):
     _cache_delete_prefix(f"mp:{character_id}:")
     _cache_delete_prefix("mp:stats:")
     _cache_delete_prefix(f"prompt_var:special:{character_id}:")
+    _cache_delete_prefix(f"mp:{character_id}:rwn:")
 
 
 def invalidate_user_impression_prompt_cache(character_id: str = "default"):
@@ -6635,6 +6636,29 @@ async def api_memory_palace_rooms(character_id: str = "default"):
     if cached is not None:
         return cached
     result = {"rooms": await list_memory_palace_rooms(character_id=character_id)}
+    return _cache_set(cache_key, result, ttl=900)
+
+
+@app.get("/api/memory-palace/rooms-with-nodes")
+async def api_memory_palace_rooms_with_nodes(
+    character_id: str = "default",
+    room: str = None,
+    limit: int = 40,
+):
+    """一次性返回房间列表 + 第一页节点，减少前端串行请求。"""
+    if not MEMORY_ENABLED:
+        return {"error": "记忆系统未启用"}
+    character_id = character_id or "default"
+    limit = max(1, min(int(limit or 40), 300))
+    cache_key = f"mp:{character_id}:rwn:{room or ''}:{limit}"
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
+    rooms = await list_memory_palace_rooms(character_id=character_id)
+    nodes = await list_memory_palace_nodes(
+        room=room, character_id=character_id, archived=False, limit=limit, offset=0,
+    )
+    result = {"rooms": rooms, "nodes": nodes, "node_count": len(nodes)}
     return _cache_set(cache_key, result, ttl=900)
 
 

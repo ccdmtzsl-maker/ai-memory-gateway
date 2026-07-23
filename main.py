@@ -6665,6 +6665,7 @@ async def api_user_impression_generate_preview(request: Request):
                 "prompt_chars": generated.get("prompt_chars") or 0,
             },
             "raw_reply": generated.get("raw_reply") or "",
+            "last_consumed_node_id": materials.get("last_consumed_node_id"),
         }
     except Exception as e:
         return JSONResponse({"status": "error", "error": str(e)}, status_code=500)

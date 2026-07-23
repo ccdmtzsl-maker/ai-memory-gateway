@@ -1071,6 +1071,15 @@ def _memory_palace_split_last_turn_queries(messages):
 
 async def _memory_palace_fetch_rows(room: str = None, character_id: str = "default", include_archived: bool = False):
     room = room if room in _MEMORY_PALACE_ROOM_LABELS else None
+    # update 模式且有消费水位线时，只取新增记忆
+    incremental_limit = 40
+    anchor_limit = 10
+    if mode == "update" and last_consumed_node_id:
+        incremental_limit = 40
+        anchor_limit = 10
+    else:
+        incremental_limit = None  # initial 模式用 room_limits
+
     pool = await get_pool()
     async with pool.acquire() as conn:
         if room:
@@ -5983,10 +5992,12 @@ def _user_impression_select_stage_mmr(stage_items: list, quota: int) -> list:
     return [stage_items[i] for i in selected_idx]
 
 
-async def _collect_user_impression_memory_material(character_id: str = "default", mode: str = "initial") -> dict:
+async def _collect_user_impression_memory_material(character_id: str = "default", mode: str = "initial", last_consumed_node_id: str = None) -> dict:
     """收集用户画像生成用的记忆宫殿长期材料。只读，不修改任何记忆。
 
-    候选策略：每个画像房间独立处理；按 date/created_at 建完整时间轴；
+    候选策略：
+- initial 模式：每个画像房间独立处理，按 date/created_at 建完整时间轴，阶段均衡分配名额。
+- update 模式：如果传入了 last_consumed_node_id，只取该 ID 之后的新增记忆，最多 40 条。不足时补充少量高重要度旧记忆作为锚点。
     initial 模式按时间阶段均衡分配名额；update 模式按 0.1/0.2/0.3/0.4 偏向近期阶段；
     阶段内使用向量 MMR 选择代表性且不重复的节点。
     """
@@ -6009,6 +6020,10 @@ async def _collect_user_impression_memory_material(character_id: str = "default"
     by_room = {}
     async with pool.acquire() as conn:
         for room, limit in room_limits.items():
+            room_limit = limit
+            if mode == "update" and last_consumed_node_id:
+                # incremental mode: use fixed limits, not room-based limits
+                room_limit = incremental_limit
             rows = await conn.fetch("""
                 SELECT n.id, n.room, n.content, n.tags, n.importance, n.mood,
                        n.date, n.created_at, n.updated_at, n.access_count,
@@ -6020,7 +6035,8 @@ async def _collect_user_impression_memory_material(character_id: str = "default"
                   AND COALESCE(n.is_box_summary, FALSE) = FALSE
                   AND n.content IS NOT NULL
                   AND n.content <> ''
-            """, room)
+                  AND ($2::text IS NULL OR n.id > $2)
+            """, room, last_consumed_node_id if (mode == "update" and last_consumed_node_id) else None)
             candidates = []
             for r in rows:
                 item = {

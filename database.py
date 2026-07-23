@@ -1095,6 +1095,7 @@ def _serialize_user_impression_row(row):
         "impression": impression or {},
         "source_mode": row.get("source_mode") or "initial",
         "source_message_count": int(row.get("source_message_count") or 0),
+        "last_consumed_node_id": row.get("last_consumed_node_id"),
         "created_at": row["created_at"].isoformat() if row.get("created_at") else None,
         "updated_at": row["updated_at"].isoformat() if row.get("updated_at") else None,
     }
@@ -1105,14 +1106,14 @@ async def get_user_impression(character_id: str = "default"):
     pool = await get_pool()
     async with pool.acquire() as conn:
         row = await conn.fetchrow("""
-            SELECT character_id, version, impression, source_mode, source_message_count, created_at, updated_at
+            SELECT character_id, version, impression, source_mode, source_message_count, created_at, updated_at, last_consumed_node_id
             FROM user_impressions
             WHERE character_id = $1
         """, character_id)
     return _serialize_user_impression_row(row)
 
 
-async def upsert_user_impression(character_id: str, impression: dict, source_mode: str = "initial", source_message_count: int = 0):
+async def upsert_user_impression(character_id: str, impression: dict, source_mode: str = "initial", source_message_count: int = 0, last_consumed_node_id: str = None):
     character_id = character_id or "default"
     source_mode = source_mode if source_mode in ("initial", "update", "manual") else "manual"
     normalized = normalize_user_impression(impression)
@@ -1124,17 +1125,18 @@ async def upsert_user_impression(character_id: str, impression: dict, source_mod
     async with pool.acquire() as conn:
         row = await conn.fetchrow("""
             INSERT INTO user_impressions (
-                character_id, version, impression, source_mode, source_message_count, updated_at
+                character_id, version, impression, source_mode, source_message_count, updated_at, last_consumed_node_id
             )
-            VALUES ($1, $2, $3::jsonb, $4, $5, NOW())
+            VALUES ($1, $2, $3::jsonb, $4, $5, NOW(), $6)
             ON CONFLICT (character_id) DO UPDATE SET
                 version = EXCLUDED.version,
                 impression = EXCLUDED.impression,
                 source_mode = EXCLUDED.source_mode,
                 source_message_count = EXCLUDED.source_message_count,
-                updated_at = NOW()
-            RETURNING character_id, version, impression, source_mode, source_message_count, created_at, updated_at
-        """, character_id, version, payload, source_mode, int(source_message_count or 0))
+                updated_at = NOW(),
+                last_consumed_node_id = EXCLUDED.last_consumed_node_id
+            RETURNING character_id, version, impression, source_mode, source_message_count, created_at, updated_at, last_consumed_node_id
+        """, character_id, version, payload, source_mode, int(source_message_count or 0), last_consumed_node_id or None)
     return _serialize_user_impression_row(row)
 
 

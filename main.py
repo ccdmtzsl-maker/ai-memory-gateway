@@ -6109,6 +6109,7 @@ async def _collect_user_impression_memory_material(character_id: str = "default"
         "count": len(selected_items),
         "by_room": by_room,
         "items": selected_items,
+        "max_node_id": selected_items[-1]["id"] if selected_items else None,
     }
 
 

@@ -1,5 +1,12 @@
 let _mpRooms = [];
 let _mpNodes = [];
+
+// 前端渲染缓存：room key -> {rooms, nodes, nodesHtml}
+let _mpRenderCache = {};
+
+function _clearMpRenderCache() {
+    _mpRenderCache = {};
+}
 let _mpCurrentRoom = '';
 let _mpEditingId = null;
 let _mpEventBoxes = [];
@@ -85,24 +92,78 @@ async function loadMemoryPalace() {
     const root = document.getElementById('section-memory-palace');
     if (!root) return;
 
+    const cacheKey = _mpCurrentRoom || '__all__';
+
     try {
         mpMsg('');
         clearDigestPreviewArea();
-        const resp = await fetch('/api/memory-palace/rooms');
+
+        // 有渲染缓存时直接复用
+        if (_mpRenderCache[cacheKey]) {
+            const c = _mpRenderCache[cacheKey];
+            _mpRooms = c.rooms;
+            _mpNodes = c.nodes;
+            _mpNodeLoadedCount = c.nodes.length;
+            _mpNodeHasMore = c.nodes.length >= MP_NODE_PAGE_SIZE;
+            renderMemoryPalaceRooms();
+            renderMemoryPalaceEventBoxCollapseState();
+            renderMemoryPalaceToolsState();
+            const nodeList = document.getElementById('mpNodeList');
+            if (nodeList) nodeList.innerHTML = c.nodesHtml;
+            renderMemoryPalaceNodeLoadMoreHint();
+            if (_mpEventBoxesExpanded) {
+                await loadMemoryPalaceEventBoxes();
+            }
+            return;
+        }
+
+        // 合并请求：一次拿房间 + 第一页节点
+        const params = new URLSearchParams();
+        params.set('limit', String(MP_NODE_PAGE_SIZE));
+        if (_mpCurrentRoom) params.set('room', _mpCurrentRoom);
+        const resp = await fetch('/api/memory-palace/rooms-with-nodes?' + params.toString());
         const data = await resp.json();
         if (data.error) throw new Error(data.error);
+
         _mpRooms = data.rooms || [];
+        const nodes = data.nodes || [];
+        _mpNodes = nodes;
+        _mpNodeLoadedCount = nodes.length;
+        _mpNodeHasMore = nodes.length >= MP_NODE_PAGE_SIZE;
+        _mpNodeLoadingMore = false;
+
         renderMemoryPalaceRooms();
         renderMemoryPalaceEventBoxCollapseState();
         renderMemoryPalaceToolsState();
-        await loadMemoryPalaceNodes(_mpCurrentRoom);
+
+        const nodeList = document.getElementById('mpNodeList');
+        if (nodeList) {
+            if (!nodes.length) {
+                nodeList.innerHTML = '<div class="card" style="padding:24px;color:var(--text-muted);text-align:center;">这个房间还没有记忆。可以点"新增记忆"手动放一条进去。</div>';
+            } else {
+                nodeList.innerHTML = '';
+                ensureMemoryPalaceNodeScrollListener();
+                appendMemoryPalaceNodeBatch(0, nodes);
+                renderMemoryPalaceNodeLoadMoreHint();
+            }
+        }
+        updateMemoryPalaceRoomTitle();
+
+        _mpRenderCache[cacheKey] = {
+            rooms: _mpRooms,
+            nodes: _mpNodes,
+            nodesHtml: nodeList ? nodeList.innerHTML : '',
+        };
+
         if (_mpEventBoxesExpanded) {
             await loadMemoryPalaceEventBoxes();
         }
     } catch (e) {
         mpMsg('加载记忆宫殿失败：' + e.message, 'error');
         const roomsEl = document.getElementById('mpRooms');
-        if (roomsEl) roomsEl.innerHTML = '<div style=\"color:var(--text-muted);\">加载失败</div>';
+        if (roomsEl) roomsEl.innerHTML = '<div style="color:var(--text-muted);">加载失败</div>';
+    }
+}
     }
 }
 
@@ -465,7 +526,9 @@ async function confirmDigest() {
         if (data.self_confused && data.self_confused.length) parts.push('新困惑' + data.self_confused.length + '条');
         mpMsg('认知消化完成：' + (parts.length ? parts.join('，') : '无变化'));
         _digestPreviewActions = [];
-        await loadMemoryPalace();
+        _clearMpRenderCache();
+    await _clearMpRenderCache();
+    loadMemoryPalace();
     } catch (e) { mpMsg('认知消化执行失败：' + e.message, 'error'); } finally { _digestConfirmRunning = false; }
 }
 
@@ -477,7 +540,9 @@ async function runMemoryPalaceConsolidation() {
         const data = await resp.json();
         if (data.error || data.status === 'error') throw new Error(data.error || '巩固失败');
         mpMsg('巩固完成：晋升 ' + Number(data.promoted || 0) + ' 条，淘汰 ' + Number(data.evicted || 0) + ' 条');
-        await loadMemoryPalace();
+        _clearMpRenderCache();
+    await _clearMpRenderCache();
+    loadMemoryPalace();
     } catch (e) { mpMsg('巩固失败：' + e.message, 'error'); }
 }
 
@@ -519,7 +584,9 @@ async function modifyMemoryPalacePin() {
         const data = await resp.json();
         if (data.error || data.status === 'error') throw new Error(data.error || '修改失败');
         mpMsg(pinDays > 0 ? ('已设置便利贴：' + pinDays + ' 天') : '已取消便利贴');
-        await loadMemoryPalace();
+        _clearMpRenderCache();
+    await _clearMpRenderCache();
+    loadMemoryPalace();
     } catch (e) {
         mpMsg('修改便利贴失败：' + e.message, 'error');
     } finally {
@@ -625,7 +692,9 @@ async function saveMemoryPalaceNode() {
         mpMsg(_mpEditingId ? '记忆已更新' : '记忆已新增');
         closeMemoryPalaceEditor();
         _mpCurrentRoom = payload.room || _mpCurrentRoom;
-        await loadMemoryPalace();
+        _clearMpRenderCache();
+    await _clearMpRenderCache();
+    loadMemoryPalace();
     } catch (e) {
         mpMsg('保存失败：' + e.message, 'error');
     }
@@ -639,7 +708,9 @@ async function deleteMemoryPalaceNode(id) {
         const data = await resp.json();
         if (data.error) throw new Error(data.error);
         mpMsg('记忆已删除');
-        await loadMemoryPalace();
+        _clearMpRenderCache();
+    await _clearMpRenderCache();
+    loadMemoryPalace();
     } catch (e) {
         mpMsg('删除失败：' + e.message, 'error');
     }
@@ -713,7 +784,9 @@ async function compressMemoryPalaceEventBoxes() {
         const data = await resp.json();
         if (data.error || data.status === 'error') throw new Error(data.error || '压缩失败');
         mpMsg('事件盒压缩完成：压缩 ' + Number(data.compressed || 0) + ' 个');
-        await loadMemoryPalace();
+        _clearMpRenderCache();
+    await _clearMpRenderCache();
+    loadMemoryPalace();
     } catch (e) {
         mpMsg('事件盒压缩失败：' + e.message, 'error');
     } finally {
@@ -902,7 +975,9 @@ async function unbindMemoryPalaceEventBoxLive(id) {
         if (data.error || data.status === 'error') throw new Error(data.error || '清空失败');
         mpMsg('已移出 live 节点：' + Number(data.moved || 0) + ' 条');
         if (data.deleted) _mpCurrentEventBoxId = null;
-        await loadMemoryPalace();
+        _clearMpRenderCache();
+    await _clearMpRenderCache();
+    loadMemoryPalace();
         if (_mpCurrentEventBoxId) await loadMemoryPalaceEventBoxDetail(_mpCurrentEventBoxId);
     } catch (e) { mpMsg('清空 live 池失败：' + e.message, 'error'); }
 }
@@ -1004,7 +1079,9 @@ async function manualBindMemoryPalaceNode(nodeId) {
         const data = await resp.json();
         if (data.error || data.status === 'error') throw new Error(data.error || '绑定失败');
         mpMsg('手动绑定完成：触达事件盒 ' + Number(data.event_boxes || 0) + ' 个');
-        await loadMemoryPalace();
+        _clearMpRenderCache();
+    await _clearMpRenderCache();
+    loadMemoryPalace();
     } catch (e) { mpMsg('手动绑定失败：' + e.message, 'error'); }
 }
 
@@ -1131,7 +1208,8 @@ function initMemoryPalacePage() {
         item.addEventListener('click', () => setTimeout(loadMemoryPalace, 0));
     });
     if (document.getElementById('section-memory-palace')?.classList.contains('active')) {
-        loadMemoryPalace();
+        _clearMpRenderCache();
+    loadMemoryPalace();
     }
 }
 
@@ -1254,7 +1332,9 @@ async function backfillMemoryPalaceEmbeddings() {
                 showMemoryPalaceBackfillStatus((s.failed || 0) > 0 ? ('⚠️ ' + doneMsg) : ('✅ ' + doneMsg), (s.failed || 0) > 0 ? 'error' : undefined);
                 _mpBackfillRunning = false;
                 setMemoryPalaceBackfillButton(false);
-                await loadMemoryPalace();
+                _clearMpRenderCache();
+    await _clearMpRenderCache();
+    loadMemoryPalace();
             } catch(e) {
                 showMemoryPalaceBackfillStatus('❌ 查询补全进度失败：' + e.message, 'error');
                 _mpBackfillRunning = false;

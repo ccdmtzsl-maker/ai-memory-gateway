@@ -528,6 +528,9 @@ _PERF_DIAGNOSTIC_PREFIXES = (
     "/api/user-impression",
 )
 
+# 性能诊断开关：默认关闭，需在设置页面手动开启。
+PERF_DIAGNOSTIC_ENABLED = os.getenv("PERF_DIAGNOSTIC_ENABLED", "false").lower() == "true"
+
 
 def _database_pool_snapshot() -> str:
     """Return a non-blocking asyncpg pool snapshot without acquiring a connection."""
@@ -549,6 +552,9 @@ async def dashboard_performance_diagnostic_middleware(request: Request, call_nex
     watched = any(path.startswith(prefix) for prefix in _PERF_DIAGNOSTIC_PREFIXES)
     # 后台日志接口必须排除，否则日志页轮询会记录自己。
     if not watched or path.startswith("/api/dashboard/"):
+        return await call_next(request)
+
+    if not PERF_DIAGNOSTIC_ENABLED:
         return await call_next(request)
 
     started = time.perf_counter()
@@ -9810,6 +9816,7 @@ async def get_settings():
 
             # 其他
             "FORCE_STREAM":       _parse_bool(db.get("FORCE_STREAM"), FORCE_STREAM),
+            "PERF_DIAGNOSTIC_ENABLED": _parse_bool(db.get("PERF_DIAGNOSTIC_ENABLED"), PERF_DIAGNOSTIC_ENABLED),
             "RESPONSE_TRANSFORM_ENABLED": _parse_bool(db.get("RESPONSE_TRANSFORM_ENABLED"), RESPONSE_TRANSFORM_ENABLED),
             "RESPONSE_TRANSFORM_RULES": db.get("RESPONSE_TRANSFORM_RULES") or str(RESPONSE_TRANSFORM_RULES),
             "REASONING_EFFORT":   db.get("REASONING_EFFORT") or str(REASONING_EFFORT),
@@ -9922,6 +9929,7 @@ async def save_settings(request: Request):
             "TOOL_CHAIN_DEBUG":      lambda v: _parse_bool(v),
             "CACHE_SUMMARY_MODEL":   str,
             "FORCE_STREAM":          lambda v: _parse_bool(v),
+            "PERF_DIAGNOSTIC_ENABLED":  lambda v: _parse_bool(v),
             "RESPONSE_TRANSFORM_ENABLED": lambda v: _parse_bool(v),
             "RESPONSE_TRANSFORM_RULES": str,
             "REASONING_EFFORT":      str,

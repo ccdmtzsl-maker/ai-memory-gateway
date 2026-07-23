@@ -6249,7 +6249,7 @@ def build_user_impression_generation_prompt(materials: dict) -> str:
         "基于旧的总结，结合新发现，更新你对TA的【宏观整体印象】。请保持长期视角的连贯性，除非发生了重大转折，否则不要因为一两句闲聊就彻底推翻对TA的本质判断。必须第一人称。"
     )
     list_instruction = '"项目1", "项目2"' if is_initial else '"保留旧项目", "新项目"'
-    changes_instruction = "" if is_initial else '"描述变化1", "描述变化2"'
+    changes_instruction = "" if is_initial else '"描述变化1", "描述变化2"（不超过8条）'
     reset_instruction = ""
     if is_initial:
         reset_instruction = """
@@ -6298,31 +6298,31 @@ def build_user_impression_generation_prompt(materials: dict) -> str:
 {{
   "lastUpdated": 0,
   "value_map": {{
-    "likes": [{list_instruction}],
-    "dislikes": [{list_instruction}],
-    "core_values": "..."
+    "likes": [{list_instruction}]（不超过8条），
+    "dislikes": [{list_instruction}]（不超过8条），
+    "core_values": "一句话概括核心价值观（200字以内）"
   }},
   "behavior_profile": {{
-    "tone_style": "...",
-    "emotion_summary": "...",
-    "response_patterns": "..."
+    "tone_style": "一句话概括TA的沟通风格（200字以内）",
+    "emotion_summary": "概括近期情绪状态（200字以内）",
+    "response_patterns": "一句话概括TA的回复偏好（200字以内）"
   }},
   "emotion_schema": {{
     "triggers": {{
-      "positive": [{list_instruction}],
-      "negative": [{list_instruction}]
+      "positive": [{list_instruction}]（不超过8条），
+      "negative": [{list_instruction}]（不超过8条）
     }},
-    "comfort_zone": "...",
-    "stress_signals": [{list_instruction}]
+    "comfort_zone": "一句话概括让TA感到安全的互动方式（200字以内）",
+    "stress_signals": [{list_instruction}]（不超过8条）
   }},
   "personality_core": {{
-    "observed_traits": [{list_instruction}],
-    "interaction_style": "...",
-    "summary": "..."
+    "observed_traits": [{list_instruction}]（不超过8条），
+    "interaction_style": "一句话概括TA的互动风格（200字以内）",
+    "summary": "宏观整体印象（100字以内，第一人称）"
   }},
   "mbti_analysis": {{
     "type": "XXXX",
-    "reasoning": "...",
+    "reasoning": "一句话分析理由（200字以内）",
     "dimensions": {{
       "e_i": 50,
       "s_n": 50,

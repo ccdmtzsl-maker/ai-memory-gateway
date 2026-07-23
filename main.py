@@ -6217,12 +6217,12 @@ async def build_user_impression_materials_preview(character_id: str = "default",
     system_prompt = (await get_system_prompt()).strip()
     user_nickname = await get_runtime_user_nickname() or "用户"
     character_name = await get_runtime_character_name() or "澈"
+    current = await get_user_impression(character_id=character_id) if mode == "update" else None
     last_cn = (current or {}).get("last_consumed_node_id") if mode == "update" else None
     memory_material = await _collect_user_impression_memory_material(character_id, mode=mode, last_consumed_node_id=last_cn)
     di_limit = 7 if mode == "update" else 3
     daily_impressions_text = await format_daily_impressions_for_prompt(limit=di_limit)
     recent_messages = await _collect_user_impression_recent_messages(mode=mode, session_id=session_id)
-    current = await get_user_impression(character_id=character_id) if mode == "update" else None
 
     sections = []
     sections.append(f"【角色人设】\n{system_prompt if system_prompt else '（空）'}")

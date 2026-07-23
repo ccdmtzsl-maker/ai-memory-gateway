@@ -3913,7 +3913,6 @@ async def persist_assistant_tool_calls_sync(session_id: str, user_msg: str, assi
         await save_message(session_id, "user", clean_user_msg or "", model)
         await save_message(session_id, "assistant", assistant_msg or "", model, metadata=json.dumps(ast_meta_dict))
         print(f"🔧 同步存储: user + assistant(tool_calls) 已写入DB ids={tool_call_ids}")
-        invalidate_conversation_list_cache()
         return True
     except Exception as e:
         print(f"⚠️ 同步存储 assistant(tool_calls) 失败，将回退后台异步保存: {e}")

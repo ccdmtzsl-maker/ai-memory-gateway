@@ -427,6 +427,7 @@ async function generateDailyImpressionFromPage() {
         }
         _lastDailyRaw = rawText || '';
         _dailySelectedMonth = String(date || '').slice(0, 7);
+        _dailyImpressions = _dailyImpressions.filter(x => _dailyMonthKey(x) !== _dailySelectedMonth);
         if (msg) msg.innerHTML = '<div class="msg msg-success">✅ 已生成日印象（使用 ' + (data.messages_used || 0) + ' 条对话）</div>' + renderDailyRawBlock(_lastDailyRaw);
         await loadDailyImpressionsPage();
     } catch (e) {

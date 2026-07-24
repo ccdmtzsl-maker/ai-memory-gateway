@@ -5525,7 +5525,7 @@ async def generate_daily_impression_for_date(impression_date, start_hour: int = 
                 json={
                     "model": impression_model,
                     "messages": [{"role": "user", "content": prompt}],
-                    "max_tokens": 2500,
+                    "max_tokens": 9000,
                     "temperature": 0,
                 },
             )

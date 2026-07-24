@@ -360,7 +360,11 @@ async function saveDailyPageDetail() {
         });
         const data = await resp.json();
         if (data.error) throw new Error(data.error);
-        await loadDailyImpressionsPage();
+        if (data.impression && item) {
+            _dailyImpressions[_editingDailyIndex] = data.impression;
+            renderDailyMonthItems(_dailyMonthKey(data.impression));
+            showDailyPageDetail(_editingDailyIndex);
+        }
     } catch (e) {
         alert('保存失败：' + e.message);
     }
@@ -379,7 +383,14 @@ async function deleteDailyPageDetail(index) {
         if (data.error) throw new Error(data.error);
         const detail = document.getElementById('dailyPageDetail');
         if (detail) detail.style.display = 'none';
-        await loadDailyImpressionsPage();
+        const removedMonth = _dailyMonthKey(item);
+        _dailyImpressions.splice(index, 1);
+        const remaining = _dailyImpressions.filter(x => _dailyMonthKey(x) === removedMonth);
+        if (remaining.length) {
+            renderDailyMonthItems(removedMonth);
+        } else {
+            await loadDailyImpressionsPage();
+        }
     } catch (e) {
         alert('删除失败：' + e.message);
     }
@@ -427,9 +438,14 @@ async function generateDailyImpressionFromPage() {
         }
         _lastDailyRaw = rawText || '';
         _dailySelectedMonth = String(date || '').slice(0, 7);
-        _dailyImpressions = _dailyImpressions.filter(x => _dailyMonthKey(x) !== _dailySelectedMonth);
+        if (data.impression) {
+            const newDate = String(data.impression.date || date || '').slice(0, 10);
+            const idx = _dailyImpressions.findIndex(x => String(x.date || '').slice(0, 10) === newDate);
+            if (idx >= 0) _dailyImpressions[idx] = data.impression;
+            else _dailyImpressions.push(data.impression);
+        }
         if (msg) msg.innerHTML = '<div class="msg msg-success">✅ 已生成日印象（使用 ' + (data.messages_used || 0) + ' 条对话）</div>' + renderDailyRawBlock(_lastDailyRaw);
-        await loadDailyImpressionsPage();
+        renderDailyMonthItems(_dailySelectedMonth);
     } catch (e) {
         if (msg) msg.innerHTML = '<div class="msg msg-error">❌ ' + escHtml(e.message) + '</div>' + renderDailyRawBlock(e.raw || e.message || '');
     }

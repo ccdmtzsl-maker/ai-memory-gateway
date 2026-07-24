@@ -8,14 +8,13 @@
 
 ## ✨ 功能
 
-- **自定义人设** — system prompt 每次对话自动注入
+- **上游系统消息透传** — 直接使用客户端发来的 system prompt，网关不覆盖
 - **记忆宫殿** — 七房间架构，自动提取 / 事件盒打包 / 每日审视 / 向量搜索 / 导入导出
-- **日印象** — AI 对每天对话生成日记式总结，带标签和心情
+- **日印象** — AI 对每天对话生成日记式总结，带标签和心情，支持自定义提示词
 - **用户画像** — 自动生成并维护用户人格画像，支持增量更新（只看新增记忆，不全量重抽）
-- **分区缓存** — A/B 区轮转 + 摘要压缩，利用 prompt caching 大幅省 token
+- **分区缓存** — A/B 区轮转，利用 prompt caching 大幅省 token
 - **对话线管理** — 跨平台对话衔接，多对话线切换
 - **对话记录** — 浏览、搜索、批量管理，支持 session 合并
-- **Token 统计** — 自动记录 token 消耗，按 session 汇总
 - **全端点鉴权** — `GATEWAY_SECRET` 保护所有 API
 - **设置面板** — 网页端管理所有配置，热更新无需重启
 - **性能诊断** — 可选的 API 性能日志，设置页一键开关
@@ -28,7 +27,6 @@
 你的客户端（Kelivo / ChatBox / ...）
         ↓
    AI Memory Gateway（本项目）
-   ├── 注入 system prompt（人设）
    ├── 搜索相关记忆 → 注入上下文
    ├── 转发请求 → LLM API
    └── 后台提取新记忆 → 存入数据库
@@ -77,19 +75,12 @@
 
 ### 第三阶段：分区缓存（省 token 费）
 
-```
-[人设区]  system prompt，永远不变    ← 缓存命中
-[摘要区]  历史压缩摘要              ← 正常轮次命中
-[历史A区] 15轮原始消息              ← 正常轮次命中
-[历史B区] 当前周期消息              ← 通过lookback命中
-[当前输入] 时间+记忆+用户消息       ← 不缓存
-```
+A/B 区轮转管理对话上下文，利用 prompt caching 大幅降低 token 开销。每聊 N 轮自动轮转一次，旧消息区走缓存读取（0.1x 价格）。
 
 | 环境变量 | 说明 | 示例 |
 |---------|------|------|
 | `CACHE_PARTITION_ENABLED` | 分区缓存开关 | `true` |
 | `CACHE_PARTITION_X` | 轮转周期（轮数） | `15` |
-| `CACHE_SUMMARY_MODEL` | 摘要压缩模型 | `anthropic/claude-haiku-4.5` |
 | `PARTITION_SESSION_ID` | 固定 session ID | `my-thread` |
 | `CACHE_PARTITION_TRIGGER`（可选） | 轮转触发：`rounds` 或 `time` | `rounds` |
 | `CACHE_PARTITION_WINDOW`（可选） | 时间窗口（分钟） | `30` |
@@ -103,7 +94,6 @@ ai-memory-gateway/
 ├── main.py                    # 网关主程序
 ├── database.py                # 数据库操作（PostgreSQL）
 ├── memory_extractor.py        # AI 记忆提取
-├── system_prompt.txt          # AI 人设（自行编辑）
 ├── requirements.txt           # Python 依赖
 ├── Dockerfile                 # 容器配置
 ├── templates/
@@ -136,7 +126,7 @@ ai-memory-gateway/
 4. **后台提取** → 小模型从对话中提取关键信息
 5. **存入数据库** → 下次可检索
 
-> **向量搜索：** 默认 jieba 中文分词 + 关键词匹配。设置 `MEMORY_VECTOR_ENABLED=true` + `EMBEDDING_API_KEY` 启用语义搜索，四维加权排序。支持 pgvector 自动检测。
+> **向量搜索：** 默认 jieba 中文分词 + 关键词匹配。设置 `MEMORY_VECTOR_ENABLED=true` + `EMBEDDING_API_KEY` 启用语义搜索，关键词 + 语义相似度混合排序。支持 pgvector 自动检测。
 
 ## ❓ 常见问题
 
@@ -156,7 +146,7 @@ ai-memory-gateway/
   - 节点自动提取 + 事件盒打包 + 每日审视（记忆消化）
   - 手动创建/编辑/删除节点，事件盒压缩/解绑/撤销
   - 从对话历史批量提取记忆，支持预览后确认
-- **日印象** — AI 对每天对话生成日记式总结，带标签和心情
+- **日印象** — AI 对每天对话生成日记式总结，带标签和心情，支持自定义提示词
 - **用户画像** — 自动生成用户人格画像（价值观、行为模式、情绪特征等）
   - 增量更新：通过消费水位线只取新增记忆，不全量重抽
   - 待处理记忆数量显示，更新原则约束（允许替换旧印象）
@@ -188,7 +178,7 @@ ai-memory-gateway/
 
 ### v3.0（2026-05-01）
 
-- 分区缓存、对话线管理、对话记录管理、Token 统计、架构拆分
+- 分区缓存、对话线管理、对话记录管理、架构拆分
 
 ### v2.5（2026-03-06）
 

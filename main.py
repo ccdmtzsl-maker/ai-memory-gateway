@@ -6453,7 +6453,7 @@ async def call_user_impression_generator(materials: dict) -> dict:
             {"role": "user", "content": prompt},
         ],
         "temperature": 0.5,
-        "max_tokens": 8000,
+        "max_tokens": 20000,
         "stream": True,
     }
 

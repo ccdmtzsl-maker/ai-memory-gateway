@@ -9280,15 +9280,11 @@ async def api_conversations(page: int = 1, per_page: int = 20):
         return {"error": "记忆系统未启用"}
     page = max(1, int(page))
     per_page = max(1, min(int(per_page), 100))
-    cache_key = f"conv:list:{page}:{per_page}"
-    cached = _cache_get(cache_key)
-    if cached is not None:
-        return cached
     try:
         results, total = await get_conversations_paginated(page, per_page)
         total_pages = max(1, -(-total // per_page))  # 向上取整
         result = {"conversations": results, "total": total, "page": page, "per_page": per_page, "total_pages": total_pages}
-        return _cache_set(cache_key, result, ttl=900)
+        return result
     except Exception as e:
         return {"error": str(e)}
 

@@ -461,6 +461,9 @@ async def lifespan(app: FastAPI):
                     for key, val in db_cfg.items():
                         if not val:
                             continue
+                        # MEMORY_ENABLED 始终以环境变量为准，不接受 DB 覆盖
+                        if key == "MEMORY_ENABLED":
+                            continue
                         # 跳过被误存为打码值的 Key 字段
                         if key in ("API_KEY", "MEMORY_API_KEY", "EMBEDDING_API_KEY") and _is_masked(str(val)):
                             print(f"⚠️  跳过恢复 {key}：DB 中存储的是打码值，将使用环境变量")
@@ -10133,6 +10136,11 @@ async def save_settings(request: Request):
                     updated.append(f"API_KEY→***")
                 continue
 
+
+            # MEMORY_ENABLED 不允许从仪表盘修改，始终以环境变量为准
+            if key == "MEMORY_ENABLED":
+                skipped.append(key)
+                continue
 
             # --- 常规字段 ---
             await set_gateway_config(key, str(value))

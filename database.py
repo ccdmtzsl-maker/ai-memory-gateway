@@ -1220,30 +1220,44 @@ async def get_conversations_paginated(page: int = 1, per_page: int = 20):
     pool = await get_pool()
     async with pool.acquire() as conn:
         total_row = await conn.fetchrow("""
-            SELECT COUNT(*) as total FROM (
-                SELECT session_id FROM session_cache_state
-                UNION
-                SELECT DISTINCT session_id FROM conversations
-            ) all_sessions
+            SELECT
+                (SELECT COUNT(DISTINCT session_id) FROM conversations)
+                +
+                (SELECT COUNT(*) FROM session_cache_state scs
+                 WHERE NOT EXISTS (SELECT 1 FROM conversations c WHERE c.session_id = scs.session_id))
+            AS total
         """)
         total = total_row['total'] if total_row else 0
 
         rows = await conn.fetch("""
-            WITH all_sessions AS (
-                SELECT session_id FROM session_cache_state
-                UNION
-                SELECT DISTINCT session_id FROM conversations
+            WITH conv_sessions AS (
+                SELECT c.session_id,
+                       MIN(c.created_at) as first_time,
+                       MAX(c.created_at) as last_time,
+                       COUNT(c.id) as message_count
+                FROM conversations c
+                GROUP BY c.session_id
+            ),
+            empty_sessions AS (
+                SELECT scs.session_id,
+                       scs.updated_at as first_time,
+                       scs.updated_at as last_time,
+                       0 as message_count
+                FROM session_cache_state scs
+                WHERE NOT EXISTS (SELECT 1 FROM conversations c WHERE c.session_id = scs.session_id)
+            ),
+            all_sessions AS (
+                SELECT * FROM conv_sessions
+                UNION ALL
+                SELECT * FROM empty_sessions
             ),
             session_info AS (
                 SELECT s.session_id,
-                       COALESCE(MIN(c.created_at), scs.updated_at) as first_time,
-                       COALESCE(MAX(c.created_at), scs.updated_at) as last_time,
-                       COUNT(c.id) as message_count
+                       s.first_time,
+                       s.last_time,
+                       s.message_count
                 FROM all_sessions s
-                LEFT JOIN conversations c ON c.session_id = s.session_id
-                LEFT JOIN session_cache_state scs ON scs.session_id = s.session_id
-                GROUP BY s.session_id, scs.updated_at
-                ORDER BY last_time DESC
+                ORDER BY s.last_time DESC
                 LIMIT $1 OFFSET $2
             ),
             first_user AS (

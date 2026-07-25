@@ -1805,7 +1805,6 @@ async function clearSummary() {
 // ============================================
 
 let _settingsLoaded = false;
-let _modelList = [];
 
 // 所有需要读写的字段 key（开源版：EMBEDDING_API_KEY + EMBEDDING_BASE_URL）
 const _SETTINGS_FIELDS = {
@@ -1819,7 +1818,6 @@ const _SETTINGS_FIELDS = {
     text: ['systemPrompt', 'dailyImpressionPrompt', 'RESPONSE_TRANSFORM_RULES'],
 };
 
-const _MODEL_COMBOS = ['DEFAULT_MODEL', 'MEMORY_MODEL', 'CACHE_SUMMARY_MODEL'];
 
 // 触发模式联动：time模式才显示时间窗口字段
 function _togglePartitionWindow(trigger) {
@@ -1996,60 +1994,6 @@ async function testMemoryModel() {
         if (btn) { btn.disabled = false; btn.textContent = '测试记忆模型'; }
     }
 }
-
-function renderComboDropdown(fieldName, models) {
-    const dropdown = document.getElementById('dropdown-' + fieldName);
-    if (!dropdown) return;
-    dropdown.innerHTML = '';
-    models.forEach(m => {
-        const div = document.createElement('div');
-        div.className = 'combo-option';
-        div.textContent = m.name || m.id;
-        div.dataset.value = m.id;
-        div.addEventListener('click', () => {
-            document.getElementById('set-' + fieldName).value = m.id;
-            dropdown.classList.remove('open');
-        });
-        dropdown.appendChild(div);
-    });
-}
-
-function filterCombo(fieldName) {
-    const input = document.getElementById('set-' + fieldName);
-    const dropdown = document.getElementById('dropdown-' + fieldName);
-    if (!input || !dropdown) return;
-    const q = input.value.toLowerCase();
-    let visible = 0;
-    dropdown.querySelectorAll('.combo-option').forEach(opt => {
-        const match = !q || opt.textContent.toLowerCase().includes(q) || (opt.dataset.value || '').toLowerCase().includes(q);
-        opt.style.display = match ? '' : 'none';
-        if (match) visible++;
-    });
-    if (visible > 0 && q) dropdown.classList.add('open');
-}
-
-// 初始化 combo-box 交互
-document.addEventListener('DOMContentLoaded', () => {
-    _MODEL_COMBOS.forEach(fieldName => {
-        const input = document.getElementById('set-' + fieldName);
-        const dropdown = document.getElementById('dropdown-' + fieldName);
-        if (!input || !dropdown) return;
-
-        input.addEventListener('focus', () => { dropdown.classList.add('open'); });
-        input.addEventListener('input', () => { filterCombo(fieldName); });
-    });
-
-    // 点击外部关闭所有 combo
-    document.addEventListener('click', (e) => {
-        _MODEL_COMBOS.forEach(fieldName => {
-            const box = document.getElementById('combo-' + fieldName);
-            const dropdown = document.getElementById('dropdown-' + fieldName);
-            if (box && dropdown && !box.contains(e.target)) {
-                dropdown.classList.remove('open');
-            }
-        });
-    });
-});
 
 function updateSliderVal(key) {
     const el = document.getElementById('set-' + key);

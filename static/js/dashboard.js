@@ -1889,8 +1889,8 @@ async function loadSettings() {
 
         loadKeywordRulesEditor(s.KEYWORD_CONTEXT_RULES || '[]');
 
-        // 加载模型列表（首次）
-        if (!_settingsLoaded) loadModelList();
+        // 加载模型列表（首次，不阻塞设置页渲染）
+        if (!_settingsLoaded) loadModelList().catch(() => {});
         _settingsLoaded = true;
     } catch (e) {
         showSettingsMsg('error', '加载设置失败: ' + e.message);

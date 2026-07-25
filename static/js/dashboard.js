@@ -98,7 +98,6 @@ function switchSection(name) {
     }
     if (name === 'conversations') {
         loadConversationList(1);
-        loadConvStats();
     }
     if (name === 'threads') {
         loadThreads();
@@ -477,7 +476,6 @@ async function doConvImport() {
     if (failedBatches) msg += `，${failedBatches} 批失败`;
     resultEl.innerHTML = `<div class="msg msg-success">${msg}</div>`;
     
-    loadConvStats();
     loadConversationList(1);
     document.getElementById('convJsonFile').value = '';
     document.getElementById('convJsonInput').value = '';
@@ -515,6 +513,8 @@ async function loadConversationList(page = 1) {
         renderConvList(data.conversations);
         renderConvPagination(data.page, data.total_pages, data.total);
         document.getElementById('conv-list-count').textContent = `共 ${data.total} 个对话`;
+        const statsEl = document.getElementById('conv-export-stats');
+        if (statsEl) statsEl.textContent = '当前共有 ' + (data.total || 0) + ' 个对话';
     } catch(e) {
         setConvPlainMessage(container, '请求失败: ' + e.message, {style:'color:var(--error);padding:20px 0;'});
     }

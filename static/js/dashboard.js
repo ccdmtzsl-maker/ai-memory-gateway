@@ -378,18 +378,6 @@ let convCurrentPage = 1;
 let convIsSearchMode = false;
 let convSearchQuery = '';
 
-async function loadConvStats() {
-    const el = document.getElementById('conv-export-stats');
-    if (!el) return;
-    try {
-        const resp = await fetch('/api/conversations?page=1&per_page=1');
-        const data = await resp.json();
-        el.textContent = '当前共有 ' + (data.total || 0) + ' 个对话';
-    } catch(e) {
-        el.textContent = '无法加载统计';
-    }
-}
-
 async function exportConversations() {
     try {
         const resp = await fetch("/api/conversations/export");

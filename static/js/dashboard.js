@@ -1889,8 +1889,6 @@ async function loadSettings() {
 
         loadKeywordRulesEditor(s.KEYWORD_CONTEXT_RULES || '[]');
 
-        // 加载模型列表（首次，不阻塞设置页渲染）
-        if (!_settingsLoaded) loadModelList().catch(() => {});
         _settingsLoaded = true;
     } catch (e) {
         showSettingsMsg('error', '加载设置失败: ' + e.message);
@@ -1996,28 +1994,6 @@ async function testMemoryModel() {
         showSettingsMsg('error', '测试请求失败: ' + e.message);
     } finally {
         if (btn) { btn.disabled = false; btn.textContent = '测试记忆模型'; }
-    }
-}
-
-async function loadModelList() {
-    const hint = document.getElementById('model-count-hint');
-    if (hint) hint.textContent = '加载模型列表...';
-    try {
-        const resp = await fetch('/api/models');
-        const data = await resp.json();
-        _modelList = data.models || [];
-
-        _MODEL_COMBOS.forEach(fieldName => {
-            renderComboDropdown(fieldName, _modelList);
-        });
-
-        if (hint) {
-            hint.textContent = _modelList.length > 0
-                ? `共 ${_modelList.length} 个可用模型 (${data.provider || ''})`
-                : '无法获取模型列表，请手动输入';
-        }
-    } catch (e) {
-        if (hint) hint.textContent = '模型列表加载失败';
     }
 }
 

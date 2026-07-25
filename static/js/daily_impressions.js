@@ -193,7 +193,8 @@ function renderDailyMonthItems(monthKey) {
 
     const entries = _dailyImpressions
         .map((item, index) => ({item, index}))
-        .filter(x => _dailyMonthKey(x.item) === monthKey);
+        .filter(x => _dailyMonthKey(x.item) === monthKey)
+        .sort((a, b) => String(b.item.date || '').localeCompare(String(a.item.date || '')));
 
     if (!entries.length) {
         list.innerHTML = '<div class="card" style="grid-column:1/-1;padding:28px;text-align:center;color:var(--text-muted);">这个月份还没有日印象。</div>';

@@ -867,26 +867,6 @@ function createConvMessageElement(msg) {
     edit.className = 'msg-edit';
     edit.id = msgId ? `msg-edit-${msgId}` : '';
     edit.style.display = 'none';
-
-    const textarea = document.createElement('textarea');
-    textarea.id = msgId ? `msg-textarea-${msgId}` : '';
-    textarea.style.cssText = 'width:100%;min-height:180px;padding:10px 12px;border:1px solid var(--border);border-radius:8px;font-size:14px;line-height:1.7;resize:vertical;font-family:inherit;box-sizing:border-box;';
-    textarea.value = displayContent;
-    edit.appendChild(textarea);
-
-    const editActions = document.createElement('div');
-    editActions.style.cssText = 'margin-top:8px;display:flex;gap:8px;justify-content:flex-end;';
-    const cancelBtn = document.createElement('button');
-    cancelBtn.className = 'btn btn-sm';
-    cancelBtn.textContent = '取消';
-    cancelBtn.addEventListener('click', () => toggleEditMessage(msgId));
-    editActions.appendChild(cancelBtn);
-    const saveBtn = document.createElement('button');
-    saveBtn.className = 'btn btn-sm btn-primary';
-    saveBtn.textContent = '保存';
-    saveBtn.addEventListener('click', () => saveMessageEdit(msgId));
-    editActions.appendChild(saveBtn);
-    edit.appendChild(editActions);
     wrap.appendChild(edit);
 
     return wrap;
@@ -922,6 +902,28 @@ function toggleEditMessage(msgId) {
     const opening = editEl.style.display === 'none';
     
     if (opening) {
+        // 懒加载：首次打开时才创建 textarea 和按钮
+        if (!editEl.innerHTML) {
+            const textarea = document.createElement('textarea');
+            textarea.id = `msg-textarea-${msgId}`;
+            textarea.style.cssText = 'width:100%;min-height:180px;padding:10px 12px;border:1px solid var(--border);border-radius:8px;font-size:14px;line-height:1.7;resize:vertical;font-family:inherit;box-sizing:border-box;';
+            textarea.value = contentEl.textContent;
+            editEl.appendChild(textarea);
+
+            const editActions = document.createElement('div');
+            editActions.style.cssText = 'margin-top:8px;display:flex;gap:8px;justify-content:flex-end;';
+            const cancelBtn = document.createElement('button');
+            cancelBtn.className = 'btn btn-sm';
+            cancelBtn.textContent = '取消';
+            cancelBtn.addEventListener('click', () => toggleEditMessage(msgId));
+            editActions.appendChild(cancelBtn);
+            const saveBtn = document.createElement('button');
+            saveBtn.className = 'btn btn-sm btn-primary';
+            saveBtn.textContent = '保存';
+            saveBtn.addEventListener('click', () => saveMessageEdit(msgId));
+            editActions.appendChild(saveBtn);
+            editEl.appendChild(editActions);
+        }
         contentEl.style.display = 'none';
         editEl.style.display = 'block';
         setConvDetailEditScrollLock(true);

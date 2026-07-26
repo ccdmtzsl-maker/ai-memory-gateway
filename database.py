@@ -1017,73 +1017,63 @@ def _ui_to_string_list(value) -> list:
 
 
 def normalize_user_impression(raw):
-    """Python 版 UserImpression 兜底归一化。返回 dict；无有效内容时返回 None。"""
+    """v4.0 用户画像归一化。必填核心(summary/current_state) + 自选标签 + observed_changes。"""
     if not isinstance(raw, dict):
         return None
 
-    has_meaningful = any(raw.get(k) is not None for k in (
-        "value_map",
-        "behavior_profile",
-        "emotion_schema",
-        "personality_core",
-        "mbti_analysis",
-        "observed_changes",
-    ))
-    if not has_meaningful:
-        return None
+    # 必填核心
+    summary = _ui_to_string(raw.get("summary"))
+    current_state = _ui_to_string(raw.get("current_state"))
 
-    value_map = raw.get("value_map") if isinstance(raw.get("value_map"), dict) else {}
-    behavior_profile = raw.get("behavior_profile") if isinstance(raw.get("behavior_profile"), dict) else {}
-    emotion_schema = raw.get("emotion_schema") if isinstance(raw.get("emotion_schema"), dict) else {}
-    triggers = emotion_schema.get("triggers") if isinstance(emotion_schema.get("triggers"), dict) else {}
-    personality_core = raw.get("personality_core") if isinstance(raw.get("personality_core"), dict) else {}
-    mbti_source = raw.get("mbti_analysis") if isinstance(raw.get("mbti_analysis"), dict) else None
-    mbti_dims = mbti_source.get("dimensions") if isinstance(mbti_source, dict) and isinstance(mbti_source.get("dimensions"), dict) else {}
-
-    normalized = {
-        "version": _ui_to_number(raw.get("version"), 3.0),
-        "lastUpdated": _ui_to_number(raw.get("lastUpdated"), int(time.time() * 1000)),
-        "value_map": {
-            "likes": _ui_to_string_list(value_map.get("likes")),
-            "dislikes": _ui_to_string_list(value_map.get("dislikes")),
-            "core_values": _ui_to_string(value_map.get("core_values")),
-        },
-        "behavior_profile": {
-            "tone_style": _ui_to_string(behavior_profile.get("tone_style")),
-            "emotion_summary": _ui_to_string(behavior_profile.get("emotion_summary")),
-            "response_patterns": _ui_to_string(behavior_profile.get("response_patterns")),
-        },
-        "emotion_schema": {
-            "triggers": {
-                "positive": _ui_to_string_list(triggers.get("positive")),
-                "negative": _ui_to_string_list(triggers.get("negative")),
-            },
-            "comfort_zone": _ui_to_string(emotion_schema.get("comfort_zone")),
-            "stress_signals": _ui_to_string_list(emotion_schema.get("stress_signals")),
-        },
-        "personality_core": {
-            "observed_traits": _ui_to_string_list(personality_core.get("observed_traits")),
-            "interaction_style": _ui_to_string(personality_core.get("interaction_style")),
-            "summary": _ui_to_string(personality_core.get("summary")),
-        },
-        "observed_changes": _ui_to_string_list(raw.get("observed_changes")),
+    # 自选标签区，白名单过滤
+    TAG_WHITELIST = {
+        # A组 价值与喜恶
+        "core_values", "likes", "dislikes", "money_attitude", "aesthetic",
+        # B组 思维与能力
+        "decision_style", "knowledge_map", "thinking_pattern", "humor_style", "learning_style",
+        # C组 情绪与相处
+        "comfort_zone", "stress_signals", "emotional_triggers", "soothing_methods", "expression_habit",
+        # D组 生活与关注
+        "life_rhythm", "current_focus", "social_pattern", "attitude_to_me",
+        # 可选：兼容旧字段降级成标签
+        "mbti_sketch",
     }
 
-    if mbti_source:
-        normalized["mbti_analysis"] = {
-            "type": _ui_to_string(mbti_source.get("type")),
-            "reasoning": _ui_to_string(mbti_source.get("reasoning")),
-            "dimensions": {
-                "e_i": _ui_to_number(mbti_dims.get("e_i"), 50),
-                "s_n": _ui_to_number(mbti_dims.get("s_n"), 50),
-                "t_f": _ui_to_number(mbti_dims.get("t_f"), 50),
-                "j_p": _ui_to_number(mbti_dims.get("j_p"), 50),
-            },
-        }
+    raw_tags = raw.get("tags") if isinstance(raw.get("tags"), dict) else {}
+    tags_clean = {}
+    for k, v in raw_tags.items():
+        if k not in TAG_WHITELIST:
+            continue
+        # 值可以是字符串或列表
+        if isinstance(v, list):
+            arr = _ui_to_string_list(v)[:8]  # 列表最多8条
+            if arr:
+                tags_clean[k] = arr
+        else:
+            txt = _ui_to_string(v)
+            if txt:
+                tags_clean[k] = txt
+    
+    # 标签总数上限12
+    if len(tags_clean) > 12:
+        # 按key字母序排序后截取前12（简单策略；实际LLM应该按重要性排序了）
+        keys = sorted(tags_clean.keys())[:12]
+        tags_clean = {k: tags_clean[k] for k in keys}
 
-    return normalized
+    # 变化记录
+    observed_changes = _ui_to_string_list(raw.get("observed_changes"))[:8]
 
+    # 如果核心和标签都空，返回None
+    if not summary and not current_state and not tags_clean:
+        return None
 
+    return {
+        "version": 4.0,
+        "summary": summary,
+        "current_state": current_state,
+        "tags": tags_clean,
+        "observed_changes": observed_changes,
+    }
 def _serialize_user_impression_row(row):
     if not row:
         return None

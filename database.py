@@ -1025,7 +1025,7 @@ def normalize_user_impression(raw):
     summary = _ui_to_string(raw.get("summary"))
     current_state = _ui_to_string(raw.get("current_state"))
 
-    # 自选标签区，白名单过滤
+    # 自选标签区
     TAG_WHITELIST = {
         # A组 价值与喜恶
         "core_values", "likes", "dislikes", "money_attitude", "aesthetic",
@@ -1037,31 +1037,42 @@ def normalize_user_impression(raw):
         "life_rhythm", "current_focus", "social_pattern", "attitude_to_me",
         # 可选：兼容旧字段降级成标签
         "mbti_sketch",
+        # 白名单外内容的归集标签
+        "others",
     }
+
+    def _clean_value(v):
+        if isinstance(v, list):
+            return _ui_to_string_list(v)
+        return _ui_to_string(v)
 
     raw_tags = raw.get("tags") if isinstance(raw.get("tags"), dict) else {}
     tags_clean = {}
+    others = []
     for k, v in raw_tags.items():
-        if k not in TAG_WHITELIST:
+        cleaned = _clean_value(v)
+        if not cleaned:
             continue
-        # 值可以是字符串或列表
-        if isinstance(v, list):
-            arr = _ui_to_string_list(v)[:8]  # 列表最多8条
-            if arr:
-                tags_clean[k] = arr
+        if k in TAG_WHITELIST:
+            if k == "others":
+                # LLM 直接输出的 others：统一并入 others 列表
+                if isinstance(cleaned, list):
+                    others.extend(cleaned)
+                else:
+                    others.append(cleaned)
+            else:
+                tags_clean[k] = cleaned
         else:
-            txt = _ui_to_string(v)
-            if txt:
-                tags_clean[k] = txt
-    
-    # 标签总数上限12
-    if len(tags_clean) > 12:
-        # 按key字母序排序后截取前12（简单策略；实际LLM应该按重要性排序了）
-        keys = sorted(tags_clean.keys())[:12]
-        tags_clean = {k: tags_clean[k] for k in keys}
+            # 白名单外的标签内容归入"其他"
+            if isinstance(cleaned, list):
+                others.append(f"{k}: " + "; ".join(cleaned))
+            else:
+                others.append(f"{k}: {cleaned}")
+    if others:
+        tags_clean["others"] = others
 
     # 变化记录
-    observed_changes = _ui_to_string_list(raw.get("observed_changes"))[:8]
+    observed_changes = _ui_to_string_list(raw.get("observed_changes"))
 
     # 如果核心和标签都空，返回None
     if not summary and not current_state and not tags_clean:
@@ -1074,6 +1085,8 @@ def normalize_user_impression(raw):
         "tags": tags_clean,
         "observed_changes": observed_changes,
     }
+
+
 def _serialize_user_impression_row(row):
     if not row:
         return None

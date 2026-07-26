@@ -2232,13 +2232,16 @@ function renderUserImpressionObject(imp) {
     };
 
     let html = '<div style="position:relative;padding:14px 12px 16px 28px;border:1px solid rgba(148,163,184,.35);border-radius:20px;background:linear-gradient(180deg,rgba(255,247,250,.72),rgba(245,250,255,.58));overflow:hidden;">' +
-        '<div style="position:absolute;left:12px;top:18px;bottom:18px;width:2px;background:rgba(148,163,184,.38);"></div>';
+        '<div style="position:absolute;left:12px;top:18px;bottom:18px;width:2px;background:rgba(148,163,184,.38);"></div>' +
+        '<div style="position:absolute;left:6px;top:34px;width:14px;height:14px;border:2px solid rgba(148,163,184,.45);border-radius:50%;background:white;"></div>' +
+        '<div style="position:absolute;left:6px;top:92px;width:14px;height:14px;border:2px solid rgba(148,163,184,.45);border-radius:50%;background:white;"></div>' +
+        '<div style="position:absolute;left:6px;top:150px;width:14px;height:14px;border:2px solid rgba(148,163,184,.45);border-radius:50%;background:white;"></div>';
 
     // 核心印象卡片
-    html += '<div class="card" style="box-shadow:none;border:1px solid rgba(156,163,175,.34);padding:0;margin:0;overflow:hidden;background:linear-gradient(to bottom, rgba(255,255,255,.90), rgba(255,255,255,.90));border-radius:16px;">' +
+    html += '<div class="card" style="box-shadow:none;border:1px solid rgba(156,163,175,.34);padding:0;margin:0;overflow:hidden;background:linear-gradient(to bottom, rgba(255,255,255,.90), rgba(255,255,255,.90)),repeating-linear-gradient(to bottom, transparent 0, transparent 28px, rgba(148,163,184,.18) 29px);border-radius:16px;">' +
         '<div style="padding:12px 16px;border-bottom:1px solid rgba(156,163,175,.30);background:rgba(238,199,214,.32);display:flex;justify-content:space-between;gap:10px;align-items:center;">' +
         '<div style="font-size:13px;font-weight:900;letter-spacing:.08em;color:#5f6670;"><span style="background:rgba(238,199,214,.65);border-radius:999px;padding:2px 10px;">核心印象</span></div>' +
-        '<div style="font-size:11px;color:#8a9099;">v4.0 Mixed Schema</div>' +
+        '<div style="font-size:11px;color:#8a9099;">Private Reader Note</div>' +
         '</div>' +
         '<div style="padding:18px 18px 16px 18px;">';
     

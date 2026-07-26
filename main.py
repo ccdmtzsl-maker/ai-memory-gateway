@@ -456,8 +456,15 @@ async def lifespan(app: FastAPI):
                     for key, val in db_cfg.items():
                         if not val:
                             continue
-                        # MEMORY_ENABLED 始终以环境变量为准，不接受 DB 覆盖
+                        # MEMORY_ENABLED 始终以环境变量为准，不接受 DB 覆盖；并清理历史脏数据
                         if key == "MEMORY_ENABLED":
+                            try:
+                                _pool = await get_pool()
+                                async with _pool.acquire() as _conn:
+                                    await _conn.execute("DELETE FROM gateway_config WHERE key = \'MEMORY_ENABLED\'")
+                                print("\U0001f9f9 已清理 DB 中的 MEMORY_ENABLED 脏数据（以环境变量为准）")
+                            except Exception as _e:
+                                print(f"\u26a0\ufe0f  清理 MEMORY_ENABLED 脏数据失败: {_e}")
                             continue
                         # 跳过被误存为打码值的 Key 字段
                         if key in ("API_KEY", "MEMORY_API_KEY", "EMBEDDING_API_KEY") and _is_masked(str(val)):
@@ -9931,7 +9938,8 @@ async def get_settings():
         "CHAT_TEMPERATURE": db.get("CHAT_TEMPERATURE") or str(CHAT_TEMPERATURE),
 
             # 记忆系统
-            "MEMORY_ENABLED":          _parse_bool(db.get("MEMORY_ENABLED"), MEMORY_ENABLED),
+            # MEMORY_ENABLED 始终返回运行时值（环境变量），不读 DB（防脏数据导致开关显示错误）
+            "MEMORY_ENABLED":          MEMORY_ENABLED,
             "MEMORY_API_KEY":          _mask_key(memory_key_raw),
             "MEMORY_API_BASE_URL":     db.get("MEMORY_API_BASE_URL") or str(MEMORY_API_BASE_URL),
             "MEMORY_MODEL":            db.get("MEMORY_MODEL") or os.environ.get("MEMORY_MODEL", ""),

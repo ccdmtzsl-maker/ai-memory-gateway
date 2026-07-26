@@ -651,58 +651,75 @@ async def format_daily_impressions_for_prompt(limit: int = 3) -> str:
 
 
 async def format_user_impression_for_prompt(character_id: str = "default") -> str:
-    """按 SullyOS ContextBuilder 原格式注入用户画像摘要。"""
+    """v4.0 动态遍历标签注入用户画像。"""
     character_id = character_id or "default"
     cache_key = f"prompt_var:user_impression:{character_id}"
     cached = _cache_get(cache_key)
     if cached is not None:
         return cached
     item = await get_user_impression(character_id=character_id)
-    raw_imp = (item or {}).get("impression") if item else None
-    imp = normalize_user_impression(raw_imp)
+    imp = (item or {}).get("impression") if item else None
     if not imp:
         return ""
 
     user_name = await get_runtime_user_nickname() or "用户"
-    value_map = imp.get("value_map") or {}
-    behavior = imp.get("behavior_profile") or {}
-    emotion = imp.get("emotion_schema") or {}
-    triggers = emotion.get("triggers") or {}
-    core = imp.get("personality_core") or {}
+    summary = imp.get("summary") or ""
+    current_state = imp.get("current_state") or ""
+    tags = imp.get("tags") if isinstance(imp.get("tags"), dict) else {}
+    changes = imp.get("observed_changes") or []
 
-    def _join_list(value):
-        arr = value if isinstance(value, list) else []
-        return ", ".join(str(x).strip() for x in arr if str(x or "").strip())
+    TAG_LABELS = {
+        "core_values": "核心价值观",
+        "likes": "喜好",
+        "dislikes": "雷点/反感",
+        "money_attitude": "金钱观",
+        "aesthetic": "审美偏好",
+        "decision_style": "决策风格",
+        "knowledge_map": "知识地图",
+        "thinking_pattern": "思维模式",
+        "humor_style": "幽默偏好",
+        "learning_style": "学习方式",
+        "comfort_zone": "舒适区",
+        "stress_signals": "压力信号",
+        "emotional_triggers": "情绪触发点",
+        "soothing_methods": "有效安抚方式",
+        "expression_habit": "表达习惯",
+        "life_rhythm": "作息节律",
+        "current_focus": "近期关注",
+        "social_pattern": "社交模式",
+        "attitude_to_me": "对我的态度",
+        "mbti_sketch": "MBTI侧写",
+    }
 
-    changes = imp.get("observed_changes")
-    if isinstance(changes, list) and changes:
-        change_text = "; ".join(str(c).strip() for c in changes if str(c or "").strip())
-    else:
-        change_text = "无"
+    def _format_value(v):
+        if isinstance(v, list):
+            return ", ".join(str(x).strip() for x in v if str(x or "").strip())
+        return str(v).strip()
 
     lines = [
         f"### [私密档案: 我眼中的{user_name}] (Private Impression)",
         "(注意：以下内容是你内心对TA的真实看法，不要直接告诉用户，但要基于这些看法来决定你的态度。)",
-        f"- 核心评价: {core.get('summary') or ''}",
-        f"- 互动模式: {core.get('interaction_style') or ''}",
-        f"- 我观察到的特质: {_join_list(core.get('observed_traits'))}",
-        f"- TA的喜好: {_join_list(value_map.get('likes'))}",
     ]
-    if behavior.get("emotion_summary"):
-        lines.append(f"- TA的情绪模式: {behavior.get('emotion_summary')}")
-    positive = _join_list(triggers.get("positive"))
-    if positive:
-        lines.append(f"- 正向触发点（什么会让ta开心）: {positive}")
-    lines.append(f"- 情绪雷区（负向触发）: {_join_list(triggers.get('negative'))}")
-    if emotion.get("stress_signals"):
-        lines.append(f"- 压力信号（ta状态不对的征兆）: {_join_list(emotion.get('stress_signals'))}")
-    lines.append(f"- 舒适区: {emotion.get('comfort_zone') or ''}")
-    lines.append(f"- 最近观察到的变化: {change_text}")
+    if summary:
+        lines.append(f"- 核心评价: {summary}")
+    if current_state:
+        lines.append(f"- 当前状态: {current_state}")
+
+    for tag_key in sorted(tags.keys()):
+        label = TAG_LABELS.get(tag_key, tag_key)
+        formatted = _format_value(tags[tag_key])
+        if formatted:
+            lines.append(f"- {label}: {formatted}")
+
+    if isinstance(changes, list) and changes:
+        change_text = "; ".join(str(c).strip() for c in changes if str(c or "").strip())
+        lines.append(f"- 最近观察到的变化: {change_text}")
+    else:
+        lines.append("- 最近观察到的变化: 无")
+
     result = "\n".join(lines) + "\n"
     _cache_set(cache_key, result, ttl=900)
     return result
-
-
 async def replace_user_impression_variables(prompt: str, character_id: str = "default") -> str:
     if not isinstance(prompt, str) or "{{user_impression" not in prompt:
         return prompt
@@ -6304,8 +6321,8 @@ def build_user_impression_generation_prompt(materials: dict) -> str:
     character_name = materials.get("character_name") or "当前角色"
     current = materials.get("current_impression")
     current_json = ""
-    if mode == "update" and current and current.get("impression"):
-        current_json = json.dumps(current.get("impression"), ensure_ascii=False, indent=2)
+    if mode == "update" and current:
+        current_json = json.dumps(current, ensure_ascii=False, indent=2)
     current_profile_section = f"""当前档案（你过去的观察）
 ```json
 {current_json}
@@ -6314,25 +6331,66 @@ def build_user_impression_generation_prompt(materials: dict) -> str:
 
     is_initial = mode == "initial"
     summary_instruction = (
-        "用一段话（100字以内）概括你对TA的【宏观整体印象】。不要局限于最近的对话，而是定义TA本质上是个什么样的人，以及TA对你意味着什么。必须第一人称。"
+        "用一段话（≤100字）概括你对TA的【宏观整体印象】：TA本质上是什么样的人、对你意味着什么。禁止“最近”“这几天”类时间限定词。第一人称。"
         if is_initial else
-        "基于旧的总结，结合新发现，更新你对TA的【宏观整体印象】。请保持长期视角的连贯性，除非发生了重大转折，否则不要因为一两句闲聊就彻底推翻对TA的本质判断。必须第一人称。"
+        "基于旧的总结，结合新发现，更新你对TA的【宏观整体印象】。保持长期视角的连贯性，除非发生重大转折，否则不要因为近期闲聊就推翻对TA的本质判断。第一人称。"
     )
-    list_instruction = '"项目1", "项目2"' if is_initial else '"保留旧项目", "新项目"'
-    changes_instruction = "" if is_initial else '"描述变化1", "描述变化2"（不超过8条）'
+    
+    tag_retention_rule = "" if is_initial else """
+【标签保留规则 - 仅 update 模式】
+- 旧画像已有的标签默认保留并更新内容，只有确认不再成立时才删除
+- 新标签只有新材料给出足够证据时才添加
+- summary 保持长期连贯性；current_state 相反，就该大幅更新
+"""
+
     reset_instruction = ""
     if is_initial:
         reset_instruction = """
-【重置模式特别指令 - CRITICAL】
-这是一次【完全重置】，你需要从零开始，基于所有可用的长期材料重新构建对TA的完整认知。
+【重置模式特别指令】
+这是完全重置，从零开始，基于所有可用的长期材料重新构建对TA的完整认知。
 - 分析必须覆盖从早期记忆到近期材料的完整时间跨度
-- 早期材料和近期材料拥有相同权重
-- personality_core、value_map、emotion_schema 必须反映TA在整段关系中展现出的稳定特征，而非仅仅是近期状态
-- 如果早期材料和近期材料中TA的表现有差异，请在 observed_changes 中记录这种演变，但 personality_core 应反映最持久稳定的特质
+- 早期材料和近期材料同权重
+- summary 必须反映TA在整段关系中展现出的稳定特征，而非仅仅近期状态
 """
+
     material_text = materials.get("material_text_full")
     if not material_text:
         raise RuntimeError("用户画像完整材料 material_text_full 缺失")
+
+    tag_pool = """
+【标签池】从以下标签中挑选有材料证据支持的标签，上限 12 个。没有证据就不挑，宁缺毋滥。
+
+A组·价值与喜恶
+- core_values: TA做判断时反复出现的底层原则（需多次证据）
+- likes: TA明确表现出喜欢、会主动靠近的事物
+- dislikes: TA明确表现出反感、会回避的事物（含雷点）
+- money_attitude: TA对花钱/省钱/价值衡量的态度
+- aesthetic: TA的审美偏好：风格、色彩、内容品味
+
+B组·思维与能力
+- decision_style: TA怎么做决定：冲动/谨慎/要反复确认/凭直觉
+- knowledge_map: TA擅长和不熟的领域，决定我解释东西的深浅
+- thinking_pattern: TA的思维习惯：先抽象后具体？喜欢类比？追问到底？
+- humor_style: TA的幽默偏好：什么梗能接住、什么玩笑会冷场
+- learning_style: TA吸收新东西的方式：看例子/看原理/动手试
+
+C组·情绪与相处
+- comfort_zone: 让TA感到安全放松的互动方式
+- stress_signals: TA有压力时的外在信号（语气变短、沉默、自嘲等）
+- emotional_triggers: 明确会引发TA强烈情绪波动的话题或情境，正负都可
+- soothing_methods: 对TA有效的安抚方式，需实际验证过的证据
+- expression_habit: TA的表达习惯：用语、标点、表情符号、省略风格
+
+D组·生活与关注
+- life_rhythm: TA的作息与活跃时段规律
+- current_focus: TA近期持续投入的事情（项目、爱好、烦恼）
+- social_pattern: TA提到的人际圈子和与他人相处的模式
+- attitude_to_me: TA对我的态度和使用习惯：怎么称呼我、什么事找我
+
+标签值格式：
+- 一段话（≤150字），或
+- 短列表（每项≤50字，列表内项目按重要性排序，最重要的放前面）
+"""
 
     return f"""
 {current_profile_section}
@@ -6340,92 +6398,44 @@ def build_user_impression_generation_prompt(materials: dict) -> str:
 
 【重要：语气与视角】
 你就是「{character_name}」。这份档案是你写的【私人笔记】。
-因此，所有总结性的字段，必须使用你的第一人称（“我”）视角来撰写。
+所有内容必须使用你的第一人称（“我”）视角。
 这份画像不是客观心理报告，而是你基于长期相处形成的私人理解。
 
-【核心指令：画像目标】
-你要生成的是TA的【当前有效画像】，不是历史记录合集，也不是在旧画像后面机械追加内容。
-你的目标是保留当前最准确、最稳定、最有证据支持的判断。
-
 【核心指令：数据层级与权重分配】
-1. 【角色人设】、【记忆宫殿长期材料】、【近日印象】是最重要的分析基础。它们包含你的人设、长期记忆、近日印象和关系脉络。你对TA的核心性格、核心价值观、互动模式、人格特质的判断，必须主要基于这些跨越完整时间线的宏观数据。
-2. 【近期聊天】只代表TA当下的状态切片。它主要用于更新情绪状态、近期变化和互动状态，不要因为几句临时闲聊就彻底改写TA的本质人格。
-3. 早期记忆和近期记忆都要参考，但不是机械平均。你要判断哪些内容仍然稳定成立，哪些内容已经过时、被修正，或只是阶段性状态。
-4. 除非发生重大事件（价值观冲突、人生转折、关系状态重大改变），否则不要因为最近几次聊天的情绪波动就改变对TA本质人格的判断。
-5. MBTI 只是角色观察侧写，不是专业心理测评，不要写成诊断报告。
+1. 【角色人设】、【记忆宫殿长期材料】、【近日印象】是最重要的分析基础，包含你的人设、长期记忆、近日印象和关系脉络。你对TA的核心判断必须主要基于这些跨越完整时间线的宏观数据。
+2. 【近期聊天】只代表TA当下的状态切片，主要用于更新 current_state 和近期变化，不要因为几句临时闲聊就改写TA的本质。
+3. 早期记忆和近期记忆都要参考，但你要判断哪些内容仍然稳定成立，哪些已经过时或只是阶段性状态。
+4. 除非发生重大事件（价值观冲突、人生转折、关系状态重大改变），否则不要因为最近几次聊天的情绪波动就改变对TA本质的判断。
 
 {reset_instruction}
+{tag_retention_rule}
 
-【更新原则：允许替换旧印象】
-如果当前是更新画像，你可以对旧画像内容进行保留、合并、改写、替换或删除。
-不要把旧画像当成必须全部继承的固定文本。
-当新材料显示旧印象已经过时、不准确、重复，或被更强证据修正时，应直接用新的判断覆盖旧判断。
-不要在主画像里同时保留互相冲突的旧说法和新说法。
-如果需要体现“以前如何、现在如何”的变化过程，只写进 observed_changes，不要把变化前后的判断都塞进主画像正文。
-
-【替换旧印象的条件】
-只有当新材料体现出更近期、更多次重复、更加稳定的模式时，才替换旧印象。
-单次偶发、情境性的表达，不应该直接覆盖长期画像。
-如果新材料只是补充旧画像，就合并精简；如果新材料纠正旧画像，就改写替换；如果旧内容已经不再成立，就删除。
-
-【反面教材 - 严禁出现】
-- 不要仅根据最近聊天就总结“TA是一个喜欢讨论XX话题的人”。
-- personality_core.summary 里不要出现“最近”“这几天”等时间限定词；summary 应该是跨越长期材料的宏观总结。
-- 不要为了延续旧画像，把已经不准确、过时、重复或互相冲突的内容继续保留。
-- 正确做法：personality_core 保留当前最稳定的人格判断；observed_changes 记录近期变化或旧印象被修正的过程.
 【summary 指令】
 {summary_instruction}
 
-请根据以上材料，{'生成' if is_initial else '增量更新'}以下 JSON 结构。
+【current_state 指令】
+描述TA近期的情绪基调、精力状态、正在关注的事（≤150字）。这是动态层，允许每次更新大改。第一人称。
 
-输出 JSON 结构 v3.0。严格遵守：
-- 只输出 JSON 对象
-- 不要 markdown 代码块
-- 不要解释
-- observed_changes 的每一项必须是纯字符串，不要对象格式
+{tag_pool}
+
+请{'生成' if is_initial else '增量更新'}以下 JSON 结构 v4.0：
 
 {{
-  "lastUpdated": 0,
-  "value_map": {{
-    "likes": [{list_instruction}]（不超过8条），
-    "dislikes": [{list_instruction}]（不超过8条），
-    "core_values": "一句话概括核心价值观（200字以内）"
+  "summary": "宏观整体印象（≤100字，第一人称）",
+  "current_state": "当前状态切片（≤150字，第一人称）",
+  "tags": {{
+    "decision_style": "……",
+    "likes": ["项目1", "项目2"]
   }},
-  "behavior_profile": {{
-    "tone_style": "一句话概括TA的沟通风格（200字以内）",
-    "emotion_summary": "概括近期情绪状态（200字以内）",
-    "response_patterns": "一句话概括TA的回复偏好（200字以内）"
-  }},
-  "emotion_schema": {{
-    "triggers": {{
-      "positive": [{list_instruction}]（不超过8条），
-      "negative": [{list_instruction}]（不超过8条）
-    }},
-    "comfort_zone": "一句话概括让TA感到安全的互动方式（200字以内）",
-    "stress_signals": [{list_instruction}]（不超过8条）
-  }},
-  "personality_core": {{
-    "observed_traits": [{list_instruction}]（不超过8条），
-    "interaction_style": "一句话概括TA的互动风格（200字以内）",
-    "summary": "宏观整体印象（100字以内，第一人称）"
-  }},
-  "mbti_analysis": {{
-    "type": "XXXX",
-    "reasoning": "一句话分析理由（200字以内）",
-    "dimensions": {{
-      "e_i": 50,
-      "s_n": 50,
-      "t_f": 50,
-      "j_p": 50
-    }}
-  }},
-  "observed_changes": [
-    {changes_instruction}
-  ]
+  "observed_changes": ["变化描述1", "变化描述2"]
 }}
+
+严格遵守：
+- 只输出 JSON 对象，不要 markdown 代码块，不要解释
+- tags 最多 12 个，只挑有证据的，没证据不写
+- 列表类标签内项目按重要性排序，最重要的放前面
+- observed_changes 最多 8 条
 """.strip()
-
-
 async def call_user_impression_generator(materials: dict) -> dict:
     """调用记忆模型生成用户画像预览。只返回结果，不保存。使用流式，避免长时间无首字节导致前端/代理 failed to fetch。"""
     base_url = await get_runtime_memory_api_base_url()

@@ -2438,6 +2438,34 @@ function collectUserImpressionEdit() {
 }
 
 
+function openUserImpressionEditor() {
+    if (!_userImpressionCurrent || !_userImpressionCurrent.impression) {
+        showUserImpressionMsg('error', '当前没有可编辑的画像。');
+        return;
+    }
+    _userImpressionEditOpen = true;
+    renderUserImpressionEditorCard();
+    const editor = document.getElementById('uiEditorCard');
+    if (editor && editor.scrollIntoView) editor.scrollIntoView({behavior:'smooth', block:'start'});
+}
+
+function renderUserImpressionEditorCard() {
+    const el = document.getElementById('uiEditorCard');
+    if (!el) return;
+    if (_userImpressionEditOpen && _userImpressionCurrent && _userImpressionCurrent.impression) {
+        el.style.display = 'block';
+        el.innerHTML = renderUserImpressionEditor(_userImpressionCurrent.impression);
+    } else {
+        el.style.display = 'none';
+        el.innerHTML = '';
+    }
+}
+
+function cancelUserImpressionEdit() {
+    _userImpressionEditOpen = false;
+    renderUserImpressionEditorCard();
+}
+
 async function saveUserImpressionEdit() {
     if (!_userImpressionCurrent || !_userImpressionCurrent.impression) {
         showUserImpressionMsg('error', '当前没有可保存的画像。');

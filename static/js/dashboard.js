@@ -2228,6 +2228,7 @@ function renderUserImpressionObject(imp) {
         social_pattern: '社交模式',
         attitude_to_me: '对我的态度',
         mbti_sketch: 'MBTI侧写',
+        others: '其他',
     };
 
     let html = '<div style="position:relative;padding:14px 12px 16px 28px;border:1px solid rgba(148,163,184,.35);border-radius:20px;background:linear-gradient(180deg,rgba(255,247,250,.72),rgba(245,250,255,.58));overflow:hidden;">' +
@@ -2355,6 +2356,7 @@ function renderUserImpressionEditor(imp) {
         social_pattern: '社交模式',
         attitude_to_me: '对我的态度',
         mbti_sketch: 'MBTI侧写',
+        others: '其他',
     };
 
     let html = '<div id="uiFieldEditor" class="card" style="padding:18px;border:1px solid var(--primary);box-shadow:none;margin-top:14px;">';
@@ -2402,7 +2404,7 @@ function collectUserImpressionEdit() {
         'core_values', 'likes', 'dislikes', 'money_attitude', 'aesthetic',
         'decision_style', 'knowledge_map', 'thinking_pattern', 'humor_style', 'learning_style',
         'comfort_zone', 'stress_signals', 'emotional_triggers', 'soothing_methods', 'expression_habit',
-        'life_rhythm', 'current_focus', 'social_pattern', 'attitude_to_me', 'mbti_sketch'
+        'life_rhythm', 'current_focus', 'social_pattern', 'attitude_to_me', 'mbti_sketch', 'others'
     ];
 
     const tags = {};

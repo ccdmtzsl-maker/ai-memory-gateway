@@ -2200,73 +2200,87 @@ function uiTextBlock(title, text) {
 
 function renderUserImpressionObject(imp) {
     if (!imp) {
-        return '<div style="color:var(--text-muted);padding:10px;">尚未生成用户画像。可以点击“生成画像”先生成预览。</div>';
+        return '<div style="color:var(--text-muted);padding:10px;">尚未生成用户画像。可以点击"生成画像"先生成预览。</div>';
     }
-    const value = imp.value_map || {};
-    const behavior = imp.behavior_profile || {};
-    const emotion = imp.emotion_schema || {};
-    const triggers = emotion.triggers || {};
-    const core = imp.personality_core || {};
-    const mbti = imp.mbti_analysis || null;
-    const dims = (mbti && mbti.dimensions) || {};
+    const summary = imp.summary || '';
+    const currentState = imp.current_state || '';
+    const tags = imp.tags || {};
     const changes = imp.observed_changes || [];
-    let html = '<div style="position:relative;padding:14px 12px 16px 28px;border:1px solid rgba(148,163,184,.35);border-radius:20px;background:linear-gradient(180deg,rgba(255,247,250,.72),rgba(245,250,255,.58));overflow:hidden;">' +
-        '<div style="position:absolute;left:12px;top:18px;bottom:18px;width:2px;background:rgba(148,163,184,.38);"></div>' +
-        '<div style="position:absolute;left:6px;top:34px;width:14px;height:14px;border:2px solid rgba(148,163,184,.45);border-radius:50%;background:white;"></div>' +
-        '<div style="position:absolute;left:6px;top:92px;width:14px;height:14px;border:2px solid rgba(148,163,184,.45);border-radius:50%;background:white;"></div>' +
-        '<div style="position:absolute;left:6px;top:150px;width:14px;height:14px;border:2px solid rgba(148,163,184,.45);border-radius:50%;background:white;"></div>';
 
-    html += '<div class="card" style="box-shadow:none;border:1px solid rgba(156,163,175,.34);padding:0;margin:0;overflow:hidden;background:linear-gradient(to bottom, rgba(255,255,255,.90), rgba(255,255,255,.90)),repeating-linear-gradient(to bottom, transparent 0, transparent 28px, rgba(148,163,184,.18) 29px);border-radius:16px;">' +
+    const TAG_LABELS = {
+        core_values: '核心价值观',
+        likes: '喜好',
+        dislikes: '雷点/反感',
+        money_attitude: '金钱观',
+        aesthetic: '审美偏好',
+        decision_style: '决策风格',
+        knowledge_map: '知识地图',
+        thinking_pattern: '思维模式',
+        humor_style: '幽默偏好',
+        learning_style: '学习方式',
+        comfort_zone: '舒适区',
+        stress_signals: '压力信号',
+        emotional_triggers: '情绪触发点',
+        soothing_methods: '有效安抚方式',
+        expression_habit: '表达习惯',
+        life_rhythm: '作息节律',
+        current_focus: '近期关注',
+        social_pattern: '社交模式',
+        attitude_to_me: '对我的态度',
+        mbti_sketch: 'MBTI侧写',
+    };
+
+    let html = '<div style="position:relative;padding:14px 12px 16px 28px;border:1px solid rgba(148,163,184,.35);border-radius:20px;background:linear-gradient(180deg,rgba(255,247,250,.72),rgba(245,250,255,.58));overflow:hidden;">' +
+        '<div style="position:absolute;left:12px;top:18px;bottom:18px;width:2px;background:rgba(148,163,184,.38);"></div>';
+
+    // 核心印象卡片
+    html += '<div class="card" style="box-shadow:none;border:1px solid rgba(156,163,175,.34);padding:0;margin:0;overflow:hidden;background:linear-gradient(to bottom, rgba(255,255,255,.90), rgba(255,255,255,.90));border-radius:16px;">' +
         '<div style="padding:12px 16px;border-bottom:1px solid rgba(156,163,175,.30);background:rgba(238,199,214,.32);display:flex;justify-content:space-between;gap:10px;align-items:center;">' +
         '<div style="font-size:13px;font-weight:900;letter-spacing:.08em;color:#5f6670;"><span style="background:rgba(238,199,214,.65);border-radius:999px;padding:2px 10px;">核心印象</span></div>' +
-        '<div style="font-size:11px;color:#8a9099;">Private Reader Note</div>' +
+        '<div style="font-size:11px;color:#8a9099;">v4.0 Mixed Schema</div>' +
         '</div>' +
-        '<div style="padding:18px 18px 16px 18px;">' +
-        '<div style="font-size:16px;line-height:1.9;white-space:pre-wrap;color:#4f5660;font-family:Georgia,Times New Roman,serif;">' + uiEsc(core.summary || '暂无') + '</div>' +
-        '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;margin-top:16px;padding-top:14px;border-top:1px dashed rgba(148,163,184,.35);">' +
-        '<div style="background:rgba(191,211,232,.26);border:1px solid rgba(148,163,184,.18);border-radius:12px;padding:10px;"><div style="font-size:11px;color:#6b7280;font-weight:800;margin-bottom:4px;">互动模式</div><div style="font-size:13px;line-height:1.6;color:#4f5660;">' + uiEsc(core.interaction_style || '暂无') + '</div></div>' +
-        '<div style="background:rgba(238,199,214,.24);border:1px solid rgba(148,163,184,.18);border-radius:12px;padding:10px;"><div style="font-size:11px;color:#6b7280;font-weight:800;margin-bottom:4px;">语气感知</div><div style="font-size:13px;line-height:1.6;color:#4f5660;">' + uiEsc(behavior.tone_style || '暂无') + '</div></div>' +
-        '</div>' +
-        '</div></div>';
+        '<div style="padding:18px 18px 16px 18px;">';
+    
+    if (summary) {
+        html += '<div style="font-size:16px;line-height:1.9;white-space:pre-wrap;color:#4f5660;font-family:Georgia,Times New Roman,serif;margin-bottom:14px;">' + uiEsc(summary) + '</div>';
+    }
+    if (currentState) {
+        html += '<div style="padding:12px;background:rgba(191,211,232,.18);border-left:3px solid rgba(148,163,184,.45);border-radius:8px;margin-top:10px;">' +
+            '<div style="font-size:11px;color:#6b7280;font-weight:800;margin-bottom:4px;">当前状态</div>' +
+            '<div style="font-size:13px;line-height:1.6;color:#4f5660;white-space:pre-wrap;">' + uiEsc(currentState) + '</div>' +
+            '</div>';
+    }
+    html += '</div></div>';
 
-    html += uiNotebookCard(
-        '<div style="display:flex;justify-content:space-between;gap:8px;align-items:flex-start;margin-bottom:10px;">' +
-        uiNoteHeading('MBTI 侧写', 'blue') +
-        '<div style="font-size:22px;font-weight:900;color:var(--primary);">' + uiEsc((mbti && mbti.type) || 'XXXX') + '</div>' +
-        '</div>' +
-        '<div style="font-size:12px;color:var(--text-muted);line-height:1.6;margin-bottom:10px;white-space:pre-wrap;">' + uiEsc((mbti && mbti.reasoning) || '暂无') + '</div>' +
-        '<div style="font-size:12px;line-height:1.8;">E/I: ' + uiEsc(dims.e_i ?? 50) + ' · S/N: ' + uiEsc(dims.s_n ?? 50) + ' · T/F: ' + uiEsc(dims.t_f ?? 50) + ' · J/P: ' + uiEsc(dims.j_p ?? 50) + '</div>' +
-        '</div>', 'margin-top:14px;');
+    // 动态渲染标签
+    if (Object.keys(tags).length > 0) {
+        html += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px;margin-top:14px;">';
+        for (const key in tags) {
+            const label = TAG_LABELS[key] || key;
+            const value = tags[key];
+            let valueHtml = '';
+            if (Array.isArray(value)) {
+                valueHtml = uiListHtml(value);
+            } else {
+                valueHtml = '<div style="font-size:13px;line-height:1.6;color:#4f5660;white-space:pre-wrap;">' + uiEsc(value) + '</div>';
+            }
+            html += uiNotebookCard(
+                '<div style="font-size:12px;font-weight:800;margin-bottom:8px;color:#6b7280;">' + uiEsc(label) + '</div>' + valueHtml,
+                'margin:0;'
+            );
+        }
+        html += '</div>';
+    }
 
-    html += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:14px;margin-top:14px;">';
-    html += uiTextBlock('核心价值观', value.core_values);
-    html += uiTextBlock('情绪状态总结', behavior.emotion_summary);
-    html += uiTextBlock('回应模式', behavior.response_patterns);
-    html += uiTextBlock('舒适区', emotion.comfort_zone);
-    html += '</div>';
+    // 变化记录
+    if (changes.length > 0) {
+        html += uiNotebookCard(
+            uiNoteHeading('最近变化', 'gray') + uiListHtml(changes),
+            'margin-top:14px;'
+        );
+    }
 
-    html += uiNotebookCard(
-        uiNoteHeading('价值地图', 'pink') +
-        '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px;">' +
-        '<div><div style="font-size:12px;font-weight:800;margin-bottom:8px;">观察到的特质</div>' + uiListHtml(core.observed_traits) + '</div>' +
-        '<div><div style="font-size:12px;font-weight:800;margin-bottom:8px;">喜欢</div>' + uiListHtml(value.likes) + '</div>' +
-        '<div><div style="font-size:12px;font-weight:800;margin-bottom:8px;">讨厌/排斥</div>' + uiListHtml(value.dislikes) + '</div>' +
-        '</div></div>', 'margin-top:14px;');
-
-    html += uiNotebookCard(
-        uiNoteHeading('行为与情绪', 'blue') +
-        '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px;">' +
-        '<div><div style="font-size:12px;font-weight:800;margin-bottom:8px;">正向触发器</div>' + uiListHtml(triggers.positive) + '</div>' +
-        '<div><div style="font-size:12px;font-weight:800;margin-bottom:8px;">压力/雷区</div>' + uiListHtml(triggers.negative) + '</div>' +
-        '<div><div style="font-size:12px;font-weight:800;margin-bottom:8px;">压力信号</div>' + uiListHtml(emotion.stress_signals) + '</div>' +
-        '</div></div>', 'margin-top:14px;');
-
-    html += uiNotebookCard(
-        uiNoteHeading('最近变化', 'gray') +
-        uiListHtml(changes), 'margin-top:14px;'
-    );
-
-    html += '<div style="font-size:12px;color:var(--text-muted);margin-top:12px;">Version ' + uiEsc(imp.version || 3.0) + ' · lastUpdated ' + uiEsc(imp.lastUpdated || '') + '</div>';
+    html += '<div style="font-size:12px;color:var(--text-muted);margin-top:12px;">Version ' + uiEsc(imp.version || 4.0) + '</div>';
     html += '</div>';
     return html;
 }
@@ -2315,56 +2329,10 @@ function uiEditBlock(title, inner) {
 
 function renderUserImpressionEditor(imp) {
     imp = imp || {};
-    const value = imp.value_map || {};
-    const behavior = imp.behavior_profile || {};
-    const emotion = imp.emotion_schema || {};
-    const triggers = emotion.triggers || {};
-    const core = imp.personality_core || {};
-    const mbti = imp.mbti_analysis || {};
-    const dims = mbti.dimensions || {};
-
-    let html = '<div id="uiFieldEditor" class="card" style="padding:18px;border:1px solid var(--primary);box-shadow:none;margin-top:14px;">';
-    html += '<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:14px;">' +
-        '<div><div style="font-weight:900;">编辑画像字段</div><div style="font-size:12px;color:var(--text-muted);margin-top:2px;">数组字段一行一个。保存后会走后端 normalize 兜底。</div></div>' +
-        '<div style="display:flex;gap:8px;flex-wrap:wrap;"><button class="btn btn-primary" onclick="saveUserImpressionEdit()">保存编辑</button><button class="btn btn-secondary" onclick="cancelUserImpressionEdit()">取消</button></div>' +
-        '</div>';
-
-    html += '<div style="display:grid;gap:14px;">';
-    html += uiEditBlock('核心印象',
-        uiEditField('核心评价 / summary', 'uiEdit_summary', core.summary, true) +
-        uiEditField('互动模式 / interaction_style', 'uiEdit_interaction', core.interaction_style, true) +
-        uiEditField('观察到的特质（一行一个）', 'uiEdit_traits', uiArrToText(core.observed_traits), true)
-    );
-    html += uiEditBlock('价值地图',
-        uiEditField('喜欢（一行一个）', 'uiEdit_likes', uiArrToText(value.likes), true) +
-        uiEditField('讨厌/排斥（一行一个）', 'uiEdit_dislikes', uiArrToText(value.dislikes), true) +
-        uiEditField('核心价值观', 'uiEdit_core_values', value.core_values, true)
-    );
-    html += uiEditBlock('行为画像',
-        uiEditField('语气风格', 'uiEdit_tone', behavior.tone_style, true) +
-        uiEditField('情绪状态总结', 'uiEdit_emotion_summary', behavior.emotion_summary, true) +
-        uiEditField('回应模式', 'uiEdit_response_patterns', behavior.response_patterns, true)
-    );
-    html += uiEditBlock('情绪图谱',
-        uiEditField('正向触发器（一行一个）', 'uiEdit_positive', uiArrToText(triggers.positive), true) +
-        uiEditField('压力/雷区（一行一个）', 'uiEdit_negative', uiArrToText(triggers.negative), true) +
-        uiEditField('舒适区', 'uiEdit_comfort_zone', emotion.comfort_zone, true) +
-        uiEditField('压力信号（一行一个）', 'uiEdit_stress', uiArrToText(emotion.stress_signals), true)
-    );
-    html += uiEditBlock('MBTI 侧写',
-        uiEditField('类型', 'uiEdit_mbti_type', mbti.type || '', false) +
-        uiEditField('推断理由', 'uiEdit_mbti_reasoning', mbti.reasoning || '', true) +
-        uiEditField('E/I 数值 0-100', 'uiEdit_ei', dims.e_i ?? 50, false) +
-        uiEditField('S/N 数值 0-100', 'uiEdit_sn', dims.s_n ?? 50, false) +
-        uiEditField('T/F 数值 0-100', 'uiEdit_tf', dims.t_f ?? 50, false) +
-        uiEditField('J/P 数值 0-100', 'uiEdit_jp', dims.j_p ?? 50, false)
-    );
-    html += uiEditBlock('最近变化',
-        uiEditField('最近变化（一行一个）', 'uiEdit_changes', uiArrToText(imp.observed_changes), true)
-    );
-    html += '</div></div>';
-    return html;
-}
+    const summary = imp.summary || '';
+    const currentState = imp.current_state || '';
+    const tags = imp.tags || {};
+    const changes = imp.observed_changes || [];
 
 function openUserImpressionEditor() {
     if (!_userImpressionCurrent || !_userImpressionCurrent.impression) {
@@ -2394,47 +2362,28 @@ function cancelUserImpressionEdit() {
     renderUserImpressionEditorCard();
 }
 
-function collectUserImpressionEdit() {
-    const old = (_userImpressionCurrent && _userImpressionCurrent.impression) || {};
-    return {
-        version: parseFloat(old.version || 3.0) || 3.0,
-        lastUpdated: Date.now(),
-        value_map: {
-            likes: uiTextToArr('uiEdit_likes'),
-            dislikes: uiTextToArr('uiEdit_dislikes'),
-            core_values: uiEditValue('uiEdit_core_values'),
-        },
-        behavior_profile: {
-            tone_style: uiEditValue('uiEdit_tone'),
-            emotion_summary: uiEditValue('uiEdit_emotion_summary'),
-            response_patterns: uiEditValue('uiEdit_response_patterns'),
-        },
-        emotion_schema: {
-            triggers: {
-                positive: uiTextToArr('uiEdit_positive'),
-                negative: uiTextToArr('uiEdit_negative'),
-            },
-            comfort_zone: uiEditValue('uiEdit_comfort_zone'),
-            stress_signals: uiTextToArr('uiEdit_stress'),
-        },
-        personality_core: {
-            observed_traits: uiTextToArr('uiEdit_traits'),
-            interaction_style: uiEditValue('uiEdit_interaction'),
-            summary: uiEditValue('uiEdit_summary'),
-        },
-        mbti_analysis: {
-            type: uiEditValue('uiEdit_mbti_type'),
-            reasoning: uiEditValue('uiEdit_mbti_reasoning'),
-            dimensions: {
-                e_i: uiEditNum('uiEdit_ei', 50),
-                s_n: uiEditNum('uiEdit_sn', 50),
-                t_f: uiEditNum('uiEdit_tf', 50),
-                j_p: uiEditNum('uiEdit_jp', 50),
-            },
-        },
-        observed_changes: uiTextToArr('uiEdit_changes'),
+    const TAG_LABELS = {
+        core_values: '核心价值观',
+        likes: '喜好',
+        dislikes: '雷点/反感',
+        money_attitude: '金钱观',
+        aesthetic: '审美偏好',
+        decision_style: '决策风格',
+        knowledge_map: '知识地图',
+        thinking_pattern: '思维模式',
+        humor_style: '幽默偏好',
+        learning_style: '学习方式',
+        comfort_zone: '舒适区',
+        stress_signals: '压力信号',
+        emotional_triggers: '情绪触发点',
+        soothing_methods: '有效安抚方式',
+        expression_habit: '表达习惯',
+        life_rhythm: '作息节律',
+        current_focus: '近期关注',
+        social_pattern: '社交模式',
+        attitude_to_me: '对我的态度',
+        mbti_sketch: 'MBTI侧写',
     };
-}
 
 async function saveUserImpressionEdit() {
     if (!_userImpressionCurrent || !_userImpressionCurrent.impression) {

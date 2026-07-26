@@ -689,6 +689,7 @@ async def format_user_impression_for_prompt(character_id: str = "default") -> st
         "social_pattern": "社交模式",
         "attitude_to_me": "对我的态度",
         "mbti_sketch": "MBTI侧写",
+        "others": "其他",
     }
 
     def _format_value(v):
@@ -6358,7 +6359,8 @@ def build_user_impression_generation_prompt(materials: dict) -> str:
         raise RuntimeError("用户画像完整材料 material_text_full 缺失")
 
     tag_pool = """
-【标签池】从以下标签中挑选有材料证据支持的标签，上限 12 个。没有证据就不挑，宁缺毋滥。
+【标签池】从以下标签中挑选有材料证据支持的标签。没有证据就不挑，宁缺毋滥。
+如果有重要内容不属于任何标签，可以放进 others 标签（列表格式）。
 
 A组·价值与喜恶
 - core_values: TA做判断时反复出现的底层原则（需多次证据）
@@ -6432,9 +6434,8 @@ D组·生活与关注
 
 严格遵守：
 - 只输出 JSON 对象，不要 markdown 代码块，不要解释
-- tags 最多 12 个，只挑有证据的，没证据不写
+- tags 只挑有证据的，没证据不写
 - 列表类标签内项目按重要性排序，最重要的放前面
-- observed_changes 最多 8 条
 """.strip()
 async def call_user_impression_generator(materials: dict) -> dict:
     """调用记忆模型生成用户画像预览。只返回结果，不保存。使用流式，避免长时间无首字节导致前端/代理 failed to fetch。"""

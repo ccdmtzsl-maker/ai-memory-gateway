@@ -1022,8 +1022,8 @@ def normalize_user_impression(raw):
         return None
 
     # 必填核心
-    summary = _ui_to_string(raw.get("summary"))
-    current_state = _ui_to_string(raw.get("current_state"))
+    summary = _ui_to_string(raw.get("summary")).strip()
+    current_state = _ui_to_string(raw.get("current_state")).strip()
 
     # 自选标签区
     TAG_WHITELIST = {
@@ -1044,7 +1044,7 @@ def normalize_user_impression(raw):
     def _clean_value(v):
         if isinstance(v, list):
             return _ui_to_string_list(v)
-        return _ui_to_string(v)
+        return _ui_to_string(v).strip()
 
     raw_tags = raw.get("tags") if isinstance(raw.get("tags"), dict) else {}
     tags_clean = {}

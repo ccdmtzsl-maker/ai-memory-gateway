@@ -6340,6 +6340,7 @@ def build_user_impression_generation_prompt(materials: dict) -> str:
     tag_retention_rule = "" if is_initial else """
 【标签保留规则 - 仅 update 模式】
 - 旧画像已有的标签默认保留并更新内容，只有确认不再成立时才删除
+- 要删除某个旧标签时，必须在输出中显式给出该标签且值为空字符串 ""（完全不提=保留旧内容）
 - 新标签只有新材料给出足够证据时才添加
 - summary 保持长期连贯性；current_state 相反，就该大幅更新
 """
@@ -6618,6 +6619,16 @@ async def api_confirm_user_impression(request: Request):
         last_consumed_node_id = data.get("last_consumed_node_id") or None
         if not normalized:
             return JSONResponse({"status": "error", "error": "画像内容不完整"}, status_code=400)
+        if mode == "update":
+            # 标签保留兜底：旧画像有、新画像完全没提到的标签自动补回。
+            # LLM 想删除标签需在输出中显式给出空值（raw 中有 key 即视为删除意图，不补回）。
+            old_item = await get_user_impression(character_id=character_id)
+            old_imp = (old_item or {}).get("impression") or {}
+            old_tags = old_imp.get("tags") if isinstance(old_imp.get("tags"), dict) else {}
+            raw_tags = impression.get("tags") if isinstance(impression, dict) and isinstance(impression.get("tags"), dict) else {}
+            for k, v in old_tags.items():
+                if k not in normalized["tags"] and k not in raw_tags:
+                    normalized["tags"][k] = v
         saved = await upsert_user_impression(
             character_id=character_id,
             impression=normalized,

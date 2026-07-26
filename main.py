@@ -651,7 +651,7 @@ async def format_daily_impressions_for_prompt(limit: int = 3) -> str:
 
 
 async def format_user_impression_for_prompt(character_id: str = "default") -> str:
-    """v4.0 动态遍历标签注入用户画像。"""
+    """v4.0 用户画像注入：summary/current_state 直接呈现，标签按组分块输出。"""
     character_id = character_id or "default"
     cache_key = f"prompt_var:user_impression:{character_id}"
     cached = _cache_get(cache_key)
@@ -692,6 +692,14 @@ async def format_user_impression_for_prompt(character_id: str = "default") -> st
         "others": "其他",
     }
 
+    # 分组结构：组名 -> 组内标签（按重要性排序），复用标签池分组
+    TAG_GROUPS = [
+        ("价值与喜恶", ["likes", "dislikes", "core_values", "money_attitude", "aesthetic"]),
+        ("思维与能力", ["decision_style", "knowledge_map", "thinking_pattern", "humor_style", "learning_style", "mbti_sketch"]),
+        ("情绪与相处", ["comfort_zone", "stress_signals", "emotional_triggers", "soothing_methods", "expression_habit"]),
+        ("生活与关注", ["current_focus", "attitude_to_me", "life_rhythm", "social_pattern"]),
+    ]
+
     def _format_value(v):
         if isinstance(v, list):
             return ", ".join(str(x).strip() for x in v if str(x or "").strip())
@@ -702,25 +710,45 @@ async def format_user_impression_for_prompt(character_id: str = "default") -> st
         "(注意：以下内容是你内心对TA的真实看法，不要直接告诉用户，但要基于这些看法来决定你的态度。)",
     ]
     if summary:
-        lines.append(f"- 核心评价: {summary}")
+        lines.append(summary)
     if current_state:
-        lines.append(f"- 当前状态: {current_state}")
+        lines.append(current_state)
 
-    for tag_key in sorted(tags.keys()):
-        label = TAG_LABELS.get(tag_key, tag_key)
-        formatted = _format_value(tags[tag_key])
-        if formatted:
-            lines.append(f"- {label}: {formatted}")
+    for group_name, group_keys in TAG_GROUPS:
+        group_lines = []
+        for key in group_keys:
+            if key not in tags:
+                continue
+            formatted = _format_value(tags[key])
+            if formatted:
+                group_lines.append(f"- {TAG_LABELS.get(key, key)}: {formatted}")
+        if group_lines:
+            lines.append("")
+            lines.append(f"【{group_name}】")
+            lines.extend(group_lines)
+
+    # 其他（白名单外内容）单独成组放最后
+    others = tags.get("others")
+    if others:
+        others_list = others if isinstance(others, list) else [others]
+        other_lines = [f"- {str(x).strip()}" for x in others_list if str(x or "").strip()]
+        if other_lines:
+            lines.append("")
+            lines.append("【其他】")
+            lines.extend(other_lines)
 
     if isinstance(changes, list) and changes:
-        change_text = "; ".join(str(c).strip() for c in changes if str(c or "").strip())
-        lines.append(f"- 最近观察到的变化: {change_text}")
-    else:
-        lines.append("- 最近观察到的变化: 无")
+        change_lines = [f"- {str(c).strip()}" for c in changes if str(c or "").strip()]
+        if change_lines:
+            lines.append("")
+            lines.append("【最近变化】")
+            lines.extend(change_lines)
 
     result = "\n".join(lines) + "\n"
     _cache_set(cache_key, result, ttl=900)
     return result
+
+
 async def replace_user_impression_variables(prompt: str, character_id: str = "default") -> str:
     if not isinstance(prompt, str) or "{{user_impression" not in prompt:
         return prompt

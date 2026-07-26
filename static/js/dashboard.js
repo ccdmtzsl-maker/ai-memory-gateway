@@ -2334,34 +2334,6 @@ function renderUserImpressionEditor(imp) {
     const tags = imp.tags || {};
     const changes = imp.observed_changes || [];
 
-function openUserImpressionEditor() {
-    if (!_userImpressionCurrent || !_userImpressionCurrent.impression) {
-        showUserImpressionMsg('error', '当前没有可编辑的画像。');
-        return;
-    }
-    _userImpressionEditOpen = true;
-    renderUserImpressionEditorCard();
-    const editor = document.getElementById('uiEditorCard');
-    if (editor && editor.scrollIntoView) editor.scrollIntoView({behavior:'smooth', block:'start'});
-}
-
-function renderUserImpressionEditorCard() {
-    const el = document.getElementById('uiEditorCard');
-    if (!el) return;
-    if (_userImpressionEditOpen && _userImpressionCurrent && _userImpressionCurrent.impression) {
-        el.style.display = 'block';
-        el.innerHTML = renderUserImpressionEditor(_userImpressionCurrent.impression);
-    } else {
-        el.style.display = 'none';
-        el.innerHTML = '';
-    }
-}
-
-function cancelUserImpressionEdit() {
-    _userImpressionEditOpen = false;
-    renderUserImpressionEditorCard();
-}
-
     const TAG_LABELS = {
         core_values: '核心价值观',
         likes: '喜好',
@@ -2384,6 +2356,82 @@ function cancelUserImpressionEdit() {
         attitude_to_me: '对我的态度',
         mbti_sketch: 'MBTI侧写',
     };
+
+    let html = '<div id="uiFieldEditor" class="card" style="padding:18px;border:1px solid var(--primary);box-shadow:none;margin-top:14px;">';
+    html += '<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:14px;">' +
+        '<div><div style="font-weight:900;">编辑画像字段（v4.0）</div><div style="font-size:12px;color:var(--text-muted);margin-top:2px;">必填核心 + 自选标签。列表字段一行一个。</div></div>' +
+        '<div style="display:flex;gap:8px;flex-wrap:wrap;"><button class="btn btn-primary" onclick="saveUserImpressionEdit()">保存编辑</button><button class="btn btn-secondary" onclick="cancelUserImpressionEdit()">取消</button></div>' +
+        '</div>';
+
+    html += '<div style="display:grid;gap:14px;">';
+    
+    // 必填核心
+    html += uiEditBlock('必填核心',
+        uiEditField('核心评价 / summary', 'uiEdit_summary', summary, true) +
+        uiEditField('当前状态 / current_state', 'uiEdit_current_state', currentState, true)
+    );
+
+    // 自选标签区（显示已有标签 + 可添加新标签）
+    let tagFields = '';
+    const tagKeys = Object.keys(TAG_LABELS);
+    for (const key of tagKeys) {
+        const label = TAG_LABELS[key];
+        const value = tags[key];
+        let valueText = '';
+        if (Array.isArray(value)) {
+            valueText = value.join('\n');
+        } else if (value) {
+            valueText = String(value);
+        }
+        const isMulti = ['likes', 'dislikes', 'stress_signals'].includes(key);
+        tagFields += uiEditField(`${label} (${key})`, `uiEdit_tag_${key}`, valueText, isMulti);
+    }
+    html += uiEditBlock('标签区（最多12个，留空=不使用该标签）', tagFields);
+
+    // 变化记录
+    html += uiEditBlock('最近变化',
+        uiEditField('最近变化（一行一个）', 'uiEdit_changes', uiArrToText(changes), true)
+    );
+
+    html += '</div></div>';
+    return html;
+}
+
+function collectUserImpressionEdit() {
+    const TAG_KEYS = [
+        'core_values', 'likes', 'dislikes', 'money_attitude', 'aesthetic',
+        'decision_style', 'knowledge_map', 'thinking_pattern', 'humor_style', 'learning_style',
+        'comfort_zone', 'stress_signals', 'emotional_triggers', 'soothing_methods', 'expression_habit',
+        'life_rhythm', 'current_focus', 'social_pattern', 'attitude_to_me', 'mbti_sketch'
+    ];
+
+    const tags = {};
+    for (const key of TAG_KEYS) {
+        const el = document.getElementById(`uiEdit_tag_${key}`);
+        if (!el) continue;
+        const val = String(el.value || '').trim();
+        if (!val) continue;
+        
+        // 判断是列表还是文本（简单规则：如果有换行就当列表）
+        if (val.includes('\n')) {
+            const arr = val.split(/\n+/).map(x => x.trim()).filter(Boolean);
+            if (arr.length > 0) {
+                tags[key] = arr;
+            }
+        } else {
+            tags[key] = val;
+        }
+    }
+
+    return {
+        version: 4.0,
+        summary: uiEditValue('uiEdit_summary'),
+        current_state: uiEditValue('uiEdit_current_state'),
+        tags: tags,
+        observed_changes: uiTextToArr('uiEdit_changes'),
+    };
+}
+
 
 async function saveUserImpressionEdit() {
     if (!_userImpressionCurrent || !_userImpressionCurrent.impression) {

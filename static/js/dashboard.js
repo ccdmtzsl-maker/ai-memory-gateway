@@ -2388,7 +2388,7 @@ function renderUserImpressionEditor(imp) {
         } else if (value) {
             valueText = String(value);
         }
-        const isMulti = ['likes', 'dislikes', 'stress_signals'].includes(key);
+        const isMulti = ['likes', 'dislikes', 'stress_signals', 'others'].includes(key);
         tagFields += uiEditField(`${label} (${key})`, `uiEdit_tag_${key}`, valueText, isMulti);
     }
     html += uiEditBlock('标签区（最多12个，留空=不使用该标签）', tagFields);

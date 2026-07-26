@@ -6438,6 +6438,21 @@ D组·生活与关注
 - tags 只挑有证据的，没证据不写
 - 列表类标签内项目按重要性排序，最重要的放前面
 """.strip()
+def _merge_update_impression_tags(materials: dict, parsed: dict, normalized: dict) -> dict:
+    """update 模式标签保留兜底：旧画像有、LLM 原始输出完全没提到的标签自动补回。
+    LLM 显式输出空值（parsed 的 tags 中有该 key）视为删除意图，不补回。"""
+    if (materials.get("mode") or "initial") != "update" or not normalized:
+        return normalized
+    current = materials.get("current_impression") or {}
+    old_imp = current.get("impression") if isinstance(current.get("impression"), dict) else {}
+    old_tags = old_imp.get("tags") if isinstance(old_imp.get("tags"), dict) else {}
+    raw_tags = parsed.get("tags") if isinstance(parsed, dict) and isinstance(parsed.get("tags"), dict) else {}
+    for k, v in old_tags.items():
+        if k not in normalized["tags"] and k not in raw_tags:
+            normalized["tags"][k] = v
+    return normalized
+
+
 async def call_user_impression_generator(materials: dict) -> dict:
     """调用记忆模型生成用户画像预览。只返回结果，不保存。使用流式，避免长时间无首字节导致前端/代理 failed to fetch。"""
     base_url = await get_runtime_memory_api_base_url()
@@ -6492,7 +6507,7 @@ async def call_user_impression_generator(materials: dict) -> dict:
                 except Exception:
                     text = raw_text
                 parsed = safe_parse_user_impression_json_object(text)
-                normalized = normalize_user_impression(parsed)
+                normalized = _merge_update_impression_tags(materials, parsed, normalize_user_impression(parsed))
                 if not normalized:
                     raise RuntimeError("画像生成结果不完整或不是有效 JSON 对象")
                 return {
@@ -6558,7 +6573,7 @@ async def call_user_impression_generator(materials: dict) -> dict:
         text = "\n".join(raw_events)
 
     parsed = safe_parse_user_impression_json_object(text)
-    normalized = normalize_user_impression(parsed)
+    normalized = _merge_update_impression_tags(materials, parsed, normalize_user_impression(parsed))
     if not normalized:
         raise RuntimeError("画像生成结果不完整或不是有效 JSON 对象")
     return {
@@ -6619,16 +6634,6 @@ async def api_confirm_user_impression(request: Request):
         last_consumed_node_id = data.get("last_consumed_node_id") or None
         if not normalized:
             return JSONResponse({"status": "error", "error": "画像内容不完整"}, status_code=400)
-        if mode == "update":
-            # 标签保留兜底：旧画像有、新画像完全没提到的标签自动补回。
-            # LLM 想删除标签需在输出中显式给出空值（raw 中有 key 即视为删除意图，不补回）。
-            old_item = await get_user_impression(character_id=character_id)
-            old_imp = (old_item or {}).get("impression") or {}
-            old_tags = old_imp.get("tags") if isinstance(old_imp.get("tags"), dict) else {}
-            raw_tags = impression.get("tags") if isinstance(impression, dict) and isinstance(impression.get("tags"), dict) else {}
-            for k, v in old_tags.items():
-                if k not in normalized["tags"] and k not in raw_tags:
-                    normalized["tags"][k] = v
         saved = await upsert_user_impression(
             character_id=character_id,
             impression=normalized,

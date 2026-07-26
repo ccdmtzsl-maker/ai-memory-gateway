@@ -6321,8 +6321,8 @@ def build_user_impression_generation_prompt(materials: dict) -> str:
     character_name = materials.get("character_name") or "当前角色"
     current = materials.get("current_impression")
     current_json = ""
-    if mode == "update" and current:
-        current_json = json.dumps(current, ensure_ascii=False, indent=2)
+    if mode == "update" and current and current.get("impression"):
+        current_json = json.dumps(current.get("impression"), ensure_ascii=False, indent=2)
     current_profile_section = f"""当前档案（你过去的观察）
 ```json
 {current_json}

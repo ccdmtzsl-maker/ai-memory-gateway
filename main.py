@@ -4240,7 +4240,7 @@ async def build_user_log_content(user_msg: str, original_messages: list, session
 
     返回 (content_to_store, has_image)。
     - 无图或归档未启用：返回清理后的纯文本（与原行为一致）
-    - 有图且归档成功：返回 JSON 字符串（text 块 + image_ref 块）
+    - 有图且归档成功：返回 JSON 字符串，text 与 image_ref 保持原始顺序
     """
     clean_text = clean_user_message_for_log(user_msg, history) if user_msg else user_msg
 
@@ -4265,12 +4265,31 @@ async def build_user_log_content(user_msg: str, original_messages: list, session
     if not count:
         return clean_text, False
 
+    # 保持原始顺序：按块遍历，text 块沿用清洗结果，image_ref 留在原位。
+    text_indexes = [
+        i for i, item in enumerate(archived_items)
+        if isinstance(item, dict) and item.get("type") == "text" and (item.get("text") or "").strip()
+    ]
+
     stored_items = []
-    if clean_text:
-        stored_items.append({"type": "text", "text": clean_text})
-    for item in archived_items:
-        if isinstance(item, dict) and item.get("type") == "image_ref":
+    for idx, item in enumerate(archived_items):
+        if not isinstance(item, dict):
+            continue
+        itype = item.get("type")
+        if itype == "image_ref":
             stored_items.append(item)
+        elif itype == "text":
+            if text_indexes and idx == text_indexes[0]:
+                # 第一个文字块承载清洗后的完整文本（含时间戳等前缀处理）
+                if clean_text:
+                    stored_items.append({"type": "text", "text": clean_text})
+            elif idx in text_indexes:
+                # 其余文字块原样保留，维持穿插顺序
+                stored_items.append({"type": "text", "text": item.get("text", "")})
+
+    # 原始 content 里没有任何文字块，但清洗结果有文本时，补在最前面
+    if clean_text and not any(b.get("type") == "text" for b in stored_items):
+        stored_items.insert(0, {"type": "text", "text": clean_text})
 
     if not stored_items:
         return clean_text, False
@@ -4372,13 +4391,12 @@ async def process_memories_background(session_id: str, user_msg: str, assistant_
                 await save_message(session_id, "assistant", assistant_msg or "", model, metadata=assistant_meta)
                 print(f"🔧 存储: user + assistant (含{len(assistant_tool_calls)}个tool_calls)" + (" (含reasoning)" if assistant_reasoning else ""))
             else:
-                # 纯文字对话：re-roll检测 + 存user + assistant
-                # 含图消息的 content 是 JSON，不参与 re-roll 文本匹配，直接走正常保存
-                updated = False
-                if not _user_has_image:
-                    updated = await update_last_assistant_if_same_user(
-                        session_id, clean_user_msg, assistant_msg, model, metadata=assistant_meta
-                    )
+                # re-roll检测 + 存user + assistant
+                # 含图消息的 content 是 JSON 字符串；同一条消息重发时 clean_text 与
+                # image_ref(sha256去重后URL相同) 都一致，序列化结果稳定，可直接参与文本比对。
+                updated = await update_last_assistant_if_same_user(
+                    session_id, clean_user_msg, assistant_msg, model, metadata=assistant_meta
+                )
                 if updated:
                     print(f"🔄 检测到re-roll，已覆盖最后一条assistant回复")
                 else:

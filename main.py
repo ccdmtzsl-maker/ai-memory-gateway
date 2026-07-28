@@ -1011,7 +1011,7 @@ def _memory_palace_parse_args(arg: str):
 def _memory_palace_message_text(msg: dict) -> str:
     content = msg.get("content", "") if isinstance(msg, dict) else ""
     if isinstance(content, str):
-        return content
+        return normalize_stored_content_for_text(content)
     if isinstance(content, list):
         return " ".join(
             item.get("text", "") for item in content
@@ -3309,7 +3309,9 @@ async def _extract_memory_palace_from_partition_messages_locked(messages: list, 
             continue
         content = msg.get("content")
         if isinstance(content, list):
-            content = "\n".join(str(x.get("text", "")) for x in content if isinstance(x, dict) and x.get("type") == "text")
+            content = content_to_text_with_image_placeholder(content)
+        else:
+            content = normalize_stored_content_for_text(content)
         content = str(content or "").strip()
         if content:
             rows.append({"id": mid, "session_id": session_id, "role": msg.get("role"), "content": content, "created_at": msg.get("created_at")})
@@ -5424,6 +5426,27 @@ async def api_image_archive_status():
         "public_url": R2_PUBLIC_URL,
         "bucket": R2_BUCKET,
     }
+
+
+def normalize_stored_content_for_text(content):
+    """把 DB 里存的 content 还原成纯文本；含 image_ref 的 JSON 转成占位符。
+
+    用于记忆提取、查询构建等只需要文本的场景，避免 JSON 结构污染。
+    """
+    if not isinstance(content, str):
+        return content
+    s = content.strip()
+    if not (s.startswith("[") and s.endswith("]")):
+        return content
+    if "image_ref" not in s:
+        return content
+    try:
+        blocks = json.loads(s)
+    except Exception:
+        return content
+    if not isinstance(blocks, list):
+        return content
+    return content_to_text_with_image_placeholder(blocks) or content
 
 
 # ============================================================

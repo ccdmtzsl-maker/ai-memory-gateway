@@ -3735,6 +3735,8 @@ async def build_partitioned_messages(
             session_id, summary_parts, cumulative_a_start_round, retained_tool_chains,
             CACHE_PARTITION_KEEP_A_TOOLS, evicted_through_message_id=evicted_through_candidate,
         )
+        if evicted_through_candidate > 0:
+            asyncio.create_task(release_images_outside_cache(session_id, evicted_through_candidate, "主请求轮转"))
         add_dashboard_log("info", f"🔧 A区use_package保留[处理前]: 已有={_retained_package_names(retained_audit_before or retained_tool_chains)}, 本次捕获={_retained_package_names(retained_audit_captured)}", category="chat", session_id=session_id)
         add_dashboard_log("info", f"🔧 A区use_package保留[处理后]: 最终={_retained_package_names(retained_tool_chains)}（按包名仅留最新）", category="chat", session_id=session_id)
         print(f"🔄 轮转完成(共{rotation_count}次): 摘要已架空, A区{len(a_msgs)}条, B区{len(b_msgs)}条")
@@ -4154,6 +4156,8 @@ async def _run_partition_auto_extract_after_response_locked(session_id: str, cha
                 session_id, summary_parts, cumulative_a_start_round, retained_tool_chains,
                 CACHE_PARTITION_KEEP_A_TOOLS, evicted_through_message_id=boundary_candidate,
             )
+            if boundary_candidate > 0:
+                asyncio.create_task(release_images_outside_cache(session_id, boundary_candidate, "回复后轮转"))
             boundary_id = boundary_candidate
             add_dashboard_log("info", f"🔧 A区use_package保留[处理前]: 已有={_retained_package_names(retained_audit_before or retained_tool_chains)}, 本次捕获={_retained_package_names(retained_audit_captured)}", category="chat", session_id=session_id)
             add_dashboard_log("info", f"🔧 A区use_package保留[处理后]: 最终={_retained_package_names(retained_tool_chains)}（按包名仅留最新）", category="chat", session_id=session_id)
@@ -5575,6 +5579,137 @@ async def release_images_for_messages(rows, reason: str = "") -> int:
                 deleted += 1
     if deleted:
         print(f"🗑️ 图片清理完成({reason}): 删除 {deleted} 个 R2 对象，涉及 {len(targets)} 条消息")
+    return deleted
+
+
+async def release_images_outside_cache(session_id: str, boundary_id: int, reason: str = "轮转") -> int:
+    """清理已离开缓存区(AB区)的消息里的图片：剔除引用 + 删除 R2 文件。"""
+    if not image_archive_active() or not session_id or boundary_id <= 0:
+        return 0
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT id, content FROM conversations
+                WHERE session_id = $1 AND id <= $2
+                  AND content LIKE '%image_ref%'
+                ORDER BY id
+                """,
+                session_id, int(boundary_id),
+            )
+    except Exception as e:
+        print(f"⚠️ 查询缓存区外图片消息失败 session={session_id}: {e}")
+        return 0
+    if not rows:
+        return 0
+    payload = [{"id": r["id"], "content": r["content"]} for r in rows]
+    return await release_images_for_messages(payload, reason=f"{reason}/离开缓存区")
+
+
+async def release_images_for_session(session_id: str, reason: str = "删除会话") -> int:
+    """会话被删除前，清掉该会话所有图片文件（DB 行随后由调用方删除）。"""
+    if not image_archive_active() or not session_id:
+        return 0
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT id, content FROM conversations WHERE session_id = $1 AND content LIKE '%image_ref%'",
+                session_id,
+            )
+    except Exception as e:
+        print(f"⚠️ 查询会话图片失败 session={session_id}: {e}")
+        return 0
+    if not rows:
+        return 0
+    ids = [int(r["id"]) for r in rows]
+    deleted = 0
+    for r in rows:
+        for url in extract_image_refs_from_stored_content(r["content"]):
+            try:
+                others = await count_other_references(url, exclude_message_ids=ids)
+            except Exception as e:
+                print(f"⚠️ 引用计数失败，跳过 {url}: {e}")
+                continue
+            if others > 0:
+                print(f"↩️ 图片仍被 {others} 条消息引用，保留: {url}")
+                continue
+            if await delete_image_from_r2(url):
+                deleted += 1
+    if deleted:
+        print(f"🗑️ 图片清理完成({reason}): 删除 {deleted} 个 R2 对象 session={session_id}")
+    return deleted
+
+
+async def release_images_for_message_id(message_id: int, reason: str = "删除消息") -> int:
+    """单条消息被删除/编辑前，清掉它独占的图片文件。"""
+    if not image_archive_active() or not message_id:
+        return 0
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT id, content FROM conversations WHERE id = $1", int(message_id)
+            )
+    except Exception as e:
+        print(f"⚠️ 查询消息图片失败 id={message_id}: {e}")
+        return 0
+    if not row:
+        return 0
+    urls = extract_image_refs_from_stored_content(row["content"])
+    if not urls:
+        return 0
+    deleted = 0
+    for url in urls:
+        try:
+            others = await count_other_references(url, exclude_message_ids=[int(message_id)])
+        except Exception as e:
+            print(f"⚠️ 引用计数失败，跳过 {url}: {e}")
+            continue
+        if others > 0:
+            print(f"↩️ 图片仍被 {others} 条消息引用，保留: {url}")
+            continue
+        if await delete_image_from_r2(url):
+            deleted += 1
+    if deleted:
+        print(f"🗑️ 图片清理完成({reason}): 删除 {deleted} 个 R2 对象 msg={message_id}")
+    return deleted
+
+
+async def release_images_removed_by_edit(message_id: int, new_content: str) -> int:
+    """编辑消息时，删除那些在新内容里已不再引用的图片。"""
+    if not image_archive_active() or not message_id:
+        return 0
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT content FROM conversations WHERE id = $1", int(message_id)
+            )
+    except Exception as e:
+        print(f"⚠️ 编辑前读取消息失败 id={message_id}: {e}")
+        return 0
+    if not row:
+        return 0
+    before = set(extract_image_refs_from_stored_content(row["content"]))
+    after = set(extract_image_refs_from_stored_content(new_content))
+    gone = before - after
+    if not gone:
+        return 0
+    deleted = 0
+    for url in gone:
+        try:
+            others = await count_other_references(url, exclude_message_ids=[int(message_id)])
+        except Exception as e:
+            print(f"⚠️ 引用计数失败，跳过 {url}: {e}")
+            continue
+        if others > 0:
+            continue
+        if await delete_image_from_r2(url):
+            deleted += 1
+    if deleted:
+        print(f"🗑️ 编辑移除图片: 删除 {deleted} 个 R2 对象 msg={message_id}")
     return deleted
 
 
@@ -9805,6 +9940,7 @@ async def api_delete_conversation(session_id: str):
     if not MEMORY_ENABLED:
         return {"error": "记忆系统未启用"}
     try:
+        await release_images_for_session(session_id)
         await delete_conversation(session_id)
         return {"status": "ok"}
     except Exception as e:
@@ -9819,6 +9955,8 @@ async def api_batch_delete(request: Request):
         body = await request.json()
         ids = body.get("session_ids", [])
         if ids:
+            for _sid in ids:
+                await release_images_for_session(_sid, reason="批量删除会话")
             await batch_delete_conversations(ids)
             return {"status": "ok", "deleted": len(ids)}
     except Exception as e:
@@ -9865,6 +10003,8 @@ async def api_update_message(message_id: int, request: Request):
         content = body.get("content", "").strip()
         if not content:
             return {"error": "内容不能为空"}
+        if image_archive_active():
+            await release_images_removed_by_edit(message_id, content)
         updated = await update_message_content(message_id, content)
         if updated == 0:
             return {"error": "消息不存在"}
@@ -9874,6 +10014,7 @@ async def api_update_message(message_id: int, request: Request):
 
 
 async def _delete_message_by_id(message_id: int):
+    await release_images_for_message_id(message_id)
     pool = await get_pool()
     async with pool.acquire() as conn:
         result = await conn.execute("DELETE FROM conversations WHERE id = $1", message_id)

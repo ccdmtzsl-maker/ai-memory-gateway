@@ -921,6 +921,7 @@ function createConvMessageElement(msg) {
     content.style.cssText = 'white-space:pre-wrap;word-break:break-word;font-size:14px;line-height:1.6;';
     const _blocks = parseMessageContentBlocks(displayContent);
     if (_blocks) {
+        content.dataset.rawJson = displayContent;
         renderMessageBlocksInto(content, _blocks);
     } else {
         content.textContent = displayContent;
@@ -971,7 +972,17 @@ function toggleEditMessage(msgId) {
             const textarea = document.createElement('textarea');
             textarea.id = `msg-textarea-${msgId}`;
             textarea.style.cssText = 'width:100%;min-height:180px;padding:10px 12px;border:1px solid var(--border);border-radius:8px;font-size:14px;line-height:1.7;resize:vertical;font-family:inherit;box-sizing:border-box;';
-            textarea.value = contentEl.textContent;
+            if (contentEl.dataset.rawJson) {
+                let _txt = "";
+                try {
+                    const _bs = JSON.parse(contentEl.dataset.rawJson);
+                    const _tb = _bs.find(b => b && b.type === "text");
+                    _txt = (_tb && _tb.text) || "";
+                } catch (e) {}
+                textarea.value = _txt;
+            } else {
+                textarea.value = contentEl.textContent;
+            }
             editEl.appendChild(textarea);
 
             const editActions = document.createElement('div');
@@ -1002,8 +1013,17 @@ function toggleEditMessage(msgId) {
 
 async function saveMessageEdit(msgId) {
     const textarea = document.getElementById('msg-textarea-' + msgId);
-    const newContent = textarea.value.trim();
+    const contentEl = document.getElementById('msg-content-' + msgId);
+    let newContent = textarea.value.trim();
     if (!newContent) { alert('内容不能为空'); return; }
+    if (contentEl && contentEl.dataset.rawJson) {
+        try {
+            const _bs = JSON.parse(contentEl.dataset.rawJson);
+            const _kept = _bs.filter(b => b && b.type === 'image_ref');
+            const _out = [{ type: 'text', text: newContent }].concat(_kept);
+            newContent = JSON.stringify(_out);
+        } catch (e) {}
+    }
     
     try {
         const resp = await fetch(`/api/chat/messages/${msgId}`, {

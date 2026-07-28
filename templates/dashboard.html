@@ -695,7 +695,7 @@
                     <div class="settings-field">
                         <label>图片归档到 R2 (IMAGE_ARCHIVE_ENABLED)</label>
                         <div id="imgArchiveStatus" style="font-size:13px;line-height:1.7;">读取中...</div>
-                        <small class="form-hint">只读展示，请在部署环境变量中配置。开启后对话图片会上传 Cloudflare R2，数据库只存引用链接。</small>
+                        <small class="form-hint">只读展示，请在部署环境变量中配置。需同时开启缓存分区。图片上传 Cloudflare R2，数据库只存引用；消息离开缓存区或被删除时图片会自动清理。</small>
                     </div>
                 </div>
 
@@ -723,7 +723,7 @@
         </main>
     </div>
 
-    <script src="/static/js/dashboard.js?v=7.8"></script>
+    <script src="/static/js/dashboard.js?v=7.9"></script>
 <script src="/static/js/daily_impressions.js?v=1.5"></script>
 <script>
     // --- 模型预设管理（右上角切换面板） ---

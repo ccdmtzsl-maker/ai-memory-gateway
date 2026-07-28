@@ -1419,6 +1419,60 @@ async def rename_session_id(old_id: str, new_id: str) -> bool:
             return True
 
 
+def restore_multimodal_content(content):
+    """把 DB 存的 image_ref JSON 还原成 OpenAI 多模态数组，供转发上游使用。
+
+    - 纯文本 / 非 image_ref JSON：原样返回字符串
+    - 含 image_ref：返回 [{"type":"text",...}, {"type":"image_url","image_url":{"url":...}}]
+      时间戳等前缀会并入第一个 text 块，避免暴露在 JSON 外层。
+    """
+    if not isinstance(content, str):
+        return content
+    s = content.strip()
+    if "image_ref" not in s:
+        return content
+
+    # 落库时 clean_user_message_for_log 可能把时间戳拼在 JSON 前面，先剥离
+    prefix = ""
+    start = s.find("[{")
+    if start > 0:
+        prefix = s[:start]
+        s = s[start:]
+    elif start < 0:
+        return content
+    if not s.endswith("]"):
+        return content
+
+    import json as _json
+    try:
+        blocks = _json.loads(s)
+    except Exception:
+        return content
+    if not isinstance(blocks, list) or not blocks:
+        return content
+    if not any(isinstance(b, dict) and b.get("type") == "image_ref" for b in blocks):
+        return content
+
+    out = []
+    prefix_used = False
+    for b in blocks:
+        if not isinstance(b, dict):
+            continue
+        btype = b.get("type")
+        if btype == "text":
+            text = b.get("text") or ""
+            if prefix and not prefix_used:
+                text = prefix + text
+                prefix_used = True
+            if text:
+                out.append({"type": "text", "text": text})
+        elif btype == "image_ref" and b.get("url"):
+            out.append({"type": "image_url", "image_url": {"url": b["url"]}})
+    if prefix and not prefix_used:
+        out.insert(0, {"type": "text", "text": prefix})
+    return out or content
+
+
 def db_row_to_message(row: dict) -> dict:
     """
     把DB记录还原成API消息格式。
@@ -1429,7 +1483,7 @@ def db_row_to_message(row: dict) -> dict:
     思维链:   {"role": "assistant", "content": "回答", "reasoning_content": "思维链"}
     """
     import json as _json
-    msg = {"role": row["role"], "content": row.get("content") or ""}
+    msg = {"role": row["role"], "content": restore_multimodal_content(row.get("content") or "")}
     
     meta_str = row.get("metadata")
 

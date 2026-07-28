@@ -3927,7 +3927,7 @@ def _extract_xml_tool_calls_from_content(content: str):
     }]
     return clean_content or None, tool_calls
 
-async def persist_assistant_tool_calls_sync(session_id: str, user_msg: str, assistant_msg: str, model: str, assistant_tool_calls: list = None, assistant_reasoning: str = None) -> bool:
+async def persist_assistant_tool_calls_sync(session_id: str, user_msg: str, assistant_msg: str, model: str, assistant_tool_calls: list = None, assistant_reasoning: str = None, context_messages: list = None) -> bool:
     """同步保存首次工具调用的 user + assistant(tool_calls)，避免下一轮 tool 结果先到而 DB 还没写完。"""
     if not assistant_tool_calls:
         return False
@@ -3962,7 +3962,9 @@ async def persist_assistant_tool_calls_sync(session_id: str, user_msg: str, assi
             recent_log_history = await get_conversation_messages(session_id, limit=20)
         except Exception as e:
             print(f"⚠️ 同步存储: 读取最近对话失败，直接保存原始user: {e}")
-        clean_user_msg = clean_user_message_for_log(user_msg, recent_log_history) if user_msg else user_msg
+        clean_user_msg, _sync_has_image = await build_user_log_content(
+            user_msg, context_messages, session_id, recent_log_history
+        )
         ast_meta_dict = {"tool_calls": assistant_tool_calls}
         if assistant_reasoning:
             ast_meta_dict["reasoning_content"] = assistant_reasoning
@@ -4227,6 +4229,50 @@ async def _is_tool_result_occurrence_already_saved(session_id: str, tool_call_id
         return False
 
 
+async def build_user_log_content(user_msg: str, original_messages: list, session_id: str, history: list = None):
+    """构造 user 消息的落库内容。
+
+    返回 (content_to_store, has_image)。
+    - 无图或归档未启用：返回清理后的纯文本（与原行为一致）
+    - 有图且归档成功：返回 JSON 字符串（text 块 + image_ref 块）
+    """
+    clean_text = clean_user_message_for_log(user_msg, history) if user_msg else user_msg
+
+    if not image_archive_ready() or not original_messages:
+        return clean_text, False
+
+    raw_content = None
+    for msg in reversed(original_messages):
+        if isinstance(msg, dict) and msg.get("role") == "user":
+            raw_content = msg.get("content")
+            break
+
+    if not content_has_base64_image(raw_content):
+        return clean_text, False
+
+    try:
+        archived_items, count = await archive_images_in_content(raw_content, session_id=session_id)
+    except Exception as e:
+        print(f"⚠️ 图片归档失败，回退纯文本保存: {e}")
+        return clean_text, False
+
+    if not count:
+        return clean_text, False
+
+    stored_items = []
+    if clean_text:
+        stored_items.append({"type": "text", "text": clean_text})
+    for item in archived_items:
+        if isinstance(item, dict) and item.get("type") == "image_ref":
+            stored_items.append(item)
+
+    if not stored_items:
+        return clean_text, False
+
+    print(f"🖼️ user 消息含 {count} 张图片，已归档并以 JSON 形式落库")
+    return json.dumps(stored_items, ensure_ascii=False), True
+
+
 async def process_memories_background(session_id: str, user_msg: str, assistant_msg: str, model: str, context_messages: list = None, skip_conversation_log: bool = False, tool_messages: list = None, assistant_tool_calls: list = None, assistant_reasoning: str = None):
     """
     后台异步：存储对话记录（不阻塞主流程）。
@@ -4256,7 +4302,9 @@ async def process_memories_background(session_id: str, user_msg: str, assistant_
                 recent_log_history = await get_conversation_messages(session_id, limit=20)
             except Exception as e:
                 print(f"⚠️ 读取最近对话用于日志时间戳缩短失败: {e}")
-        clean_user_msg = clean_user_message_for_log(user_msg, recent_log_history) if user_msg else user_msg
+        clean_user_msg, _user_has_image = await build_user_log_content(
+            user_msg, context_messages, session_id, recent_log_history
+        )
         if skip_conversation_log:
             print(f"⏭️  跳过对话存储（辅助请求）")
         elif tool_messages:
@@ -5002,7 +5050,7 @@ async def chat_completions(request: Request):
                     sync_saved_tool_call = False
                     if assistant_tool_calls and not tool_messages and not skip_conversation_log:
                         sync_saved_tool_call = await persist_assistant_tool_calls_sync(
-                            session_id, user_message, assistant_msg, model, assistant_tool_calls, assistant_reasoning
+                            session_id, user_message, assistant_msg, model, assistant_tool_calls, assistant_reasoning, original_messages
                         )
                     asyncio.create_task(
                         process_memories_background(session_id, user_message, assistant_msg, model, 
@@ -5163,7 +5211,7 @@ async def stream_and_capture(headers: dict, body: dict, session_id: str, user_me
         sync_saved_tool_call = False
         if assistant_tool_calls and not tool_messages and not skip_conversation_log:
             sync_saved_tool_call = await persist_assistant_tool_calls_sync(
-                session_id, user_message, assistant_msg, model, assistant_tool_calls, assistant_reasoning
+                session_id, user_message, assistant_msg, model, assistant_tool_calls, assistant_reasoning, original_messages
             )
         asyncio.create_task(
             process_memories_background(session_id, user_message, assistant_msg, model, 

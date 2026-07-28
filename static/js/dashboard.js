@@ -3025,11 +3025,14 @@ async function loadImageArchiveStatus() {
             if (!cfg[k]) missing.push(k);
         }
         let html = '';
-        if (data.ready) {
+        if (data.active) {
             html += '<span style="color:#16a34a;font-weight:800;">● 已启用</span>';
             if (data.bucket) {
                 html += '<div style="color:var(--text-muted);font-size:12px;margin-top:4px;">bucket: ' + uiEsc(data.bucket) + '</div>';
             }
+        } else if (data.enabled && data.ready && !data.partition_enabled) {
+            html += '<span style="color:#f59e0b;font-weight:800;">● 等待缓存分区开启</span>';
+            html += '<div style="color:var(--text-muted);font-size:12px;margin-top:4px;">图片归档依赖缓存分区，请设置 CACHE_PARTITION_ENABLED=true</div>';
         } else if (data.enabled) {
             html += '<span style="color:#f59e0b;font-weight:800;">● 开关已开，但配置不完整</span>';
             html += '<div style="color:var(--text-muted);font-size:12px;margin-top:4px;">缺少：' + uiEsc(missing.join(', ')) + '</div>';

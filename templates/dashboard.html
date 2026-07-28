@@ -692,6 +692,11 @@
                         <textarea id="set-RESPONSE_TRANSFORM_RULES" class="textarea" rows="6" placeholder="\\[语音::(.+?)\\] => &lt;hcard type='voice'&gt;$1&lt;/hcard&gt;"></textarea>
                         <small class="form-hint">仅非流式响应生效；一行一条，格式：正则 =&gt; 替换。替换里可用 $1、$2 等捕获组。</small>
                     </div>
+                    <div class="settings-field">
+                        <label>图片归档到 R2 (IMAGE_ARCHIVE_ENABLED)</label>
+                        <div id="imgArchiveStatus" style="font-size:13px;line-height:1.7;">读取中...</div>
+                        <small class="form-hint">只读展示，请在部署环境变量中配置。开启后对话图片会上传 Cloudflare R2，数据库只存引用链接。</small>
+                    </div>
                 </div>
 
                 <!-- System Prompt -->
@@ -718,7 +723,7 @@
         </main>
     </div>
 
-    <script src="/static/js/dashboard.js?v=7.7"></script>
+    <script src="/static/js/dashboard.js?v=7.8"></script>
 <script src="/static/js/daily_impressions.js?v=1.5"></script>
 <script>
     // --- 模型预设管理（右上角切换面板） ---

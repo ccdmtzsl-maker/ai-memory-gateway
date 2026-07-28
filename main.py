@@ -4432,7 +4432,14 @@ async def process_memories_background(session_id: str, user_msg: str, assistant_
 # API 接口
 # ============================================================
 
+@app.get("/healthz")
+@app.head("/healthz")
+async def healthz():
+    """轻量存活探针：不读数据库、不依赖全局配置。"""
+    return {"ok": True}
+
 @app.get("/")
+@app.head("/")
 async def health_check():
     """健康检查"""
     return {

@@ -101,7 +101,7 @@ async def upload_image_to_r2(raw_bytes: bytes, mime: str, session_id: str = "def
     ext = _IMAGE_EXT_MAP.get((mime or "").lower(), "bin")
     # 内容寻址：key 只由 sha256 决定，同一张图无论何时重发都指向同一对象，
     # 保证 re-roll 生成的 content JSON 完全一致（跨进程重启也成立）。
-    object_key = f"conversation-images/{sha[:2]}/{sha}.{ext}"
+    object_key = f"conversation-images/{sha}.{ext}"
     url = f"{R2_ENDPOINT.rstrip('/')}/{R2_BUCKET}/{object_key}"
 
     try:
@@ -284,7 +284,7 @@ async def delete_image_from_r2(url: str) -> bool:
 
 
 def _sha_from_object_key(key: str) -> str:
-    """object key 形如 conversation-images/{sess}/{ts}_{sha16}.{ext}，取出 sha 前缀用于清缓存。"""
+    """object key 形如 conversation-images/{sha256}.{ext}，取出 sha 用于清缓存。"""
     try:
         fname = key.rsplit("/", 1)[-1]
         return fname.rsplit(".", 1)[0]

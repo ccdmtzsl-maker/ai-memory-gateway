@@ -799,6 +799,65 @@ async function loadConvMessages(sessionId, append = false) {
     }
 }
 
+function parseMessageContentBlocks(raw) {
+    // 尝试把 content 解析成 [{type:'text'|'image_ref',...}]；不是多模态 JSON 则返回 null
+    if (typeof raw !== 'string') return null;
+    const s = raw.trim();
+    if (!s.startsWith('[')) return null;
+    let arr;
+    try {
+        arr = JSON.parse(s);
+    } catch (e) {
+        return null;
+    }
+    if (!Array.isArray(arr) || !arr.length) return null;
+    const hasBlock = arr.some(it => it && typeof it === 'object' && (it.type === 'image_ref' || it.type === 'text'));
+    if (!hasBlock) return null;
+    return arr;
+}
+
+function messageBlocksToText(blocks) {
+    // 供编辑框/复制使用的纯文本表示
+    if (!Array.isArray(blocks)) return '';
+    return blocks.map(b => {
+        if (!b || typeof b !== 'object') return '';
+        if (b.type === 'text') return b.text || '';
+        if (b.type === 'image_ref') return '[图片]';
+        return '';
+    }).filter(Boolean).join('\n');
+}
+
+function renderMessageBlocksInto(container, blocks) {
+    container.textContent = '';
+    blocks.forEach(b => {
+        if (!b || typeof b !== 'object') return;
+        if (b.type === 'text' && b.text) {
+            const p = document.createElement('div');
+            p.style.cssText = 'white-space:pre-wrap;word-break:break-word;';
+            p.textContent = b.text;
+            container.appendChild(p);
+        } else if (b.type === 'image_ref' && b.url) {
+            const link = document.createElement('a');
+            link.href = b.url;
+            link.target = '_blank';
+            link.rel = 'noopener noreferrer';
+            link.style.cssText = 'display:inline-block;margin-top:8px;';
+            const img = document.createElement('img');
+            img.src = b.url;
+            img.loading = 'lazy';
+            img.alt = '对话图片';
+            img.style.cssText = 'max-width:260px;max-height:260px;border-radius:8px;border:1px solid var(--border-color);display:block;';
+            img.addEventListener('error', () => {
+                link.textContent = '🖼️ 图片加载失败（点击打开原链接）';
+                link.style.fontSize = '12px';
+                link.style.color = 'var(--text-muted)';
+            });
+            link.appendChild(img);
+            container.appendChild(link);
+        }
+    });
+}
+
 function createConvMessageElement(msg) {
     const xmlNormalized = normalizeXmlToolMessageForExistingRenderer(msg);
     if (xmlNormalized) msg = Object.assign({}, msg, xmlNormalized);
@@ -860,7 +919,12 @@ function createConvMessageElement(msg) {
     content.className = 'msg-content';
     content.id = msgId ? `msg-content-${msgId}` : '';
     content.style.cssText = 'white-space:pre-wrap;word-break:break-word;font-size:14px;line-height:1.6;';
-    content.textContent = displayContent;
+    const _blocks = parseMessageContentBlocks(displayContent);
+    if (_blocks) {
+        renderMessageBlocksInto(content, _blocks);
+    } else {
+        content.textContent = displayContent;
+    }
     wrap.appendChild(content);
 
     const edit = document.createElement('div');

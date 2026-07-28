@@ -5357,6 +5357,24 @@ def content_to_text_with_image_placeholder(content) -> str:
     return " ".join(p for p in parts if p).strip()
 
 
+@app.get("/api/image-archive/status")
+async def api_image_archive_status():
+    """图片归档配置状态（只读，供仪表盘展示）。不返回密钥内容。"""
+    return {
+        "enabled": IMAGE_ARCHIVE_ENABLED,
+        "ready": image_archive_ready(),
+        "config": {
+            "R2_ENDPOINT": bool(R2_ENDPOINT),
+            "R2_ACCESS_KEY": bool(R2_ACCESS_KEY),
+            "R2_SECRET_KEY": bool(R2_SECRET_KEY),
+            "R2_BUCKET": bool(R2_BUCKET),
+            "R2_PUBLIC_URL": bool(R2_PUBLIC_URL),
+        },
+        "public_url": R2_PUBLIC_URL,
+        "bucket": R2_BUCKET,
+    }
+
+
 # ============================================================
 # 记忆管理接口
 # ============================================================

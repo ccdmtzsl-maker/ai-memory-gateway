@@ -3376,6 +3376,19 @@ async def _extract_memory_palace_from_partition_messages_locked(messages: list, 
         return {"status": "error", "error": str(e), "created": 0, "marked": 0}
 
 
+def _content_plain_text(content) -> str:
+    """把任意形态的 content 取成纯文本（多模态数组里的图片转占位符）。
+
+    db_row_to_message 会把 image_ref JSON 还原成多模态 list，
+    只需要文本的下游逻辑统一走这里，避免 (list).strip() 报错。
+    """
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return content_to_text_with_image_placeholder(content)
+    return str(content or "")
+
+
 def group_by_rounds(history: list) -> list:
     """
     按逻辑轮分组：每个user消息开始一轮，到下一个user前结束。
@@ -3769,7 +3782,7 @@ async def build_partitioned_messages(
             if msg.get('role') == 'tool':
                 continue
             m = {k: v for k, v in msg.items() if k not in ('id', 'created_at', 'tool_calls')}
-            if m.get('role') == 'assistant' and not (m.get('content') or '').strip():
+            if m.get('role') == 'assistant' and not _content_plain_text(m.get('content')).strip():
                 continue
             cleaned_a.append(m)
     
@@ -6884,7 +6897,8 @@ async def build_user_impression_materials_preview(character_id: str = "default",
                 current_session = sid
             role = m.get("role") or ""
             speaker = user_nickname if role == "user" else (character_name if role == "assistant" else role)
-            content = "\n".join(line.strip() for line in str(m.get("content") or "").splitlines() if line.strip())
+            _raw_c = _content_plain_text(m.get("content"))
+            content = "\n".join(line.strip() for line in _raw_c.splitlines() if line.strip())
             msg_lines.append(f"{speaker}[#{m.get('id')}]: {content}")
             if role == "assistant":
                 msg_lines.append("")

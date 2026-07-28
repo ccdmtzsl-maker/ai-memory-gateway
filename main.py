@@ -18,6 +18,10 @@ import uuid
 import asyncio
 import time
 import re
+import hashlib
+import hmac
+import base64
+from urllib.parse import urlparse, quote
 import httpx
 from datetime import datetime, timedelta, timezone
 from contextlib import asynccontextmanager
@@ -5167,6 +5171,190 @@ async def stream_and_capture(headers: dict, body: dict, session_id: str, user_me
                                         tool_messages=tool_messages, assistant_tool_calls=assistant_tool_calls,
                                         assistant_reasoning=assistant_reasoning)
         )
+
+
+# ============================================================
+# 图片归档（Cloudflare R2 / S3 兼容）
+# ============================================================
+
+IMAGE_ARCHIVE_ENABLED = os.getenv("IMAGE_ARCHIVE_ENABLED", "false").lower() == "true"
+R2_ENDPOINT = os.getenv("R2_ENDPOINT", "")
+R2_ACCESS_KEY = os.getenv("R2_ACCESS_KEY", "")
+R2_SECRET_KEY = os.getenv("R2_SECRET_KEY", "")
+R2_BUCKET = os.getenv("R2_BUCKET", "")
+R2_PUBLIC_URL = os.getenv("R2_PUBLIC_URL", "")
+
+_IMAGE_DATA_URI_RE = re.compile(r"^data:(image/[a-z0-9.+-]+);base64,(.+)$", re.I | re.S)
+
+_IMAGE_EXT_MAP = {
+    "image/jpeg": "jpg", "image/jpg": "jpg", "image/png": "png",
+    "image/gif": "gif", "image/webp": "webp", "image/bmp": "bmp",
+    "image/heic": "heic", "image/heif": "heif", "image/avif": "avif",
+}
+
+_r2_upload_cache = {}
+
+
+def image_archive_ready() -> bool:
+    """图片归档是否可用：开关打开且配置齐全。"""
+    return bool(IMAGE_ARCHIVE_ENABLED and R2_ENDPOINT and R2_ACCESS_KEY
+                and R2_SECRET_KEY and R2_BUCKET and R2_PUBLIC_URL)
+
+
+def _r2_sigv4_headers(method: str, url: str, payload: bytes, content_type: str) -> dict:
+    """为 S3 兼容接口生成 AWS SigV4 签名头（零额外依赖）。"""
+    parsed = urlparse(url)
+    host = parsed.netloc
+    canonical_uri = quote(parsed.path, safe="/~")
+    now = datetime.now(timezone.utc)
+    amz_date = now.strftime("%Y%m%dT%H%M%SZ")
+    date_stamp = now.strftime("%Y%m%d")
+    payload_hash = hashlib.sha256(payload).hexdigest()
+
+    canonical_headers = (f"content-type:{content_type}\n" f"host:{host}\n"
+                         f"x-amz-content-sha256:{payload_hash}\n" f"x-amz-date:{amz_date}\n")
+    signed_headers = "content-type;host;x-amz-content-sha256;x-amz-date"
+    canonical_request = "\n".join([method, canonical_uri, parsed.query or "",
+                                   canonical_headers, signed_headers, payload_hash])
+
+    credential_scope = f"{date_stamp}/auto/s3/aws4_request"
+    string_to_sign = "\n".join(["AWS4-HMAC-SHA256", amz_date, credential_scope,
+                                hashlib.sha256(canonical_request.encode("utf-8")).hexdigest()])
+
+    def _sign(key: bytes, msg: str) -> bytes:
+        return hmac.new(key, msg.encode("utf-8"), hashlib.sha256).digest()
+
+    k_date = _sign(("AWS4" + R2_SECRET_KEY).encode("utf-8"), date_stamp)
+    k_region = _sign(k_date, "auto")
+    k_service = _sign(k_region, "s3")
+    k_signing = _sign(k_service, "aws4_request")
+    signature = hmac.new(k_signing, string_to_sign.encode("utf-8"), hashlib.sha256).hexdigest()
+
+    return {
+        "Authorization": (f"AWS4-HMAC-SHA256 Credential={R2_ACCESS_KEY}/{credential_scope}, "
+                          f"SignedHeaders={signed_headers}, Signature={signature}"),
+        "Content-Type": content_type,
+        "x-amz-content-sha256": payload_hash,
+        "x-amz-date": amz_date,
+    }
+
+
+async def upload_image_to_r2(raw_bytes: bytes, mime: str, session_id: str = "default"):
+    """上传图片到 R2，返回 dict；失败返回 None（静默降级）。"""
+    if not image_archive_ready() or not raw_bytes:
+        return None
+
+    sha = hashlib.sha256(raw_bytes).hexdigest()
+    cached = _r2_upload_cache.get(sha)
+    if cached:
+        return {"url": cached, "sha256": sha, "mime": mime, "size": len(raw_bytes)}
+
+    ext = _IMAGE_EXT_MAP.get((mime or "").lower(), "bin")
+    safe_session = re.sub(r"[^A-Za-z0-9_.-]", "_", str(session_id or "default"))[:64]
+    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
+    object_key = f"conversation-images/{safe_session}/{ts}_{sha[:16]}.{ext}"
+    url = f"{R2_ENDPOINT.rstrip('/')}/{R2_BUCKET}/{object_key}"
+
+    try:
+        headers = _r2_sigv4_headers("PUT", url, raw_bytes, mime or "application/octet-stream")
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            resp = await client.put(url, content=raw_bytes, headers=headers)
+        if resp.status_code not in (200, 201, 204):
+            print(f"⚠️ R2 上传失败 HTTP {resp.status_code}: {resp.text[:200]}")
+            return None
+    except Exception as e:
+        print(f"⚠️ R2 上传异常: {e}")
+        return None
+
+    public_url = f"{R2_PUBLIC_URL.rstrip('/')}/{object_key}"
+    _r2_upload_cache[sha] = public_url
+    if len(_r2_upload_cache) > 512:
+        for _k in list(_r2_upload_cache.keys())[:128]:
+            _r2_upload_cache.pop(_k, None)
+    print(f"🖼️ 图片已归档 R2: {object_key} ({len(raw_bytes) // 1024}KB)")
+    return {"url": public_url, "sha256": sha, "mime": mime, "size": len(raw_bytes)}
+
+
+def _extract_image_data_uri(item):
+    """从 content 块取出 (mime, base64_body)；非 base64 图片块返回 None。"""
+    if not isinstance(item, dict):
+        return None
+    itype = item.get("type")
+    url_val = ""
+    if itype == "image_url":
+        iu = item.get("image_url")
+        if isinstance(iu, dict):
+            url_val = iu.get("url") or ""
+        elif isinstance(iu, str):
+            url_val = iu
+    elif itype in ("input_image", "image"):
+        url_val = item.get("image_url") or item.get("url") or item.get("data") or ""
+    if not isinstance(url_val, str) or not url_val:
+        return None
+    m = _IMAGE_DATA_URI_RE.match(url_val.strip())
+    if not m:
+        return None
+    return m.group(1), m.group(2)
+
+
+def content_has_base64_image(content) -> bool:
+    """content 里是否含 base64 图片块。"""
+    if not isinstance(content, list):
+        return False
+    return any(_extract_image_data_uri(it) for it in content)
+
+
+async def archive_images_in_content(content, session_id: str = "default"):
+    """把 base64 图片块换成 image_ref 引用块。返回 (new_content, archived_count)。"""
+    if not isinstance(content, list) or not image_archive_ready():
+        return content, 0
+    new_items = []
+    archived = 0
+    for item in content:
+        parsed = _extract_image_data_uri(item)
+        if not parsed:
+            new_items.append(item)
+            continue
+        mime, b64_body = parsed
+        try:
+            raw = base64.b64decode(b64_body, validate=False)
+        except Exception as e:
+            print(f"⚠️ 图片 base64 解码失败，保留原块: {e}")
+            new_items.append(item)
+            continue
+        info = await upload_image_to_r2(raw, mime, session_id=session_id)
+        if not info:
+            new_items.append(item)
+            continue
+        new_items.append({
+            "type": "image_ref",
+            "url": info["url"],
+            "mime": info["mime"],
+            "sha256": info["sha256"],
+            "size": info["size"],
+        })
+        archived += 1
+    return new_items, archived
+
+
+def content_to_text_with_image_placeholder(content) -> str:
+    """content 转纯文本，图片块替换为占位符（供记忆提取/日志使用）。"""
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return str(content or "")
+    parts = []
+    for item in content:
+        if not isinstance(item, dict):
+            continue
+        itype = item.get("type")
+        if itype == "text":
+            txt = item.get("text") or ""
+            if txt:
+                parts.append(txt)
+        elif itype in ("image_ref", "image_url", "input_image", "image"):
+            parts.append("[图片附件]")
+    return " ".join(p for p in parts if p).strip()
 
 
 # ============================================================

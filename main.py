@@ -4272,19 +4272,20 @@ async def build_user_log_content(user_msg: str, original_messages: list, session
     ]
 
     stored_items = []
+    single_text = len(text_indexes) <= 1
     for idx, item in enumerate(archived_items):
         if not isinstance(item, dict):
             continue
         itype = item.get("type")
         if itype == "image_ref":
             stored_items.append(item)
-        elif itype == "text":
-            if text_indexes and idx == text_indexes[0]:
-                # 第一个文字块承载清洗后的完整文本（含时间戳等前缀处理）
+        elif idx in text_indexes:
+            if single_text:
+                # 只有一个文字块：用清洗后的完整文本（含时间戳前缀等处理）
                 if clean_text:
                     stored_items.append({"type": "text", "text": clean_text})
-            elif idx in text_indexes:
-                # 其余文字块原样保留，维持穿插顺序
+            else:
+                # 多个文字块穿插：各自原样保留，避免与 clean_text 重复
                 stored_items.append({"type": "text", "text": item.get("text", "")})
 
     # 原始 content 里没有任何文字块，但清洗结果有文本时，补在最前面
@@ -5325,9 +5326,9 @@ async def upload_image_to_r2(raw_bytes: bytes, mime: str, session_id: str = "def
         return {"url": cached, "sha256": sha, "mime": mime, "size": len(raw_bytes)}
 
     ext = _IMAGE_EXT_MAP.get((mime or "").lower(), "bin")
-    safe_session = re.sub(r"[^A-Za-z0-9_.-]", "_", str(session_id or "default"))[:64]
-    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
-    object_key = f"conversation-images/{safe_session}/{ts}_{sha[:16]}.{ext}"
+    # 内容寻址：key 只由 sha256 决定，同一张图无论何时重发都指向同一对象，
+    # 保证 re-roll 生成的 content JSON 完全一致（跨进程重启也成立）。
+    object_key = f"conversation-images/{sha[:2]}/{sha}.{ext}"
     url = f"{R2_ENDPOINT.rstrip('/')}/{R2_BUCKET}/{object_key}"
 
     try:
@@ -5531,8 +5532,7 @@ def _sha_from_object_key(key: str) -> str:
     """object key 形如 conversation-images/{sess}/{ts}_{sha16}.{ext}，取出 sha 前缀用于清缓存。"""
     try:
         fname = key.rsplit("/", 1)[-1]
-        stem = fname.rsplit(".", 1)[0]
-        return stem.split("_", 1)[1] if "_" in stem else ""
+        return fname.rsplit(".", 1)[0]
     except Exception:
         return ""
 

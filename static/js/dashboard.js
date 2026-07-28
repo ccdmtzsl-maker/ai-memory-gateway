@@ -1888,6 +1888,7 @@ async function loadSettings() {
         loadKeywordRulesEditor(s.KEYWORD_CONTEXT_RULES || '[]');
 
         _settingsLoaded = true;
+    loadImageArchiveStatus();
     } catch (e) {
         showSettingsMsg('error', '加载设置失败: ' + e.message);
     }
@@ -2926,4 +2927,34 @@ async function confirmMemoryPalaceImport() {
         if (box) box.innerHTML = '<div style="color:var(--success);">' + escHtml(msg) + '</div>';
         _mpImportToken = '';
     } catch(e) { if (box) box.innerHTML += '<div style="color:var(--danger);margin-top:8px;">导入失败：' + escHtml(e.message) + '</div>'; }
+}
+
+async function loadImageArchiveStatus() {
+    const el = document.getElementById('imgArchiveStatus');
+    if (!el) return;
+    try {
+        const resp = await fetch('/api/image-archive/status');
+        const data = await resp.json();
+        const missing = [];
+        const cfg = data.config || {};
+        for (const k in cfg) {
+            if (!cfg[k]) missing.push(k);
+        }
+        let html = '';
+        if (data.ready) {
+            html += '<span style="color:#16a34a;font-weight:800;">● 已启用</span>';
+            if (data.bucket) {
+                html += '<div style="color:var(--text-muted);font-size:12px;margin-top:4px;">bucket: ' + uiEsc(data.bucket) + '</div>';
+            }
+        } else if (data.enabled) {
+            html += '<span style="color:#f59e0b;font-weight:800;">● 开关已开，但配置不完整</span>';
+            html += '<div style="color:var(--text-muted);font-size:12px;margin-top:4px;">缺少：' + uiEsc(missing.join(', ')) + '</div>';
+        } else {
+            html += '<span style="color:var(--text-muted);font-weight:800;">○ 未启用</span>';
+            html += '<div style="color:var(--text-muted);font-size:12px;margin-top:4px;">图片仍按原样丢弃，不影响对话</div>';
+        }
+        el.innerHTML = html;
+    } catch (e) {
+        el.innerHTML = '<span style="color:var(--text-muted);">状态读取失败</span>';
+    }
 }

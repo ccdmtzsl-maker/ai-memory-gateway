@@ -4367,9 +4367,12 @@ async def process_memories_background(session_id: str, user_msg: str, assistant_
                 print(f"🔧 存储: user + assistant (含{len(assistant_tool_calls)}个tool_calls)" + (" (含reasoning)" if assistant_reasoning else ""))
             else:
                 # 纯文字对话：re-roll检测 + 存user + assistant
-                updated = await update_last_assistant_if_same_user(
-                    session_id, clean_user_msg, assistant_msg, model, metadata=assistant_meta
-                )
+                # 含图消息的 content 是 JSON，不参与 re-roll 文本匹配，直接走正常保存
+                updated = False
+                if not _user_has_image:
+                    updated = await update_last_assistant_if_same_user(
+                        session_id, clean_user_msg, assistant_msg, model, metadata=assistant_meta
+                    )
                 if updated:
                     print(f"🔄 检测到re-roll，已覆盖最后一条assistant回复")
                 else:

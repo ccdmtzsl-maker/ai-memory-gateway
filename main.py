@@ -4240,7 +4240,7 @@ async def build_user_log_content(user_msg: str, original_messages: list, session
     """
     clean_text = clean_user_message_for_log(user_msg, history) if user_msg else user_msg
 
-    if not image_archive_ready() or not original_messages:
+    if not image_archive_active() or not original_messages:
         return clean_text, False
 
     raw_content = None
@@ -5359,7 +5359,7 @@ def content_has_base64_image(content) -> bool:
 
 async def archive_images_in_content(content, session_id: str = "default"):
     """把 base64 图片块换成 image_ref 引用块。返回 (new_content, archived_count)。"""
-    if not isinstance(content, list) or not image_archive_ready():
+    if not isinstance(content, list) or not image_archive_active():
         return content, 0
     new_items = []
     archived = 0
@@ -5416,6 +5416,8 @@ async def api_image_archive_status():
     return {
         "enabled": IMAGE_ARCHIVE_ENABLED,
         "ready": image_archive_ready(),
+        "active": image_archive_active(),
+        "partition_enabled": CACHE_PARTITION_ENABLED,
         "config": {
             "R2_ENDPOINT": bool(R2_ENDPOINT),
             "R2_ACCESS_KEY": bool(R2_ACCESS_KEY),
@@ -5426,6 +5428,154 @@ async def api_image_archive_status():
         "public_url": R2_PUBLIC_URL,
         "bucket": R2_BUCKET,
     }
+
+
+def image_archive_active() -> bool:
+    """图片归档是否真正生效：需要分区缓存开启 + 归档配置齐全。"""
+    return bool(CACHE_PARTITION_ENABLED and image_archive_ready())
+
+
+def _r2_object_key_from_url(url: str) -> str:
+    """从公开 URL 反解出 object key。不属于本 bucket 的 URL 返回空串。"""
+    if not url or not isinstance(url, str) or not R2_PUBLIC_URL:
+        return ""
+    prefix = R2_PUBLIC_URL.rstrip("/") + "/"
+    if not url.startswith(prefix):
+        return ""
+    return url[len(prefix):].lstrip("/")
+
+
+def extract_image_refs_from_stored_content(content):
+    """从 DB 存的 content 里取出所有 image_ref 的 url 列表。"""
+    if not isinstance(content, str):
+        return []
+    s = content.strip()
+    if not (s.startswith("[") and s.endswith("]")) or "image_ref" not in s:
+        return []
+    try:
+        blocks = json.loads(s)
+    except Exception:
+        return []
+    if not isinstance(blocks, list):
+        return []
+    urls = []
+    for b in blocks:
+        if isinstance(b, dict) and b.get("type") == "image_ref" and b.get("url"):
+            urls.append(b["url"])
+    return urls
+
+
+def strip_image_refs_from_stored_content(content):
+    """把 content 里的 image_ref 块剔掉，只保留文字。
+
+    返回 (new_content, removed_urls)。没有图片引用时原样返回。
+    """
+    urls = extract_image_refs_from_stored_content(content)
+    if not urls:
+        return content, []
+    try:
+        blocks = json.loads(content.strip())
+    except Exception:
+        return content, []
+    text_parts = [
+        b.get("text", "") for b in blocks
+        if isinstance(b, dict) and b.get("type") == "text" and b.get("text")
+    ]
+    return ("\n".join(text_parts).strip(), urls)
+
+
+async def delete_image_from_r2(url: str) -> bool:
+    """从 R2 删除单个对象。成功或对象本就不存在返回 True。"""
+    key = _r2_object_key_from_url(url)
+    if not key or not image_archive_ready():
+        return False
+    endpoint = f"{R2_ENDPOINT.rstrip('/')}/{R2_BUCKET}/{key}"
+    try:
+        headers = _r2_sigv4_headers("DELETE", endpoint, b"", "application/octet-stream")
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.delete(endpoint, headers=headers)
+        if resp.status_code in (200, 202, 204, 404):
+            _r2_upload_cache.pop(_sha_from_object_key(key), None)
+            print(f"🗑️ R2 已删除: {key}")
+            return True
+        print(f"⚠️ R2 删除失败 HTTP {resp.status_code}: {resp.text[:160]}")
+        return False
+    except Exception as e:
+        print(f"⚠️ R2 删除异常: {e}")
+        return False
+
+
+def _sha_from_object_key(key: str) -> str:
+    """object key 形如 conversation-images/{sess}/{ts}_{sha16}.{ext}，取出 sha 前缀用于清缓存。"""
+    try:
+        fname = key.rsplit("/", 1)[-1]
+        stem = fname.rsplit(".", 1)[0]
+        return stem.split("_", 1)[1] if "_" in stem else ""
+    except Exception:
+        return ""
+
+
+async def count_other_references(url: str, exclude_message_ids=None) -> int:
+    """统计还有多少条消息引用同一个图片 URL（排除指定 id）。"""
+    if not url:
+        return 0
+    ids = [int(i) for i in (exclude_message_ids or []) if str(i).isdigit()]
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        if ids:
+            row = await conn.fetchval(
+                "SELECT COUNT(*) FROM conversations WHERE content LIKE $1 AND NOT (id = ANY($2::int[]))",
+                f"%{url}%", ids,
+            )
+        else:
+            row = await conn.fetchval(
+                "SELECT COUNT(*) FROM conversations WHERE content LIKE $1",
+                f"%{url}%",
+            )
+    return int(row or 0)
+
+
+async def release_images_for_messages(rows, reason: str = "") -> int:
+    """把给定消息里的图片引用剔掉并删除 R2 文件（仅当没有其他消息引用时）。
+
+    rows: [{"id": int, "content": str}, ...]
+    返回实际删除的 R2 对象数。
+    """
+    if not image_archive_active() or not rows:
+        return 0
+
+    targets = []
+    for r in rows:
+        content = r.get("content")
+        urls = extract_image_refs_from_stored_content(content)
+        if urls:
+            targets.append((int(r["id"]), content, urls))
+    if not targets:
+        return 0
+
+    all_ids = [t[0] for t in targets]
+    deleted = 0
+    for mid, content, urls in targets:
+        new_content, removed = strip_image_refs_from_stored_content(content)
+        try:
+            await update_message_content(mid, new_content)
+        except Exception as e:
+            print(f"⚠️ 剔除图片引用失败 msg={mid}: {e}")
+            continue
+        for u in removed:
+            try:
+                others = await count_other_references(u, exclude_message_ids=all_ids)
+            except Exception as e:
+                print(f"⚠️ 图片引用计数失败，跳过删除 {u}: {e}")
+                continue
+            if others > 0:
+                print(f"↩️ 图片仍被 {others} 条消息引用，保留: {u}")
+                continue
+            if await delete_image_from_r2(u):
+                deleted += 1
+    if deleted:
+        print(f"🗑️ 图片清理完成({reason}): 删除 {deleted} 个 R2 对象，涉及 {len(targets)} 条消息")
+    return deleted
 
 
 def normalize_stored_content_for_text(content):

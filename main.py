@@ -3988,13 +3988,14 @@ async def build_partitioned_messages(
     cleaned_a = []
     if CACHE_PARTITION_KEEP_A_TOOLS:
         for msg in a_msgs:
-            m = {k: v for k, v in msg.items() if k not in ('id', 'created_at')}
+            # created_at 保留到打戳阶段，由 _prepend_timestamp_to_user_messages 统一剥离
+            m = {k: v for k, v in msg.items() if k not in ('id',)}
             cleaned_a.append(m)
     else:
         for msg in a_msgs:
             if msg.get('role') == 'tool':
                 continue
-            m = {k: v for k, v in msg.items() if k not in ('id', 'created_at', 'tool_calls')}
+            m = {k: v for k, v in msg.items() if k not in ('id', 'tool_calls')}
             if m.get('role') == 'assistant' and not _content_plain_text(m.get('content')).strip():
                 continue
             cleaned_a.append(m)

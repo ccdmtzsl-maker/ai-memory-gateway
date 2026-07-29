@@ -4003,7 +4003,8 @@ async def build_partitioned_messages(
         if cleaned_a[j].get('role') != 'tool' and _apply_breakpoint(cleaned_a[j]):
             break
     
-    cleaned_a = _prepend_timestamp_to_user_messages(cleaned_a)
+    _sparse_ts = await get_runtime_sparse_timestamp_enabled()
+    cleaned_a = _prepend_timestamp_to_user_messages(cleaned_a, sparse=_sparse_ts)
     for m in cleaned_a:
         result.append(m)
     

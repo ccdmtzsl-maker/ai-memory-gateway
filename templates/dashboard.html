@@ -612,7 +612,7 @@
                     </div>
                     <div class="settings-field">
                         <label>上下文模板 (CONTEXT_TEMPLATE)</label>
-                        <textarea id="set-CONTEXT_TEMPLATE" class="input" rows="10" spellcheck="false" placeholder="例如：&#10;请用简洁口语回复。&#10;&#10;&#123;&#123;env&#125;&#125;&#10;&#123;&#123;keyword&#125;&#125;&#10;&#123;&#123;hot_news&#125;&#125;&#10;&#123;&#123;operit_memory&#125;&#125;&#10;&#123;&#123;memory_palace&#125;&#125;&#10;&#10;以上信息仅供参考，不要复述。"></textarea>
+                        <textarea id="set-CONTEXT_TEMPLATE" class="input" rows="10" spellcheck="false"></textarea>
                         <small class="form-hint">开启后用户消息之后的多条 system 会按此模板合并成一条。可用变量：&#123;&#123;env&#125;&#125; 环境状态、&#123;&#123;keyword&#125;&#125; 关键词命中内容、&#123;&#123;hot_news&#125;&#125; 热点新闻、&#123;&#123;operit_memory&#125;&#125; Operit 原生记忆、&#123;&#123;memory_palace&#125;&#125; 记忆宫殿召回（仅注入深度为 0 时并入，深度大于 0 仍独立注入）。变量无内容时整行删除，模板里的其他文字照常发送；模板留空则不注入。</small>
                     </div>
                 </div>

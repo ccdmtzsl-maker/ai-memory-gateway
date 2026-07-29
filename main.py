@@ -3742,31 +3742,115 @@ def _shorten_client_timestamp(timestamp: str, history: list = None) -> str:
     return timestamp
 
 
-def _prepend_timestamp_to_user_messages(messages: list) -> list:
-    """给历史 user 消息加轻量时间戳；assistant/tool 不加。"""
+_TS_PREFIX_RE = re.compile(r"^\[[0-9]{2}(?:-[0-9]{2})? [0-9]{2}:[0-9]{2}\]|^\[[0-9]{2}:[0-9]{2}\]")
+_WEEKDAY_CN = ("周一", "周二", "周三", "周四", "周五", "周六", "周日")
+SPARSE_TS_GAP_MINUTES = 15      # 同天内间隔达到多少分钟才打戳
+SPARSE_TS_LONG_GAP_HOURS = 6    # 间隔达到多少小时额外补一行说明
+
+
+def _content_has_timestamp_prefix(content) -> bool:
+    """判断 content 开头是否已带 Operit 附件写入的时间戳。"""
+    if isinstance(content, str):
+        return bool(_TS_PREFIX_RE.match(content))
+    if isinstance(content, list):
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "text":
+                return bool(_TS_PREFIX_RE.match(block.get("text", "") or ""))
+    return False
+
+
+def _prepend_text_to_content(content, prefix: str):
+    """把前缀插到 content 最前面；list content 落到第一个 text 块。"""
+    if isinstance(content, str):
+        return prefix + content
+    if isinstance(content, list):
+        new_blocks = list(content)
+        for idx, block in enumerate(new_blocks):
+            if isinstance(block, dict) and block.get("type") == "text":
+                nb = dict(block)
+                nb["text"] = prefix + (block.get("text", "") or "")
+                new_blocks[idx] = nb
+                return new_blocks
+        new_blocks.insert(0, {"type": "text", "text": prefix.rstrip()})
+        return new_blocks
+    return content
+
+
+def _format_gap_note(minutes: int) -> str:
+    """把间隔分钟数转成人话；不足阈值返回空串。"""
+    if minutes < SPARSE_TS_LONG_GAP_HOURS * 60:
+        return ""
+    days = minutes // 1440
+    if days >= 1:
+        return f"（距上次对话约 {days} 天）"
+    hours = round(minutes / 60)
+    return f"（距上次对话约 {hours} 小时）"
+
+
+def _prepend_timestamp_to_user_messages(messages: list, sparse: bool = False) -> list:
+    """给历史消息加时间戳。
+
+    sparse=False（默认，兼容旧行为）：只给 user 消息打紧凑戳，每条都打。
+    sparse=True：按间隔稀疏打戳，user/assistant 都参与。
+      - 已带附件时间戳的消息不重复打时间，但仍可能补间隔说明
+      - 首条、跨天、间隔≥15分钟才打戳；间隔≥6小时额外补一行说明
+      - 形如 "[07-29 周三 18:17]" 后接空行再正文
+      - 间隔一律按 created_at 计算，与消息有无附件无关
+    """
     last_date = None
+    prev_dt = None
     stamped = []
+    first_seen = False
     for msg in messages:
         m = dict(msg)
-        if m.get('role') == 'user':
-            local_dt = _to_local_dt(m.get('created_at'))
-            if local_dt:
+        role = m.get("role")
+        local_dt = _to_local_dt(m.get("created_at"))
+
+        if not sparse:
+            if role == "user" and local_dt:
                 show_date = last_date != local_dt.date()
-                stamp = f"[{local_dt.strftime('%m-%d %H:%M')}]" if show_date else f"[{local_dt.strftime('%H:%M')}]"
-                content = m.get('content')
-                if isinstance(content, str):
-                    if not re.match(r'^\[[0-9]{2}(?:-[0-9]{2})? [0-9]{2}:[0-9]{2}\]|^\[[0-9]{2}:[0-9]{2}\]', content):
-                        m['content'] = f"{stamp}{content}"
-                elif isinstance(content, list):
-                    for block in content:
-                        if isinstance(block, dict) and block.get('type') == 'text':
-                            text = block.get('text', '')
-                            if not re.match(r'^\[[0-9]{2}(?:-[0-9]{2})? [0-9]{2}:[0-9]{2}\]|^\[[0-9]{2}:[0-9]{2}\]', text):
-                                block['text'] = f"{stamp}{text}"
-                            break
+                stamp = (f"[{local_dt.strftime('%m-%d %H:%M')}]" if show_date
+                         else f"[{local_dt.strftime('%H:%M')}]")
+                if not _content_has_timestamp_prefix(m.get("content")):
+                    m["content"] = _prepend_text_to_content(m.get("content"), stamp)
                 last_date = local_dt.date()
-        m.pop('id', None)
-        m.pop('created_at', None)
+        elif role in ("user", "assistant") and local_dt:
+            gap_minutes = None
+            if prev_dt is not None:
+                gap_minutes = max(0, int((local_dt - prev_dt).total_seconds() // 60))
+
+            crossed_day = last_date is not None and last_date != local_dt.date()
+            need_stamp = (not first_seen) or crossed_day or (
+                gap_minutes is not None and gap_minutes >= SPARSE_TS_GAP_MINUTES
+            )
+            has_prefix = _content_has_timestamp_prefix(m.get("content"))
+
+            parts = []
+            if need_stamp and not has_prefix:
+                if (not first_seen) or crossed_day:
+                    wd = _WEEKDAY_CN[local_dt.weekday()]
+                    parts.append(f"[{local_dt.strftime('%m-%d')} {wd} {local_dt.strftime('%H:%M')}]")
+                else:
+                    parts.append(f"[{local_dt.strftime('%H:%M')}]")
+
+            if gap_minutes is not None:
+                note = _format_gap_note(gap_minutes)
+                if note:
+                    parts.append(note)
+
+            if parts:
+                prefix = "\n".join(parts) + "\n\n"
+                m["content"] = _prepend_text_to_content(m.get("content"), prefix)
+
+            first_seen = True
+            last_date = local_dt.date()
+            prev_dt = local_dt
+        elif local_dt:
+            # tool 等其他 role 不打戳，但参与间隔计算
+            prev_dt = local_dt
+
+        m.pop("id", None)
+        m.pop("created_at", None)
         stamped.append(m)
     return stamped
 

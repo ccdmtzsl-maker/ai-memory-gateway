@@ -6704,6 +6704,59 @@ async def _collect_user_impression_recent_messages(mode: str = "initial", sessio
     }
 
 
+def _format_impression_recent_messages(items: list, user_nickname: str, character_name: str) -> str:
+    """把画像用近期聊天渲染成带稀疏时间戳的文本。
+
+    时间戳规则与上下文构造一致（复用同一套阈值）：
+      - 每条对话线的第一条打完整戳（带星期）
+      - 跨天打完整戳
+      - 同天间隔≥15分钟打时分戳
+      - 间隔≥6小时在戳后追加「（距上次对话约 N 小时）」
+    """
+    msg_lines = []
+    current_session = None
+    prev_dt = None
+    last_date = None
+    for m in items:
+        sid = m.get("session_id") or "default"
+        if sid != current_session:
+            if msg_lines:
+                msg_lines.append("")
+            msg_lines.append(f"【对话线：{sid}】")
+            current_session = sid
+            prev_dt = None
+            last_date = None
+
+        local_dt = _to_local_dt(m.get("created_at"))
+        if local_dt:
+            gap_minutes = None
+            if prev_dt is not None:
+                gap_minutes = max(0, int((local_dt - prev_dt).total_seconds() // 60))
+            crossed_day = last_date is not None and last_date != local_dt.date()
+            need_stamp = (prev_dt is None) or crossed_day or (
+                gap_minutes is not None and gap_minutes >= SPARSE_TS_GAP_MINUTES
+            )
+            if need_stamp:
+                if prev_dt is None or crossed_day:
+                    wd = _WEEKDAY_CN[local_dt.weekday()]
+                    stamp = f"[{local_dt.strftime('%m-%d')} {wd} {local_dt.strftime('%H:%M')}]"
+                else:
+                    stamp = f"[{local_dt.strftime('%H:%M')}]"
+                note = _format_gap_note(gap_minutes) if gap_minutes is not None else ""
+                if msg_lines and msg_lines[-1] != "" and not msg_lines[-1].startswith("【对话线："):
+                    msg_lines.append("")
+                msg_lines.append(stamp + note)
+            last_date = local_dt.date()
+            prev_dt = local_dt
+
+        role = m.get("role") or ""
+        speaker = user_nickname if role == "user" else (character_name if role == "assistant" else role)
+        _raw_c = _content_plain_text(m.get("content"))
+        content = "\n".join(line.strip() for line in _raw_c.splitlines() if line.strip())
+        msg_lines.append(f"{speaker}[#{m.get('id')}]: {content}")
+    return "\n".join(msg_lines).rstrip()
+
+
 async def build_user_impression_materials_preview(character_id: str = "default", mode: str = "initial", session_id: str = None) -> dict:
     """用户画像阶段 2：材料预览。只收集材料，不调用 LLM，不保存画像。"""
     character_id = character_id or "default"
@@ -6734,23 +6787,8 @@ async def build_user_impression_materials_preview(character_id: str = "default",
         sections.append(daily_impressions_text)
 
     if recent_messages["items"]:
-        msg_lines = []
-        current_session = None
-        for m in recent_messages["items"]:
-            sid = m.get("session_id") or "default"
-            if sid != current_session:
-                if msg_lines:
-                    msg_lines.append("")
-                msg_lines.append(f"【对话线：{sid}】")
-                current_session = sid
-            role = m.get("role") or ""
-            speaker = user_nickname if role == "user" else (character_name if role == "assistant" else role)
-            _raw_c = _content_plain_text(m.get("content"))
-            content = "\n".join(line.strip() for line in _raw_c.splitlines() if line.strip())
-            msg_lines.append(f"{speaker}[#{m.get('id')}]: {content}")
-            if role == "assistant":
-                msg_lines.append("")
-        sections.append("【近期聊天】\n" + "\n".join(msg_lines).rstrip())
+        sections.append("【近期聊天】\n" + _format_impression_recent_messages(
+            recent_messages["items"], user_nickname, character_name))
     else:
         sections.append("【近期聊天】\n（暂无）")
     material_text = "\n\n".join(sections)

@@ -3788,6 +3788,58 @@ def _format_gap_note(minutes: int) -> str:
     return f"（距上次对话约 {hours} 小时）"
 
 
+def _last_message_dt(*message_lists):
+    """从若干消息列表里取最后一条带 created_at 的消息时间（本地时区）。"""
+    for msgs in reversed([m for m in message_lists if m]):
+        for msg in reversed(msgs):
+            if not isinstance(msg, dict):
+                continue
+            dt = _to_local_dt(msg.get("created_at"))
+            if dt:
+                return dt
+    return None
+
+
+def build_current_message_timestamp_prefix(prev_dt, content) -> str:
+    """给当前轮 user 消息算时间戳前缀（稀疏规则，时间取现在）。
+
+    规则与历史消息一致：
+      - 已带附件时间戳：不重复打时间，但间隔≥6小时仍补说明
+      - 无上一条消息（缓存区为空）：打完整戳
+      - 跨天：打完整戳（带星期）
+      - 同天间隔≥15分钟：打时分戳
+      - 其他：不打
+    """
+    now_local = datetime.now(timezone.utc) + timedelta(hours=TIMEZONE_HOURS)
+    has_prefix = _content_has_timestamp_prefix(content)
+
+    gap_minutes = None
+    crossed_day = False
+    if prev_dt is not None:
+        gap_minutes = max(0, int((now_local - prev_dt).total_seconds() // 60))
+        crossed_day = prev_dt.date() != now_local.date()
+
+    need_stamp = (prev_dt is None) or crossed_day or (
+        gap_minutes is not None and gap_minutes >= SPARSE_TS_GAP_MINUTES
+    )
+
+    parts = []
+    if need_stamp and not has_prefix:
+        if prev_dt is None or crossed_day:
+            wd = _WEEKDAY_CN[now_local.weekday()]
+            parts.append(f"[{now_local.strftime('%m-%d')} {wd} {now_local.strftime('%H:%M')}]")
+        else:
+            parts.append(f"[{now_local.strftime('%H:%M')}]")
+
+    if gap_minutes is not None:
+        note = _format_gap_note(gap_minutes)
+        if note:
+            parts.append(note)
+
+    if not parts:
+        return ""
+    return chr(10).join(parts) + chr(10) + chr(10)
+
 def _prepend_timestamp_to_user_messages(messages: list, sparse: bool = False) -> list:
     """给历史消息加时间戳。
 

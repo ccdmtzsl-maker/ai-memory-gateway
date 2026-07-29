@@ -152,6 +152,7 @@ A/B 区轮转管理对话上下文，利用 prompt caching 大幅降低 token �
 ai-memory-gateway/
 ├── main.py                    # 网关主程序
 ├── database.py                # 数据库操作（PostgreSQL）
+├── image_archive.py           # 图片归档（Cloudflare R2 / S3 兼容）
 ├── memory_extractor.py        # AI 记忆提取
 ├── requirements.txt           # Python 依赖
 ├── Dockerfile                 # 容器配置
@@ -198,6 +199,18 @@ ai-memory-gateway/
 **Q: 不会写代码能搞吗？** 能，部署看文档，管理在 Dashboard 点按钮。
 
 ## 📋 更新日志
+
+### v4.2（2026-07）
+
+- **上下文模板** — 用户消息之后的多条 system 可合并成一条，按模板变量排布
+  - 设置页一个开关 + 一个模板框，无需环境变量
+  - 五个变量：`{{env}}` 环境状态与一起听歌、`{{keyword}}` 关键词命中、`{{hot_news}}` 热点新闻、`{{operit_memory}}` Operit 原生记忆、`{{memory_palace}}` 记忆宫殿召回
+  - 变量无内容时整行删除，模板里自己写的格式要求照常发送
+  - 记忆宫殿分两组：注入深度为 0 时并入模板，深度大于 0 仍按深度独立注入
+  - 未知变量原样保留，便于发现拼写错误；开关关闭时行为与此前完全一致
+- **图片归档拆分为独立模块** — `image_archive.py`，httpx 改为延迟导入，降低启动内存占用
+- **R2 object key 扁平化** — 统一为 `conversation-images/{sha256}.{ext}`，不再按哈希前缀建子目录
+- **历史图片改用 URL 转发** — 读取历史时把 `image_ref` 还原成 `image_url` 多模态块，单轮历史图从约 11 万字符降到几十字符
 
 ### v4.1（2026-07）
 

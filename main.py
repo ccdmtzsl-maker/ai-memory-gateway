@@ -230,6 +230,10 @@ MEMORY_PALACE_INJECTION_DEPTH = int(os.getenv("MEMORY_PALACE_INJECTION_DEPTH", "
 # 关键词触发上下文（轻量世界书）：仅当前轮临时注入 system，不写入历史。
 KEYWORD_CONTEXT_ENABLED = os.getenv("KEYWORD_CONTEXT_ENABLED", "false").lower() == "true"
 KEYWORD_CONTEXT_RULES = os.getenv("KEYWORD_CONTEXT_RULES", "[]")
+
+# 上下文模板：把用户消息后的多条 system 合并成一条，按模板变量排布
+CONTEXT_TEMPLATE_ENABLED = os.getenv("CONTEXT_TEMPLATE_ENABLED", "false").lower() == "true"
+CONTEXT_TEMPLATE = os.getenv("CONTEXT_TEMPLATE", "")
 MEMORY_PALACE_EVENT_BOX_COMPRESS_THRESHOLD = int(os.getenv("MEMORY_PALACE_EVENT_BOX_COMPRESS_THRESHOLD", "4"))
 MEMORY_PALACE_EVENT_BOX_LIVE_HARD_CAP = int(os.getenv("MEMORY_PALACE_EVENT_BOX_LIVE_HARD_CAP", "16"))
 MEMORY_PALACE_EVENT_BOX_SEAL_THRESHOLD = int(os.getenv("MEMORY_PALACE_EVENT_BOX_SEAL_THRESHOLD", "6"))
@@ -357,6 +361,28 @@ async def get_runtime_keyword_context_rules_raw() -> str:
         print(f"[keyword_context] 读取 KEYWORD_CONTEXT_RULES 失败，回退运行时变量: {e}")
     return str(KEYWORD_CONTEXT_RULES or "[]")
 
+
+async def get_runtime_context_template_enabled() -> bool:
+    """上下文模板开关：优先读设置页配置。"""
+    try:
+        db_value = await get_gateway_config("CONTEXT_TEMPLATE_ENABLED", None)
+        if db_value is not None and str(db_value).strip() != "":
+            return _parse_bool(db_value, CONTEXT_TEMPLATE_ENABLED)
+    except Exception as e:
+        print(f"[context_template] 读取 CONTEXT_TEMPLATE_ENABLED 失败，回退运行时变量: {e}")
+    return bool(CONTEXT_TEMPLATE_ENABLED)
+
+
+async def get_runtime_context_template() -> str:
+    """上下文模板内容：优先读设置页配置。"""
+    try:
+        db_value = await get_gateway_config("CONTEXT_TEMPLATE", "")
+        if db_value is not None and str(db_value).strip() != "":
+            return str(db_value)
+    except Exception as e:
+        print(f"[context_template] 读取 CONTEXT_TEMPLATE 失败，回退运行时变量: {e}")
+    return str(CONTEXT_TEMPLATE or "")
+
 # 额外的请求头（有些 API 需要，比如 OpenRouter 需要 Referer）
 EXTRA_REFERER = os.getenv("EXTRA_REFERER", "https://ai-memory-gateway.local")
 EXTRA_TITLE = os.getenv("EXTRA_TITLE", "AI Memory Gateway")
@@ -451,6 +477,8 @@ async def lifespan(app: FastAPI):
                         "MEMORY_PALACE_INJECTION_DEPTH": int,
             "KEYWORD_CONTEXT_ENABLED": lambda v: _parse_bool(v),
             "KEYWORD_CONTEXT_RULES": str,
+            "CONTEXT_TEMPLATE_ENABLED": lambda v: _parse_bool(v),
+            "CONTEXT_TEMPLATE": str,
                     }
                     _RESTORE_DB = {
                         "EMBEDDING_API_KEY": str, "EMBEDDING_BASE_URL": str,
@@ -2303,6 +2331,80 @@ async def build_keyword_context_text(user_message: str, max_rules: int = 5) -> s
     return (chr(10) + chr(10)).join(parts).strip()
 
 
+# 占位 system 消息上挂载上下文块的私有键，渲染后会被移除
+CONTEXT_BLOCKS_KEY = "_ctx_blocks"
+
+
+_CONTEXT_TEMPLATE_VARS = ("env", "keyword", "hot_news", "operit_memory", "memory_palace")
+
+
+def render_context_template(template: str, blocks: dict) -> str:
+    """把模板里的 {{var}} 换成对应上下文块。
+
+    - 有值：正常替换
+    - 无值且变量独占一行：整行删除
+    - 无值且嵌在文字中：替换为空串
+    - 未知变量：原样保留
+    """
+    if not template:
+        return ""
+    out = template
+    for _name in _CONTEXT_TEMPLATE_VARS:
+        _value = str(blocks.get(_name) or "").strip()
+        _pat = "\\{\\{\\s*" + _name + "\\s*\\}\\}"
+        if _value:
+            out = re.sub(_pat, lambda m, v=_value: v, out)
+        else:
+            _pat_line = "(?m)^[ \\t]*" + _pat + "[ \\t]*(?:\\r?\\n|$)"
+            out = re.sub(_pat_line, "", out)
+            out = re.sub(_pat, "", out)
+    out = re.sub("\\n{3,}", chr(10) + chr(10), out)
+    return out.strip()
+
+def insert_context_blocks_holder(messages: list, blocks: dict) -> bool:
+    """在最后一条 user 消息后面插入承载上下文块的占位 system 消息。"""
+    if not isinstance(messages, list):
+        return False
+    insert_at = len(messages)
+    for idx in range(len(messages) - 1, -1, -1):
+        msg = messages[idx]
+        if isinstance(msg, dict) and msg.get("role") == "user":
+            insert_at = idx + 1
+            break
+    messages.insert(insert_at, {
+        "role": "system",
+        "content": "",
+        CONTEXT_BLOCKS_KEY: dict(blocks or {}),
+    })
+    return True
+
+def _find_context_blocks_holder(messages: list):
+    """找挂着上下文块的占位 system 消息（从后往前）。"""
+    if not isinstance(messages, list):
+        return None
+    for msg in reversed(messages):
+        if isinstance(msg, dict) and isinstance(msg.get(CONTEXT_BLOCKS_KEY), dict):
+            return msg
+    return None
+
+
+async def finalize_context_template(messages: list) -> bool:
+    """把占位 system 渲染成模板结果；模板为空或渲染为空则移除该占位消息。"""
+    holder = _find_context_blocks_holder(messages)
+    if holder is None:
+        return False
+    blocks = holder.pop(CONTEXT_BLOCKS_KEY, None) or {}
+    template = await get_runtime_context_template()
+    rendered = render_context_template(template, blocks)
+    if rendered:
+        holder["content"] = rendered
+        return True
+    try:
+        messages.remove(holder)
+    except ValueError:
+        pass
+    return False
+
 def insert_keyword_context_system_message(messages: list, text: str) -> bool:
     if not text or not isinstance(messages, list):
         return False
@@ -2386,6 +2488,12 @@ async def inject_memory_palace_auto_context(messages: list, query: str = "", cha
         return False
     injection = "[以下是本轮自动召回的记忆宫殿上下文，供回应时参考，不要逐字复述]\n" + context
     depth = await get_runtime_memory_palace_injection_depth()
+    # depth=0 且开了模板：并入模板块，跟其他上下文合成一条
+    if depth <= 0:
+        holder = _find_context_blocks_holder(messages)
+        if holder is not None:
+            holder[CONTEXT_BLOCKS_KEY]["memory_palace"] = injection
+            return True
     _insert_memory_palace_system_message(messages, injection, depth=depth)
     return True
 
@@ -3813,20 +3921,30 @@ async def build_partitioned_messages(
         )
         result.append({"role": "user", "content": current_content})
 
-        # 环境/插件上下文后置为轻量 system 消息，避免原始注入污染用户正文。
-        if env_text:
-            result.append({"role": "system", "content": env_text})
-
         keyword_context_text = await build_keyword_context_text(current_content)
-        if keyword_context_text:
-            result.append({"role": "system", "content": keyword_context_text})
-
-        if hot_news_text:
-            result.append({"role": "system", "content": hot_news_text})
-
-        # Operit 原生记忆附件放在最底部，按用户手动检索结果使用。
-        if operit_memory_text:
-            result.append({"role": "system", "content": operit_memory_text})
+        if await get_runtime_context_template_enabled():
+            # 模板模式：塞一个占位 system，记忆宫殿注入后统一渲染成一条
+            result.append({
+                "role": "system",
+                "content": "",
+                CONTEXT_BLOCKS_KEY: {
+                    "env": env_text,
+                    "keyword": keyword_context_text,
+                    "hot_news": hot_news_text,
+                    "operit_memory": operit_memory_text,
+                },
+            })
+        else:
+            # 环境/插件上下文后置为轻量 system 消息，避免原始注入污染用户正文。
+            if env_text:
+                result.append({"role": "system", "content": env_text})
+            if keyword_context_text:
+                result.append({"role": "system", "content": keyword_context_text})
+            if hot_news_text:
+                result.append({"role": "system", "content": hot_news_text})
+            # Operit 原生记忆附件放在最底部，按用户手动检索结果使用。
+            if operit_memory_text:
+                result.append({"role": "system", "content": operit_memory_text})
     
     bp_count = 1 + (1 if summary_parts else 0) + (1 if cleaned_a else 0) + (1 if b_msgs else 0)
     summary_total = sum(len(p) for p in summary_parts)
@@ -3868,20 +3986,30 @@ async def _build_basic_cached(
         )
         result.append({"role": "user", "content": current_content})
 
-        # 环境/插件上下文后置为轻量 system 消息，避免原始注入污染用户正文。
-        if env_text:
-            result.append({"role": "system", "content": env_text})
-
         keyword_context_text = await build_keyword_context_text(current_content)
-        if keyword_context_text:
-            result.append({"role": "system", "content": keyword_context_text})
-
-        if hot_news_text:
-            result.append({"role": "system", "content": hot_news_text})
-
-        # Operit 原生记忆附件放在最底部，按用户手动检索结果使用。
-        if operit_memory_text:
-            result.append({"role": "system", "content": operit_memory_text})
+        if await get_runtime_context_template_enabled():
+            # 模板模式：塞一个占位 system，记忆宫殿注入后统一渲染成一条
+            result.append({
+                "role": "system",
+                "content": "",
+                CONTEXT_BLOCKS_KEY: {
+                    "env": env_text,
+                    "keyword": keyword_context_text,
+                    "hot_news": hot_news_text,
+                    "operit_memory": operit_memory_text,
+                },
+            })
+        else:
+            # 环境/插件上下文后置为轻量 system 消息，避免原始注入污染用户正文。
+            if env_text:
+                result.append({"role": "system", "content": env_text})
+            if keyword_context_text:
+                result.append({"role": "system", "content": keyword_context_text})
+            if hot_news_text:
+                result.append({"role": "system", "content": hot_news_text})
+            # Operit 原生记忆附件放在最底部，按用户手动检索结果使用。
+            if operit_memory_text:
+                result.append({"role": "system", "content": operit_memory_text})
     
     bp_count = 1 + (1 if history else 0)
     print(f"🔒 基础缓存(降级): BP×{bp_count} | 历史{len(history)}条 | 总{len(result)}条messages")
@@ -4944,6 +5072,7 @@ async def chat_completions(request: Request):
         _log_tool_chain_snapshot("final_after_drop_orphan", messages, session_id=session_id, enabled=tool_chain_debug)
 
         await inject_memory_palace_auto_context(messages, query=user_message, recent_messages=messages, explicit_present=partition_has_explicit_memory_palace, session_id=session_id)
+        await finalize_context_template(messages)
         body["messages"] = messages
     
     else:
@@ -4964,8 +5093,15 @@ async def chat_completions(request: Request):
                                 non_partition_has_explicit_memory_palace = True
                             item["text"] = await replace_explicit_memory_variables(txt, query=user_message, recent_messages=messages, session_id=session_id)
         body["messages"] = messages
-        await inject_keyword_context_auto_context(messages, user_message)
+        if await get_runtime_context_template_enabled():
+            # 模板模式：先放占位 system 承载关键词块，记忆宫殿随后并入
+            insert_context_blocks_holder(messages, {
+                "keyword": await build_keyword_context_text(user_message),
+            })
+        else:
+            await inject_keyword_context_auto_context(messages, user_message)
         await inject_memory_palace_auto_context(messages, query=user_message, recent_messages=messages, explicit_present=non_partition_has_explicit_memory_palace, session_id=session_id)
+        await finalize_context_template(messages)
 
         # 非分区模式下也要兜一下工具轮次：
         # Operit 有时会把原始 user 又贴到末尾，导致上游把它当成新问题，
@@ -10116,6 +10252,8 @@ async def get_settings():
             "MEMORY_PALACE_INJECTION_DEPTH": int(db.get("MEMORY_PALACE_INJECTION_DEPTH") or MEMORY_PALACE_INJECTION_DEPTH),
             "KEYWORD_CONTEXT_ENABLED": _parse_bool(db.get("KEYWORD_CONTEXT_ENABLED"), KEYWORD_CONTEXT_ENABLED),
             "KEYWORD_CONTEXT_RULES": db.get("KEYWORD_CONTEXT_RULES") or str(KEYWORD_CONTEXT_RULES),
+            "CONTEXT_TEMPLATE_ENABLED": _parse_bool(db.get("CONTEXT_TEMPLATE_ENABLED"), CONTEXT_TEMPLATE_ENABLED),
+            "CONTEXT_TEMPLATE": db.get("CONTEXT_TEMPLATE") or str(CONTEXT_TEMPLATE),
 
             # System Prompt
             "systemPrompt": db.get("systemPrompt") or _DEFAULT_SYSTEM_PROMPT or "",
@@ -10229,6 +10367,8 @@ async def save_settings(request: Request):
             "MEMORY_PALACE_INJECTION_DEPTH": int,
             "KEYWORD_CONTEXT_ENABLED": lambda v: _parse_bool(v),
             "KEYWORD_CONTEXT_RULES": str,
+            "CONTEXT_TEMPLATE_ENABLED": lambda v: _parse_bool(v),
+            "CONTEXT_TEMPLATE": str,
         }
 
         # database.py 全局变量映射（开源版用 EMBEDDING_API_KEY + EMBEDDING_BASE_URL）

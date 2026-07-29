@@ -6324,6 +6324,8 @@ async def _collect_user_impression_memory_material(character_id: str = "default"
     候选策略：
 - initial 模式：每个画像房间独立处理，按 date/created_at 建完整时间轴，阶段均衡分配名额。
 - update 模式：如果传入了 last_consumed_node_id，只取该 ID 之后的新增记忆，所有房间总计不超过 70 条。
+  initial 只收未归档节点（含事件盒 summary）；update 反过来——收归档节点、排除事件盒 summary，
+  避免刚生成就被压缩归档的记忆永远进不了画像。
     initial 模式按时间阶段均衡分配名额；update 模式按 0.1/0.2/0.3/0.4 偏向近期阶段；
     阶段内使用向量 MMR 选择代表性且不重复的节点。
     """
@@ -6354,7 +6356,7 @@ async def _collect_user_impression_memory_material(character_id: str = "default"
             FROM memory_palace_nodes n
             LEFT JOIN memory_palace_vectors v ON v.memory_id = n.id
             WHERE n.room IN ('user_room', 'bedroom', 'study', 'attic', 'windowsill')
-              AND n.archived = FALSE
+              AND n.is_box_summary = FALSE
               AND n.content IS NOT NULL
               AND n.content <> ''
               AND n.id > $1
@@ -6498,8 +6500,8 @@ async def _collect_user_impression_memory_material(character_id: str = "default"
 
 
 async def _collect_user_impression_recent_messages(mode: str = "initial", session_id: str = None) -> dict:
-    """收集用户画像生成用近期聊天。initial=15, update=50。"""
-    limit = 20 if mode == "initial" else 40
+    """收集用户画像生成用近期聊天。initial=20, update=50。"""
+    limit = 20 if mode == "initial" else 50
     pool = await get_pool()
     async with pool.acquire() as conn:
         if session_id:

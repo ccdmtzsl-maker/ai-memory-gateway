@@ -4078,6 +4078,11 @@ async def build_partitioned_messages(
             history=history,
             shorten_time=True,
         )
+        if _sparse_ts:
+            _prev_dt = _last_message_dt(a_msgs, b_msgs)
+            _cur_prefix = build_current_message_timestamp_prefix(_prev_dt, current_content)
+            if _cur_prefix:
+                current_content = _prepend_text_to_content(current_content, _cur_prefix)
         result.append({"role": "user", "content": current_content})
 
         keyword_context_text = await build_keyword_context_text(current_content)

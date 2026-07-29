@@ -75,6 +75,7 @@ CACHE_SUMMARY_MODEL = os.getenv("CACHE_SUMMARY_MODEL", "anthropic/claude-haiku-4
 CACHE_PARTITION_TRIGGER = os.getenv("CACHE_PARTITION_TRIGGER", "rounds")  # rounds=按轮次 | time=按时间窗口
 CACHE_PARTITION_WINDOW = int(os.getenv("CACHE_PARTITION_WINDOW", "30"))  # 时间窗口（分钟），仅 trigger=time 时生效
 CACHE_PARTITION_KEEP_A_TOOLS = os.getenv("CACHE_PARTITION_KEEP_A_TOOLS", "false").lower() == "true"  # A区是否保留tool/tool_calls
+SPARSE_TIMESTAMP_ENABLED = os.getenv("SPARSE_TIMESTAMP_ENABLED", "false").lower() == "true"  # A区无附件消息按间隔稀疏打时间戳
 PARTITION_SESSION_ID = os.getenv("PARTITION_SESSION_ID", "")
 TOOL_CHAIN_DEBUG = os.getenv("TOOL_CHAIN_DEBUG", "false").lower() == "true"  # 工具链结构诊断日志
 
@@ -381,6 +382,16 @@ async def get_runtime_context_template_enabled() -> bool:
         print(f"[context_template] 读取 CONTEXT_TEMPLATE_ENABLED 失败，回退运行时变量: {e}")
     return bool(CONTEXT_TEMPLATE_ENABLED)
 
+
+async def get_runtime_sparse_timestamp_enabled() -> bool:
+    """稀疏时间戳开关：优先读设置页配置。"""
+    try:
+        db_value = await get_gateway_config("SPARSE_TIMESTAMP_ENABLED", None)
+        if db_value is not None and str(db_value).strip() != "":
+            return _parse_bool(db_value, SPARSE_TIMESTAMP_ENABLED)
+    except Exception as e:
+        print(f"[sparse_timestamp] 读取 SPARSE_TIMESTAMP_ENABLED 失败，回退运行时变量: {e}")
+    return bool(SPARSE_TIMESTAMP_ENABLED)
 
 async def get_runtime_context_template() -> str:
     """上下文模板内容：优先读设置页配置。"""

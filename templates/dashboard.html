@@ -630,6 +630,11 @@
                         <small class="form-hint">开启后 A 区不再剥离 tool/tool_calls；更稳但会增加上下文长度。</small>
                     </div>
                     <div class="settings-field settings-toggle-row">
+                        <label>A 区稀疏时间戳 (SPARSE_TIMESTAMP_ENABLED)</label>
+                        <label class="toggle"><input type="checkbox" id="set-SPARSE_TIMESTAMP_ENABLED"><span class="toggle-slider"></span></label>
+                        <small class="form-hint">仅 A 区生效。无附件时间戳的消息按间隔补戳：首条/跨天打 <code>[07-29 周三 18:17]</code>，同天间隔满 15 分钟打 <code>[18:17]</code>，间隔满 6 小时再加一行「距上次对话约 N 小时」；时间戳与正文之间空一行。已带 Operit 附件时间戳的消息不重复打戳。关闭时沿用每条 user 都打紧凑戳的旧行为。</small>
+                    </div>
+                    <div class="settings-field settings-toggle-row">
                         <label>工具链诊断日志</label>
                         <label class="toggle"><input type="checkbox" id="set-TOOL_CHAIN_DEBUG"><span class="toggle-slider"></span></label>
                         <small class="form-hint">开启后在后台日志输出 tool_calls/tool_result 的结构快照；只记录结构和短片段，不记录完整工具结果。</small>
@@ -732,7 +737,7 @@
         </main>
     </div>
 
-    <script src="/static/js/dashboard.js?v=7.10"></script>
+    <script src="/static/js/dashboard.js?v=7.11"></script>
 <script src="/static/js/daily_impressions.js?v=1.5"></script>
 <script>
     // --- 模型预设管理（右上角切换面板） ---

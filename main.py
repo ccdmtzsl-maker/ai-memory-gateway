@@ -499,6 +499,7 @@ async def lifespan(app: FastAPI):
             "KEYWORD_CONTEXT_RULES": str,
             "CONTEXT_TEMPLATE_ENABLED": lambda v: _parse_bool(v),
             "CONTEXT_TEMPLATE": str,
+            "SPARSE_TIMESTAMP_ENABLED": lambda v: _parse_bool(v),
                     }
                     _RESTORE_DB = {
                         "EMBEDDING_API_KEY": str, "EMBEDDING_BASE_URL": str,
@@ -10361,6 +10362,7 @@ async def get_settings():
             "KEYWORD_CONTEXT_RULES": db.get("KEYWORD_CONTEXT_RULES") or str(KEYWORD_CONTEXT_RULES),
             "CONTEXT_TEMPLATE_ENABLED": _parse_bool(db.get("CONTEXT_TEMPLATE_ENABLED"), CONTEXT_TEMPLATE_ENABLED),
             "CONTEXT_TEMPLATE": db.get("CONTEXT_TEMPLATE") or str(CONTEXT_TEMPLATE or DEFAULT_CONTEXT_TEMPLATE),
+            "SPARSE_TIMESTAMP_ENABLED": _parse_bool(db.get("SPARSE_TIMESTAMP_ENABLED"), SPARSE_TIMESTAMP_ENABLED),
 
             # System Prompt
             "systemPrompt": db.get("systemPrompt") or _DEFAULT_SYSTEM_PROMPT or "",
@@ -10476,6 +10478,7 @@ async def save_settings(request: Request):
             "KEYWORD_CONTEXT_RULES": str,
             "CONTEXT_TEMPLATE_ENABLED": lambda v: _parse_bool(v),
             "CONTEXT_TEMPLATE": str,
+            "SPARSE_TIMESTAMP_ENABLED": lambda v: _parse_bool(v),
         }
 
         # database.py 全局变量映射（开源版用 EMBEDDING_API_KEY + EMBEDDING_BASE_URL）

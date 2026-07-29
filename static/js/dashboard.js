@@ -3064,7 +3064,9 @@ function initSettingsHints() {
         // 说明太短没必要折叠
         if ((hint.textContent || '').trim().length < 28) return;
 
-        const label = field.querySelector(':scope > label');
+        // 兼容两种结构：label 直接挂在 field 下，或被包进 .settings-toggle-row
+        const label = field.querySelector(':scope > label')
+            || field.querySelector(':scope > .settings-toggle-row > label:first-child');
         if (!label) return;
 
         if (!hint.id) hint.id = 'hint-auto-' + idx;

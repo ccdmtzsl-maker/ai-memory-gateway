@@ -1589,31 +1589,12 @@ body {
 /* ============================================
    说明气泡：设置项标签后的小问号，点开才显示说明
    ============================================ */
-/* 用 grid 而不是 flex：说明能确定性地独占第二行，
-   不会和标签/开关挤在同一行（flex-basis:100% 在 space-between 下不可靠）*/
-.settings-toggle-row {
-    display: grid;
-    grid-template-columns: 1fr auto;
-    align-items: center;
-    column-gap: 14px;
-}
-
+/* 标签内联容纳问号，不影响原有 flex 行布局 */
 .settings-toggle-row > label:first-child {
-    grid-column: 1;
-    margin-bottom: 0;
     display: inline-flex;
     align-items: center;
     gap: 5px;
     flex-wrap: wrap;
-}
-
-.settings-toggle-row > .toggle {
-    grid-column: 2;
-}
-
-/* 说明跨满两列，落到标签与开关下方 */
-.settings-toggle-row > .form-hint {
-    grid-column: 1 / -1;
 }
 
 /* 问号：透明底细线圈，克制不抢视线 */

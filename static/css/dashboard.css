@@ -1591,41 +1591,59 @@ body {
    ============================================ */
 .settings-toggle-row {
     flex-wrap: wrap;
+    row-gap: 0;
 }
 
-.settings-toggle-row .form-hint {
-    flex-basis: 100%;
+/* 标签占据剩余空间，问号跟在文字后面，开关保持最右 */
+.settings-toggle-row > label:first-child {
+    flex: 1 1 auto;
+    min-width: 0;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+
+/* 说明独占一整行，不与开关争空间 */
+.settings-toggle-row > .form-hint,
+.settings-field > .form-hint.hint-revealed {
+    flex: 0 0 100%;
+    width: 100%;
+    order: 9;
 }
 
 .hint-toggle {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 16px;
-    height: 16px;
-    margin-left: 6px;
+    width: 15px;
+    height: 15px;
     padding: 0;
-    border: none;
+    border: 1px solid var(--border);
     border-radius: 50%;
-    background: var(--border);
-    color: var(--text-light);
-    font-size: 11px;
-    font-weight: 700;
+    background: transparent;
+    color: var(--text-muted);
+    font-size: 10px;
+    font-weight: 600;
     line-height: 1;
     cursor: pointer;
-    vertical-align: middle;
     flex-shrink: 0;
     transition: var(--transition);
 }
 
-.hint-toggle:hover,
+.hint-toggle:hover {
+    border-color: var(--primary);
+    color: var(--primary);
+}
+
 .hint-toggle[aria-expanded="true"] {
+    border-color: var(--primary);
     background: var(--primary);
     color: #fff;
 }
 
 .hint-toggle:focus-visible {
-    outline: 2px solid var(--primary);
+    outline: 2px solid var(--primary-light);
     outline-offset: 2px;
 }
 
@@ -1635,10 +1653,20 @@ body {
 
 .form-hint.hint-revealed {
     display: block;
-    margin-top: 8px;
-    padding: 8px 10px;
+    margin-top: 10px;
+    padding: 10px 12px;
     border-radius: var(--radius-xs);
-    background: var(--border-light);
-    border-left: 3px solid var(--primary);
+    background: var(--bg);
+    border: 1px solid var(--border-light);
     color: var(--text-light);
+    line-height: 1.7;
 }
+
+.form-hint.hint-revealed code {
+    padding: 1px 5px;
+    border-radius: 4px;
+    background: var(--card);
+    border: 1px solid var(--border-light);
+    font-size: 11px;
+}
+

@@ -234,6 +234,15 @@ KEYWORD_CONTEXT_RULES = os.getenv("KEYWORD_CONTEXT_RULES", "[]")
 # 上下文模板：把用户消息后的多条 system 合并成一条，按模板变量排布
 CONTEXT_TEMPLATE_ENABLED = os.getenv("CONTEXT_TEMPLATE_ENABLED", "false").lower() == "true"
 CONTEXT_TEMPLATE = os.getenv("CONTEXT_TEMPLATE", "")
+
+# 默认模板：仅在设置页从未保存过内容时作为初始值展示
+DEFAULT_CONTEXT_TEMPLATE = (
+    "{{env}}" "\n"
+    "{{keyword}}" "\n"
+    "{{hot_news}}" "\n"
+    "{{operit_memory}}" "\n"
+    "{{memory_palace}}"
+)
 MEMORY_PALACE_EVENT_BOX_COMPRESS_THRESHOLD = int(os.getenv("MEMORY_PALACE_EVENT_BOX_COMPRESS_THRESHOLD", "4"))
 MEMORY_PALACE_EVENT_BOX_LIVE_HARD_CAP = int(os.getenv("MEMORY_PALACE_EVENT_BOX_LIVE_HARD_CAP", "16"))
 MEMORY_PALACE_EVENT_BOX_SEAL_THRESHOLD = int(os.getenv("MEMORY_PALACE_EVENT_BOX_SEAL_THRESHOLD", "6"))
@@ -381,7 +390,7 @@ async def get_runtime_context_template() -> str:
             return str(db_value)
     except Exception as e:
         print(f"[context_template] 读取 CONTEXT_TEMPLATE 失败，回退运行时变量: {e}")
-    return str(CONTEXT_TEMPLATE or "")
+    return str(CONTEXT_TEMPLATE or DEFAULT_CONTEXT_TEMPLATE)
 
 # 额外的请求头（有些 API 需要，比如 OpenRouter 需要 Referer）
 EXTRA_REFERER = os.getenv("EXTRA_REFERER", "https://ai-memory-gateway.local")
@@ -10253,7 +10262,7 @@ async def get_settings():
             "KEYWORD_CONTEXT_ENABLED": _parse_bool(db.get("KEYWORD_CONTEXT_ENABLED"), KEYWORD_CONTEXT_ENABLED),
             "KEYWORD_CONTEXT_RULES": db.get("KEYWORD_CONTEXT_RULES") or str(KEYWORD_CONTEXT_RULES),
             "CONTEXT_TEMPLATE_ENABLED": _parse_bool(db.get("CONTEXT_TEMPLATE_ENABLED"), CONTEXT_TEMPLATE_ENABLED),
-            "CONTEXT_TEMPLATE": db.get("CONTEXT_TEMPLATE") or str(CONTEXT_TEMPLATE),
+            "CONTEXT_TEMPLATE": db.get("CONTEXT_TEMPLATE") or str(CONTEXT_TEMPLATE or DEFAULT_CONTEXT_TEMPLATE),
 
             # System Prompt
             "systemPrompt": db.get("systemPrompt") or _DEFAULT_SYSTEM_PROMPT or "",

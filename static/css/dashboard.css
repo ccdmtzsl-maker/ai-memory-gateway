@@ -1585,3 +1585,60 @@ body {
     grid-template-columns: repeat(3, minmax(220px, 1fr)) !important;
 }
 \n
+
+/* ============================================
+   说明气泡：设置项标签后的小问号，点开才显示说明
+   ============================================ */
+.settings-toggle-row {
+    flex-wrap: wrap;
+}
+
+.settings-toggle-row .form-hint {
+    flex-basis: 100%;
+}
+
+.hint-toggle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 16px;
+    height: 16px;
+    margin-left: 6px;
+    padding: 0;
+    border: none;
+    border-radius: 50%;
+    background: var(--border);
+    color: var(--text-light);
+    font-size: 11px;
+    font-weight: 700;
+    line-height: 1;
+    cursor: pointer;
+    vertical-align: middle;
+    flex-shrink: 0;
+    transition: var(--transition);
+}
+
+.hint-toggle:hover,
+.hint-toggle[aria-expanded="true"] {
+    background: var(--primary);
+    color: #fff;
+}
+
+.hint-toggle:focus-visible {
+    outline: 2px solid var(--primary);
+    outline-offset: 2px;
+}
+
+.form-hint.hint-collapsed {
+    display: none;
+}
+
+.form-hint.hint-revealed {
+    display: block;
+    margin-top: 8px;
+    padding: 8px 10px;
+    border-radius: var(--radius-xs);
+    background: var(--border-light);
+    border-left: 3px solid var(--primary);
+    color: var(--text-light);
+}

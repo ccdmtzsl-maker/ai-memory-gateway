@@ -62,6 +62,8 @@ document.addEventListener('DOMContentLoaded', () => {
     initNavigation();
     // 初始化Tab切换
     initTabs();
+    // 把设置项说明收进标签旁的小问号
+    initSettingsHints();
     // 导出统计改为懒加载，只在切到导出页时才查
     // 默认打开后台日志页时，直接加载日志内容
     loadDashboardLogs();
@@ -3044,4 +3046,45 @@ async function loadImageArchiveStatus() {
     } catch (e) {
         el.innerHTML = '<span style="color:var(--text-muted);">状态读取失败</span>';
     }
+}
+
+// ============================================
+// 设置项说明气泡：把 form-hint 收进标签旁的小问号里
+// ============================================
+function initSettingsHints() {
+    const fields = document.querySelectorAll('#section-settings .settings-field');
+    fields.forEach((field, idx) => {
+        const hint = field.querySelector(':scope > .form-hint');
+        if (!hint) return;
+        // 已处理过
+        if (hint.dataset.hintWired === '1') return;
+        // 带 id 的说明位是动态状态显示（测试结果、字数统计等），保持常显
+        if (hint.id) return;
+        if (hint.querySelector('[id]')) return;
+        // 说明太短没必要折叠
+        if ((hint.textContent || '').trim().length < 28) return;
+
+        const label = field.querySelector(':scope > label');
+        if (!label) return;
+
+        if (!hint.id) hint.id = 'hint-auto-' + idx;
+        hint.classList.add('hint-collapsed');
+        hint.dataset.hintWired = '1';
+
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'hint-toggle';
+        btn.textContent = '?';
+        btn.setAttribute('aria-expanded', 'false');
+        btn.setAttribute('aria-controls', hint.id);
+        btn.setAttribute('aria-label', '查看说明');
+        btn.title = '查看说明';
+        btn.addEventListener('click', (e) => {
+            e.preventDefault();
+            const open = hint.classList.toggle('hint-revealed');
+            hint.classList.toggle('hint-collapsed', !open);
+            btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+        });
+        label.appendChild(btn);
+    });
 }

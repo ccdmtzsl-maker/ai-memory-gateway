@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Memory Gateway</title>
-    <link rel="stylesheet" href="/static/css/dashboard.css?v=4.2">
+    <link rel="stylesheet" href="/static/css/dashboard.css?v=4.3">
 </head>
 <body>
 <!-- 模型预设切换按钮（右上角固定） -->
@@ -630,9 +630,9 @@
                         <small class="form-hint">开启后 A 区不再剥离 tool/tool_calls；更稳但会增加上下文长度。</small>
                     </div>
                     <div class="settings-field settings-toggle-row">
-                        <label>A 区稀疏时间戳 (SPARSE_TIMESTAMP_ENABLED)</label>
+                        <label>A 区稀疏时间戳</label>
                         <label class="toggle"><input type="checkbox" id="set-SPARSE_TIMESTAMP_ENABLED"><span class="toggle-slider"></span></label>
-                        <small class="form-hint">仅 A 区生效。无附件时间戳的消息按间隔补戳：首条/跨天打 <code>[07-29 周三 18:17]</code>，同天间隔满 15 分钟打 <code>[18:17]</code>，间隔满 6 小时再加一行「距上次对话约 N 小时」；时间戳与正文之间空一行。已带 Operit 附件时间戳的消息不重复打戳。关闭时沿用每条 user 都打紧凑戳的旧行为。</small>
+                        <small class="form-hint"><code>SPARSE_TIMESTAMP_ENABLED</code> — 仅 A 区生效。不再逐条硬打时间戳，改为按间隔补：首条与跨天打 <code>[07-29 周三 18:17]</code>，同天间隔满 15 分钟打 <code>[18:17]</code>，满 6 小时再加一行「距上次对话约 N 小时」。时间戳与正文之间空一行；已带 Operit 附件时间戳的消息不重复打戳。关闭时沿用每条 user 都打紧凑戳的旧行为。</small>
                     </div>
                     <div class="settings-field settings-toggle-row">
                         <label>工具链诊断日志</label>

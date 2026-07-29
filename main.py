@@ -4132,7 +4132,8 @@ async def _build_basic_cached(
             "content": [{"type": "text", "text": base_prompt, "cache_control": {"type": "ephemeral"}}]
         })
     
-    h_cleaned = _prepend_timestamp_to_user_messages(history)
+    _sparse_ts = await get_runtime_sparse_timestamp_enabled()
+    h_cleaned = _prepend_timestamp_to_user_messages(history, sparse=_sparse_ts)
     
     # 从末尾往前找第一条非tool消息打BP
     for j in range(len(h_cleaned) - 1, -1, -1):
@@ -4148,6 +4149,11 @@ async def _build_basic_cached(
             history=history,
             shorten_time=False,
         )
+        if _sparse_ts:
+            _prev_dt = _last_message_dt(history)
+            _cur_prefix = build_current_message_timestamp_prefix(_prev_dt, current_content)
+            if _cur_prefix:
+                current_content = _prepend_text_to_content(current_content, _cur_prefix)
         result.append({"role": "user", "content": current_content})
 
         keyword_context_text = await build_keyword_context_text(current_content)

@@ -9931,7 +9931,8 @@ async def api_conversations(page: int = 1, per_page: int = 20):
     page = max(1, int(page))
     per_page = max(1, min(int(per_page), 100))
     try:
-        results, total = await get_conversations_paginated(page, per_page)
+        with timed_block("对话列表分页 get_conversations_paginated", page=page, per_page=per_page):
+            results, total = await get_conversations_paginated(page, per_page)
         total_pages = max(1, -(-total // per_page))  # 向上取整
         result = {"conversations": results, "total": total, "page": page, "per_page": per_page, "total_pages": total_pages}
         return result
@@ -9947,7 +9948,8 @@ async def api_conversation_messages(session_id: str, limit: int = 30, offset: in
     offset = max(0, int(offset or 0))
     try:
         pool = await get_pool()
-        async with pool.acquire() as conn:
+        with timed_block("会话消息查询", session_id=session_id, limit=limit, offset=offset):
+          async with pool.acquire() as conn:
             total = await conn.fetchval(
                 "SELECT COUNT(*) FROM conversations WHERE session_id = $1", session_id
             )

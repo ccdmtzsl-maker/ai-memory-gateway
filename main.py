@@ -749,6 +749,98 @@ def _database_pool_snapshot() -> str:
         return f"pool=读取失败({e})"
 
 
+# 代理层可能带上「请求进入边缘节点的时刻」，各家用的头不一样。
+# 如果能读到，就能算出请求在应用外面躺了多久——这段时间中间件测不到。
+_PROXY_START_HEADERS = (
+    "x-request-start",        # Heroku / 部分 nginx 配置
+    "x-queue-start",
+    "x-request-received",
+    "x-envoy-downstream-service-time",
+)
+
+
+def _request_wait_text(request: Request) -> str:
+    """算出请求从进代理到被应用处理之间等了多久。
+
+    读不到就返回代理带来的头名字，这样至少知道有哪些线索可用，
+    下次可以换个头解析。
+    """
+    try:
+        for name in _PROXY_START_HEADERS:
+            raw = request.headers.get(name)
+            if not raw:
+                continue
+            token = raw.strip().lower().lstrip("t=").rstrip("m")
+            try:
+                value = float(token)
+            except ValueError:
+                continue
+            # 有的用秒、有的用毫秒、有的用微秒，按量级判断
+            if value > 1e15:
+                start_sec = value / 1e6
+            elif value > 1e12:
+                start_sec = value / 1e3
+            else:
+                start_sec = value
+            wait_ms = (time.time() - start_sec) * 1000
+            if -60000 < wait_ms < 600000:
+                return f"{name}={wait_ms:.0f}ms"
+        # 一个都没读到：把代理相关的头名列出来，供下一步排查
+        proxy_headers = [
+            k for k in request.headers.keys()
+            if k.lower().startswith(("x-", "cf-", "fly-", "render-", "via"))
+        ]
+        if proxy_headers:
+            return "无时间戳头, 代理头: " + ",".join(sorted(proxy_headers)[:10])
+        return "无代理头"
+    except Exception as exc:
+        return f"读取失败({exc})"
+
+
+def _wrap_response_send_timing(request: Request, response, path: str) -> None:
+    """给响应体的迭代器包一层计时。
+
+    中间件的 elapsed 只覆盖「生成响应对象」，body 是在中间件返回之后
+    才被逐块发出去的。如果客户端读得慢、或出口带宽被限，时间会花在这里
+    而现有日志完全看不见。
+
+    出错一律吞掉：诊断代码绝对不能让正常响应挂掉。
+    """
+    try:
+        iterator = getattr(response, "body_iterator", None)
+        if iterator is None:
+            return
+        # SSE 流式对话本身就是长连接，逐字输出几十秒是正常的，不测
+        content_type = str(response.headers.get("content-type") or "")
+        if "text/event-stream" in content_type:
+            return
+
+        query = request.url.query
+        target = f"{path}?{query}" if query else path
+
+        async def _timed_body():
+            send_started = time.perf_counter()
+            total_bytes = 0
+            chunks = 0
+            try:
+                async for chunk in iterator:
+                    total_bytes += len(chunk or b"")
+                    chunks += 1
+                    yield chunk
+            finally:
+                send_ms = (time.perf_counter() - send_started) * 1000
+                if send_ms >= SLOW_QUERY_MS:
+                    add_dashboard_log(
+                        "error" if send_ms >= 3000 else "run",
+                        f"📤 响应发送耗时 {target} | {send_ms:.0f}ms | "
+                        f"{total_bytes}B / {chunks}块（压缩前）",
+                        category="performance",
+                    )
+
+        response.body_iterator = _timed_body()
+    except Exception:
+        return
+
 @app.middleware("http")
 async def dashboard_performance_diagnostic_middleware(request: Request, call_next):
     path = request.url.path
@@ -769,6 +861,10 @@ async def dashboard_performance_diagnostic_middleware(request: Request, call_nex
     try:
         response = await call_next(request)
         status_code = int(getattr(response, "status_code", 200) or 200)
+        # 响应体的发送发生在中间件返回之后，上面那个 elapsed_ms 测不到它。
+        # 实测浏览器等了 24 秒而这里只报 55ms，差值可能就藏在发送阶段，
+        # 所以把 body 迭代器包一层，量出「首字节之后到发完」用了多久。
+        _wrap_response_send_timing(request, response, path)
         return response
     finally:
         elapsed_ms = (time.perf_counter() - started) * 1000
@@ -784,7 +880,7 @@ async def dashboard_performance_diagnostic_middleware(request: Request, call_nex
             target = f"{path}?{query}" if query else path
             add_dashboard_log(
                 level,
-                f"⏱️ API性能 {request.method} {target} | {elapsed_ms:.0f}ms | HTTP {status_code} | 开始[{pool_before}] | 结束[{pool_after}]",
+                f"⏱️ API性能 {request.method} {target} | {elapsed_ms:.0f}ms | HTTP {status_code} | 开始[{pool_before}] | 结束[{pool_after}] | 入口等待[{_request_wait_text(request)}]",
                 category="performance",
             )
 

@@ -5443,7 +5443,7 @@ async def chat_completions(request: Request):
                         process_memories_background(session_id, user_message, assistant_msg, model, 
                                                     context_messages=original_messages, skip_conversation_log=(skip_conversation_log or sync_saved_tool_call),
                                                     tool_messages=tool_messages, assistant_tool_calls=assistant_tool_calls,
-                                                    assistant_reasoning=assistant_reasoning)
+                                                    assistant_reasoning=assistant_reasoning, is_auto_trigger=is_auto_trigger)
                     )
                 
                 return JSONResponse(status_code=200, content=resp_data)
@@ -5604,7 +5604,7 @@ async def stream_and_capture(headers: dict, body: dict, session_id: str, user_me
             process_memories_background(session_id, user_message, assistant_msg, model, 
                                         context_messages=original_messages, skip_conversation_log=(skip_conversation_log or sync_saved_tool_call),
                                         tool_messages=tool_messages, assistant_tool_calls=assistant_tool_calls,
-                                        assistant_reasoning=assistant_reasoning)
+                                        assistant_reasoning=assistant_reasoning, is_auto_trigger=is_auto_trigger)
         )
 
 

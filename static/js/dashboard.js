@@ -134,6 +134,77 @@ window.addEventListener('load', () => {
 });
 
 // ============================================
+// GET 请求超时重试
+//
+// 背景：连接空闲一段时间后可能被中间设备静默丢弃（平板省电、运营商
+// NAT 超时、边缘代理回收都会导致）。浏览器不知情，仍把请求发进这条
+// 死连接，然后进入 TCP 重传退避，实测要等约 30 秒才放弃。
+// 实测数据：浏览器端 29482ms，服务端应用内只花 66ms。
+//
+// 处理：GET 请求 5 秒没响应就中止重发，新请求会走新连接。
+//
+// 只对 GET 生效。POST/PUT/DELETE 重发可能造成重复导入、重复删除、
+// 重复触发模型生成，一律不碰——宁可让写操作干等，也不能重复执行。
+// ============================================
+const GET_RETRY = {
+    timeoutMs: 5000,      // 首次尝试的超时时间
+    enabled: true,
+};
+
+(function instrumentGetRetry() {
+    const inner = window.fetch;
+
+    const isPlainGet = (url, opts) => {
+        if (!GET_RETRY.enabled) return false;
+        // Request 对象形式不处理：拿不准里面的 method 和 body
+        if (typeof url !== 'string') return false;
+        const method = String((opts && opts.method) || 'GET').toUpperCase();
+        if (method !== 'GET') return false;
+        // 调用方自带 signal 说明它自己管取消，不插手
+        if (opts && opts.signal) return false;
+        // 上报接口自身不参与，避免出问题时互相触发
+        if (url.indexOf('/api/dashboard/client-timing') >= 0) return false;
+        return true;
+    };
+
+    window.fetch = function(url, opts) {
+        if (!isPlainGet(url, opts)) {
+            return inner.call(this, url, opts);
+        }
+
+        const self = this;
+        const controller = new AbortController();
+        let timedOut = false;
+        const timer = setTimeout(() => {
+            timedOut = true;
+            try { controller.abort(); } catch (e) {}
+        }, GET_RETRY.timeoutMs);
+
+        const firstOpts = Object.assign({}, opts || {}, { signal: controller.signal });
+
+        return inner.call(self, url, firstOpts).then(resp => {
+            clearTimeout(timer);
+            return resp;
+        }).catch(err => {
+            clearTimeout(timer);
+            if (!timedOut) throw err;   // 真实错误，原样抛出
+
+            // 超时了：重发一次。这次不设超时——如果这个接口本来就慢
+            // （比如导出），第二次要让它跑完，否则会陷入无限超时。
+            if (typeof reportClientTiming === 'function') {
+                reportClientTiming(
+                    'retry', url.slice(0, 120), GET_RETRY.timeoutMs,
+                    '首次无响应，已中止并重发'
+                );
+            }
+            const retryOpts = Object.assign({}, opts || {});
+            delete retryOpts.signal;
+            return inner.call(self, url, retryOpts);
+        });
+    };
+})();
+
+// ============================================
 // 全局状态
 // ============================================
 let pendingJsonData = null;

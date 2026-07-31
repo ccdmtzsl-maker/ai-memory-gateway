@@ -4190,6 +4190,23 @@ async def _build_basic_cached(
 # 后台记忆处理
 # ============================================================
 
+AUTO_TRIGGER_TAG = "<自动触发>"
+
+
+def is_auto_trigger_message(content) -> bool:
+    """判断消息是否为 Operit 主动触发消息（标签必须在正文最开头）。
+
+    命中的消息只发给上游、不写入 conversations 表的 user 记录，
+    因此历史里只留下 assistant 的主动发言。
+    """
+    if isinstance(content, str):
+        return content.lstrip().startswith(AUTO_TRIGGER_TAG)
+    if isinstance(content, list):
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "text":
+                return str(block.get("text", "") or "").lstrip().startswith(AUTO_TRIGGER_TAG)
+    return False
+
 def clean_user_message_for_log(user_msg: str, history: list = None) -> str:
     """保存到对话记录前，清理附件/proxy注入，避免Dashboard显示大段原始上下文。"""
     if not isinstance(user_msg, str):

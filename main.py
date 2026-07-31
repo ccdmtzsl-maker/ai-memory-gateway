@@ -4720,6 +4720,7 @@ async def process_memories_background(session_id: str, user_msg: str, assistant_
     """
     global _round_counter
     
+    _bg_started = time.perf_counter()
     try:
         # Debug: 打印存储分支判断依据
         print(f"💾 process_memories_background: user_msg={bool(user_msg)}, tool_messages={len(tool_messages) if tool_messages else 0}, "
@@ -4819,6 +4820,13 @@ async def process_memories_background(session_id: str, user_msg: str, assistant_
         # 和回复保存后的分区后台自动提取负责，避免旧 gateway_config 书签逻辑与新游标混淆。
         if not skip_conversation_log:
             await run_partition_auto_extract_after_response(session_id)
+        _bg_ms = (time.perf_counter() - _bg_started) * 1000
+        if _bg_ms >= 1000:
+            add_dashboard_log(
+                "warn",
+                f"🐌 回复后台处理 {_bg_ms:.0f}ms（存储+自动提取）",
+                category="performance", session_id=session_id,
+            )
         return
             
     except Exception as e:

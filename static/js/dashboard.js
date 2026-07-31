@@ -168,6 +168,16 @@ function initNavigation() {
 }
 
 function switchSection(name) {
+    // 端到端计时：从点击到该页数据加载完成。
+    // 这个数字才是你实际感受到的等待时间。
+    const _sectionStarted = performance.now();
+    const _reportSection = (tag) => {
+        const ms = performance.now() - _sectionStarted;
+        if (ms >= CLIENT_PERF.renderSlowMs) {
+            reportClientTiming('render', '切到 ' + name + ' 页(' + tag + ')', ms);
+        }
+    };
+
     // 更新导航激活状态
     document.querySelectorAll('.nav-item[data-section]').forEach(item => {
         item.classList.toggle('active', item.dataset.section === name);
@@ -183,10 +193,12 @@ function switchSection(name) {
         loadExportStats();
     }
     if (name === 'conversations') {
-        loadConversationList(1);
+        const p = loadConversationList(1);
+        if (p && p.then) p.then(() => _reportSection('数据到手')).catch(() => {});
     }
     if (name === 'threads') {
-        loadThreads();
+        const p = loadThreads();
+        if (p && p.then) p.then(() => _reportSection('数据到手')).catch(() => {});
     }
     if (name === 'user-impression') {
         loadUserImpression();
@@ -195,8 +207,11 @@ function switchSection(name) {
         loadDashboardLogs();
     }
     if (name === 'settings') {
-        loadSettings();
+        const p = loadSettings();
+        if (p && p.then) p.then(() => _reportSection('数据到手')).catch(() => {});
     }
+    // DOM 切换本身（不含数据请求）耗时多少：下一帧就能量出来。
+    requestAnimationFrame(() => _reportSection('DOM切换'));
 }
 
 // ============================================

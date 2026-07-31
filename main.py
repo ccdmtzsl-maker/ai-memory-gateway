@@ -699,17 +699,21 @@ async def dashboard_performance_diagnostic_middleware(request: Request, call_nex
         return response
     finally:
         elapsed_ms = (time.perf_counter() - started) * 1000
-        if slow_only and elapsed_ms < SLOW_QUERY_MS and status_code < 500:
-            return
-        pool_after = _database_pool_snapshot()
-        level = "error" if status_code >= 500 else ("run" if elapsed_ms >= 800 else "info")
-        query = request.url.query
-        target = f"{path}?{query}" if query else path
-        add_dashboard_log(
-            level,
-            f"⏱️ API性能 {request.method} {target} | {elapsed_ms:.0f}ms | HTTP {status_code} | 开始[{pool_before}] | 结束[{pool_after}]",
-            category="performance",
+        _should_log = (
+            status_code >= 500
+            or elapsed_ms >= SLOW_QUERY_MS
+            or not slow_only
         )
+        if _should_log:
+            pool_after = _database_pool_snapshot()
+            level = "error" if status_code >= 500 else ("run" if elapsed_ms >= 800 else "info")
+            query = request.url.query
+            target = f"{path}?{query}" if query else path
+            add_dashboard_log(
+                level,
+                f"⏱️ API性能 {request.method} {target} | {elapsed_ms:.0f}ms | HTTP {status_code} | 开始[{pool_before}] | 结束[{pool_after}]",
+                category="performance",
+            )
 
 # 响应压缩：Dashboard 的 JS/CSS/HTML 都是纯文本，未压缩共 ~260KB，
 # 在 Render 免费实例的出口带宽下直接造成白屏等待。gzip 后通常能降到 1/4 左右。

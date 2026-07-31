@@ -1384,8 +1384,10 @@ async def search_memory_palace_for_prompt(query: str = "", limit: int = 5, room:
         except Exception as e:
             print(f"⚠️ Memory Palace query embedding failed: {e}")
             query_embedding = None
-    rows = rows if rows is not None else await _memory_palace_fetch_rows(room=room, character_id=character_id)
-    return _memory_palace_score_rows(rows, query=query, query_embedding=query_embedding)[:limit]
+    with activity("记忆宫殿取节点(DB+JSON)"):
+        rows = rows if rows is not None else await _memory_palace_fetch_rows(room=room, character_id=character_id)
+    with activity("记忆宫殿向量打分(%d节点)" % len(rows)):
+        return _memory_palace_score_rows(rows, query=query, query_embedding=query_embedding)[:limit]
 
 
 def _memory_palace_person_link_strength(a: dict, b: dict) -> float:
@@ -4779,6 +4781,8 @@ async def process_memories_background(session_id: str, user_msg: str, assistant_
     global _round_counter
     
     _bg_started = time.perf_counter()
+    _bg_act = activity("回复后台存储+自动提取")
+    _bg_act.__enter__()
     try:
         # Debug: 打印存储分支判断依据
         print(f"💾 process_memories_background: user_msg={bool(user_msg)}, tool_messages={len(tool_messages) if tool_messages else 0}, "
@@ -4889,6 +4893,8 @@ async def process_memories_background(session_id: str, user_msg: str, assistant_
             
     except Exception as e:
         add_dashboard_log("error", f"⚠️ 后台记忆处理失败: {e}", session_id=session_id if 'session_id' in locals() else "")
+    finally:
+        _bg_act.__exit__(None, None, None)
 
 
 # ============================================================

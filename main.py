@@ -191,6 +191,11 @@ EVENT_LOOP_LAG_MS = 500      # 事件循环每秒唤醒延迟超过这个就记�
 # 注意：单事件循环下可能有多个协程交错，栈里可能同时有几项，
 # 因此它给的是线索而不是精确归因。
 _ACTIVITY_STACK = []
+# 刚结束的耗时操作：阻塞探针往往在操作结束后才醒来，
+# 此时栈已弹空，只能靠这里回溯是谁把它压住的。
+_RECENT_ACTIVITIES = deque(maxlen=8)
+ACTIVITY_RECORD_MS = 200        # 自身耗时超过这个才值得记
+ACTIVITY_LOOKBACK_SEC = 3.0     # 探针回溯多久之内刚结束的操作
 
 
 class activity:
@@ -213,26 +218,45 @@ class activity:
 
     def __exit__(self, exc_type, exc, tb):
         try:
+            started = None
             for i in range(len(_ACTIVITY_STACK) - 1, -1, -1):
                 if _ACTIVITY_STACK[i][0] == self.label:
+                    started = _ACTIVITY_STACK[i][1]
                     _ACTIVITY_STACK.pop(i)
                     break
+            if started is not None:
+                elapsed_ms = (time.perf_counter() - started) * 1000
+                if elapsed_ms >= ACTIVITY_RECORD_MS:
+                    _RECENT_ACTIVITIES.append(
+                        (self.label, elapsed_ms, time.perf_counter())
+                    )
         except Exception:
             pass
         return False
 
 
 def _current_activity_text() -> str:
-    """把活动栈渲染成一行文字，带各自已运行的时长。"""
+    """渲染「此刻在跑什么」。
+
+    栈非空时报进行中的操作；栈空时回溯最近刚结束的耗时操作——
+    因为探针通常是在阻塞结束、事件循环恢复之后才被唤醒的。
+    """
     try:
-        if not _ACTIVITY_STACK:
-            return "空闲（没有已标记的操作）"
         now = time.perf_counter()
-        parts = [
-            f"{label}(已跑{(now - started) * 1000:.0f}ms)"
-            for label, started in _ACTIVITY_STACK[-4:]
+        if _ACTIVITY_STACK:
+            parts = [
+                f"{label}(进行中{(now - started) * 1000:.0f}ms)"
+                for label, started in _ACTIVITY_STACK[-4:]
+            ]
+            return " + ".join(parts)
+        recent = [
+            f"{label}(刚结束, 耗时{ms:.0f}ms)"
+            for label, ms, done_at in _RECENT_ACTIVITIES
+            if (now - done_at) <= ACTIVITY_LOOKBACK_SEC
         ]
-        return " + ".join(parts)
+        if recent:
+            return " + ".join(recent[-3:])
+        return "无已标记操作（阻塞源在标记范围之外）"
     except Exception:
         return "未知"
 

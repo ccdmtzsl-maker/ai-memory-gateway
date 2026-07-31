@@ -6144,6 +6144,7 @@ async def api_dashboard_client_timing(request: Request):
         "fetch": "🌐 浏览器实测请求",
         "render": "🎨 前端渲染",
         "page_load": "📄 页面加载",
+        "retry": "🔁 GET超时重发",
     }
     prefix = icons.get(kind, f"📱 客户端[{kind}]")
     level = "error" if ms >= 3000 else "warn"

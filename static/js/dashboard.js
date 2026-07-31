@@ -120,6 +120,55 @@ function reportClientTiming(kind, label, ms, detail) {
     } catch (e) { /* Safari 等不支持 longtask，忽略 */ }
 })();
 
+// 请求分段耗时（Resource Timing）
+//
+// 这是定位这次问题的关键工具。浏览器本来就把每个请求拆成了
+// DNS 解析、TCP 建连、TLS 握手、等首字节、下载 这几段并记录耗时，
+// 只是平时没人去读。同源请求能拿到全部字段，不需要额外配置。
+//
+// 怎么看结果：
+//   DNS 占了大头        -> 域名解析慢，跟服务器无关
+//   建连/TLS 占了大头   -> 网络链路或握手慢
+//   等首字节占了大头     -> 请求已发出但迟迟没回，问题在服务端或其代理
+//   建连为 0            -> 复用了已有连接，没有新建
+(function observeResourceTiming() {
+    try {
+        if (typeof PerformanceObserver === 'undefined') return;
+
+        const seg = (a, b) => Math.max(0, Math.round(b - a));
+
+        const obs = new PerformanceObserver(list => {
+            list.getEntries().forEach(e => {
+                if (e.initiatorType !== 'fetch' && e.initiatorType !== 'xmlhttprequest') return;
+                if (e.duration < CLIENT_PERF.fetchSlowMs) return;
+                if (String(e.name).indexOf('/api/dashboard/client-timing') >= 0) return;
+
+                // startTime -> fetchStart 之间是浏览器内部排队（连接池占满等）
+                const queued = seg(e.startTime, e.fetchStart);
+                const dns = seg(e.domainLookupStart, e.domainLookupEnd);
+                const tcp = seg(e.connectStart, e.connectEnd);
+                const tls = e.secureConnectionStart > 0 ? seg(e.secureConnectionStart, e.connectEnd) : 0;
+                const wait = seg(e.requestStart, e.responseStart);   // 等首字节
+                const down = seg(e.responseStart, e.responseEnd);
+                const reused = (e.connectStart === e.connectEnd) ? '复用连接' : '新建连接';
+
+                const path = String(e.name).replace(location.origin, '').slice(0, 90);
+                reportClientTiming(
+                    'segments', path, e.duration,
+                    reused +
+                    ' | 浏览器排队' + queued + 'ms' +
+                    ' | DNS' + dns + 'ms' +
+                    ' | 建连' + tcp + 'ms(含TLS' + tls + 'ms)' +
+                    ' | 等首字节' + wait + 'ms' +
+                    ' | 下载' + down + 'ms' +
+                    ' | 传输' + (e.transferSize || 0) + 'B'
+                );
+            });
+        });
+        obs.observe({ entryTypes: ['resource'] });
+    } catch (e) { /* 不支持就算了，不能影响页面 */ }
+})();
+
 // 页面整体加载耗时：只报一次。
 window.addEventListener('load', () => {
     try {

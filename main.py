@@ -4627,7 +4627,7 @@ async def build_user_log_content(user_msg: str, original_messages: list, session
     return json.dumps(stored_items, ensure_ascii=False), True
 
 
-async def process_memories_background(session_id: str, user_msg: str, assistant_msg: str, model: str, context_messages: list = None, skip_conversation_log: bool = False, tool_messages: list = None, assistant_tool_calls: list = None, assistant_reasoning: str = None):
+async def process_memories_background(session_id: str, user_msg: str, assistant_msg: str, model: str, context_messages: list = None, skip_conversation_log: bool = False, tool_messages: list = None, assistant_tool_calls: list = None, assistant_reasoning: str = None, is_auto_trigger: bool = False):
     """
     后台异步：存储对话记录（不阻塞主流程）。
     
@@ -4639,6 +4639,7 @@ async def process_memories_background(session_id: str, user_msg: str, assistant_
     tool_messages: 客户端发来的工具结果消息列表
     assistant_tool_calls: response中assistant的工具调用列表（如果有）
     assistant_reasoning: response中assistant的reasoning_content（deepseek thinking mode）
+    is_auto_trigger: 本轮 user 消息是 <自动触发> 主动消息，只存 assistant 不存 user
     """
     global _round_counter
     
@@ -4714,7 +4715,11 @@ async def process_memories_background(session_id: str, user_msg: str, assistant_
                 ast_meta_dict["reasoning_content"] = assistant_reasoning
             assistant_meta = json.dumps(ast_meta_dict) if ast_meta_dict else None
             
-            if assistant_tool_calls:
+            if is_auto_trigger:
+                # 主动触发：user 不落库，assistant 一律追加（连续触发是多次独立问候，不做 re-roll 覆盖）
+                await save_message(session_id, "assistant", assistant_msg or "", model, metadata=assistant_meta)
+                print("⏭️  主动触发消息：已存 assistant，跳过 user 存储")
+            elif assistant_tool_calls:
                 # 首次工具调用：assistant回复包含tool_calls，存user + assistant(tool_calls)
                 await save_message(session_id, "user", clean_user_msg, model)
                 await save_message(session_id, "assistant", assistant_msg or "", model, metadata=assistant_meta)

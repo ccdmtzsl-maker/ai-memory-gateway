@@ -4831,6 +4831,17 @@ async def chat_completions(request: Request):
                 )
             break
     
+    # ---------- 检测主动触发消息 ----------
+    # 正文以 <自动触发> 开头时，本轮 user 消息只发给上游、不落库；
+    # 历史里因此只保留 assistant 的主动发言，连续触发一律追加不覆盖。
+    is_auto_trigger = False
+    for _m in reversed(messages):
+        if _m.get("role") == "user":
+            is_auto_trigger = is_auto_trigger_message(_m.get("content", ""))
+            break
+    if is_auto_trigger:
+        print("⏭️  检测到主动触发消息，本轮不保存 user 记录")
+    
     # ---------- 构建 system prompt ----------
     # 先保存原始对话消息（不含 system prompt），用于记忆提取
     original_messages = [msg for msg in messages if msg.get("role") != "system"]

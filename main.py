@@ -32,6 +32,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import StreamingResponse, JSONResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from fastapi.middleware.gzip import GZipMiddleware
 
 from database import init_tables, close_pool, save_message, get_pool, get_gateway_config, set_gateway_config, get_all_gateway_config, get_conversation_messages, get_session_cache_state, save_session_cache_state, delete_session_cache_state, save_token_usage, ensure_token_usage_table, get_conversations_paginated, get_conversation_messages_after_id, delete_conversation, batch_delete_conversations, merge_sessions_to_target, list_all_session_cache_states, export_all_conversations, import_conversations, get_last_user_content, update_last_assistant_message, update_last_assistant_if_same_user, db_row_to_message, search_conversations, update_message_content, rename_session_id, get_conversation_messages_by_date, upsert_daily_impression, get_daily_impression, list_daily_impressions
 from database import list_memory_palace_rooms, list_memory_palace_nodes, get_memory_palace_node, create_memory_palace_node, update_memory_palace_node, delete_memory_palace_node, clear_expired_memory_palace_pins, get_user_impression, upsert_user_impression, delete_user_impression, normalize_user_impression
@@ -634,6 +635,12 @@ async def dashboard_performance_diagnostic_middleware(request: Request, call_nex
             f"⏱️ API性能 {request.method} {target} | {elapsed_ms:.0f}ms | HTTP {status_code} | 开始[{pool_before}] | 结束[{pool_after}]",
             category="performance",
         )
+
+# 响应压缩：Dashboard 的 JS/CSS/HTML 都是纯文本，未压缩共 ~260KB，
+# 在 Render 免费实例的出口带宽下直接造成白屏等待。gzip 后通常能降到 1/4 左右。
+# minimum_size=1000：小于 1KB 的响应不压，避免压缩开销大于收益。
+# SSE 流式响应由 Starlette 自行按 chunk 处理，不影响逐字输出。
+app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 # 静态文件和模板配置
 app.mount("/static", StaticFiles(directory="static"), name="static")

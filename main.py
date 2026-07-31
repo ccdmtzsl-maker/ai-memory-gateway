@@ -679,13 +679,16 @@ def _database_pool_snapshot() -> str:
 @app.middleware("http")
 async def dashboard_performance_diagnostic_middleware(request: Request, call_next):
     path = request.url.path
-    watched = any(path.startswith(prefix) for prefix in _PERF_DIAGNOSTIC_PREFIXES)
     # 后台日志接口必须排除，否则日志页轮询会记录自己。
-    if not watched or path.startswith("/api/dashboard/"):
+    if path.startswith("/api/dashboard/") or path.startswith("/static/"):
         return await call_next(request)
 
-    if not PERF_DIAGNOSTIC_ENABLED:
-        return await call_next(request)
+    watched = any(path.startswith(prefix) for prefix in _PERF_DIAGNOSTIC_PREFIXES)
+    # 慢请求兜底：即使不在观察前缀里，只要超过慢查询阈值也记一条，
+    # 否则「没点到的东西在自己跑」这类问题永远看不见。
+    slow_only = not watched
+    if watched and not PERF_DIAGNOSTIC_ENABLED:
+        slow_only = True
 
     started = time.perf_counter()
     pool_before = _database_pool_snapshot()
@@ -696,6 +699,8 @@ async def dashboard_performance_diagnostic_middleware(request: Request, call_nex
         return response
     finally:
         elapsed_ms = (time.perf_counter() - started) * 1000
+        if slow_only and elapsed_ms < SLOW_QUERY_MS and status_code < 500:
+            return
         pool_after = _database_pool_snapshot()
         level = "error" if status_code >= 500 else ("run" if elapsed_ms >= 800 else "info")
         query = request.url.query

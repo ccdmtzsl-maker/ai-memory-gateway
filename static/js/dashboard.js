@@ -50,6 +50,90 @@ if (_gatewayKey) {
 }
 
 // ============================================
+// 客户端性能诊断（临时排查用）
+// 服务端中间件只能测「应用开始处理」之后的耗时，测不到请求在
+// 队列里的等待，也测不到浏览器主线程被占住的时间。平板上开不了
+// F12，所以这里把浏览器实测的数字回传到后台日志。
+// ============================================
+const CLIENT_PERF = {
+    fetchSlowMs: 800,        // 浏览器实测请求超过这个才上报
+    longTaskMs: 300,         // 主线程单次卡顿超过这个才上报
+    renderSlowMs: 300,       // 渲染耗时超过这个才上报
+};
+
+// 上报自身不能再被计时，否则会无限循环。
+const _perfSkipUrls = ['/api/dashboard/client-timing', '/api/dashboard/logs'];
+
+function reportClientTiming(kind, label, ms, detail) {
+    try {
+        const body = JSON.stringify({
+            kind: kind,
+            label: String(label || '').slice(0, 200),
+            ms: Math.round(ms),
+            detail: String(detail || '').slice(0, 300),
+        });
+        // keepalive: 页面切换时也能发出去
+        const opts = { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: body, keepalive: true };
+        if (_gatewayKey) opts.headers['X-Gateway-Key'] = _gatewayKey;
+        (window._origFetchForPerf || window.fetch)('/api/dashboard/client-timing', opts).catch(() => {});
+    } catch (e) { /* 诊断代码不能影响正常功能 */ }
+}
+
+// 包一层 fetch：测「浏览器发出请求 → 收到响应」的真实耗时。
+// 这个数字减去服务端日志里的耗时，差值就是排队 + 网络传输时间。
+(function instrumentFetch() {
+    const inner = window.fetch;
+    window._origFetchForPerf = inner;
+    window.fetch = function(url, opts) {
+        const urlText = typeof url === 'string' ? url : (url && url.url) || '';
+        if (_perfSkipUrls.some(u => urlText.indexOf(u) >= 0)) {
+            return inner.call(this, url, opts);
+        }
+        const started = performance.now();
+        return inner.call(this, url, opts).then(resp => {
+            const ms = performance.now() - started;
+            if (ms >= CLIENT_PERF.fetchSlowMs) {
+                reportClientTiming('fetch', urlText.slice(0, 120), ms, 'HTTP ' + resp.status);
+            }
+            return resp;
+        }).catch(err => {
+            const ms = performance.now() - started;
+            reportClientTiming('fetch', urlText.slice(0, 120), ms, '失败: ' + (err && err.message));
+            throw err;
+        });
+    };
+})();
+
+// 长任务观察：主线程被单个任务占住多久。
+// 如果白屏时这里有大量记录，说明是前端在卡，跟后端无关。
+(function observeLongTasks() {
+    try {
+        if (typeof PerformanceObserver === 'undefined') return;
+        const obs = new PerformanceObserver(list => {
+            list.getEntries().forEach(entry => {
+                if (entry.duration >= CLIENT_PERF.longTaskMs) {
+                    reportClientTiming('longtask', entry.name || 'longtask', entry.duration);
+                }
+            });
+        });
+        obs.observe({ entryTypes: ['longtask'] });
+    } catch (e) { /* Safari 等不支持 longtask，忽略 */ }
+})();
+
+// 页面整体加载耗时：只报一次。
+window.addEventListener('load', () => {
+    try {
+        const nav = performance.getEntriesByType('navigation')[0];
+        if (!nav) return;
+        reportClientTiming(
+            'page_load', location.pathname, nav.duration,
+            '首字节' + Math.round(nav.responseStart - nav.requestStart) + 'ms, ' +
+            'DOM就绪' + Math.round(nav.domContentLoadedEventEnd) + 'ms'
+        );
+    } catch (e) {}
+});
+
+// ============================================
 // 全局状态
 // ============================================
 let pendingJsonData = null;

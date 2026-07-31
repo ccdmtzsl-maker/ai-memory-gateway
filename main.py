@@ -629,8 +629,18 @@ async def lifespan(app: FastAPI):
     else:
         print("ℹ️  记忆系统已关闭（设置 MEMORY_ENABLED=true 开启）")
     
+    # 事件循环阻塞探针：诊断用，开销可忽略（每秒一次 sleep）
+    _lag_task = None
+    try:
+        _lag_task = asyncio.create_task(_event_loop_lag_monitor())
+        print("🚧 事件循环阻塞探针已启动（阈值 %dms）" % EVENT_LOOP_LAG_MS)
+    except Exception as e:
+        print(f"⚠️  事件循环探针启动失败: {e}")
+    
     yield
     
+    if _lag_task is not None:
+        _lag_task.cancel()
     if MEMORY_ENABLED:
         await close_pool()
 

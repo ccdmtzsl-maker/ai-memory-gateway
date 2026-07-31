@@ -6117,6 +6117,44 @@ async def api_dashboard_last_request():
     }
 
 
+@app.post("/api/dashboard/client-timing")
+async def api_dashboard_client_timing(request: Request):
+    """接收浏览器侧的耗时上报，写进后台日志。
+
+    服务端中间件只能测「应用开始处理」之后的时间，测不到
+    请求在队列里的等待、也测不到浏览器主线程被占住的时间。
+    平板上没法开 F12，所以让前端把这些数字回传过来。
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        return {"error": "invalid json"}
+
+    kind = str(body.get("kind") or "")[:40]
+    label = str(body.get("label") or "")[:200]
+    try:
+        ms = float(body.get("ms") or 0)
+    except Exception:
+        ms = 0.0
+    detail = str(body.get("detail") or "")[:300]
+
+    icons = {
+        "longtask": "🧊 浏览器主线程卡住",
+        "click_to_fetch": "👆 点击到请求发出",
+        "fetch": "🌐 浏览器实测请求",
+        "render": "🎨 前端渲染",
+        "page_load": "📄 页面加载",
+    }
+    prefix = icons.get(kind, f"📱 客户端[{kind}]")
+    level = "error" if ms >= 3000 else "warn"
+    suffix = f" | {detail}" if detail else ""
+    add_dashboard_log(
+        level,
+        f"{prefix} {label} | {ms:.0f}ms{suffix}",
+        category="performance",
+    )
+    return {"status": "ok"}
+
 @app.post("/api/dashboard/logs/clear")
 async def api_clear_dashboard_logs():
     _dashboard_logs.clear()

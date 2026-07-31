@@ -182,6 +182,66 @@ def add_dashboard_log(level: str, message: str, category: str = "memory", sessio
     print(message)
 
 
+# 慢查询 / 事件循环阻塞诊断：只记日志，不改业务行为。
+SLOW_QUERY_MS = 300          # 单个 DB 查询超过这个耗时就记一条
+EVENT_LOOP_LAG_MS = 500      # 事件循环每秒唤醒延迟超过这个就记一条
+
+
+class timed_block:
+    """给一段代码计时，超阈值写 Dashboard 日志。
+
+    用法：
+        with timed_block("conversations 分页查询", page=1):
+            ...
+    本身无副作用，异常也不吞掉。
+    """
+
+    def __init__(self, label: str, threshold_ms: int = None, **extra):
+        self.label = label
+        self.threshold_ms = SLOW_QUERY_MS if threshold_ms is None else threshold_ms
+        self.extra = extra
+        self.started = 0.0
+
+    def __enter__(self):
+        self.started = time.perf_counter()
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        elapsed_ms = (time.perf_counter() - self.started) * 1000
+        if elapsed_ms >= self.threshold_ms or exc_type is not None:
+            detail = ", ".join(f"{k}={v}" for k, v in self.extra.items() if v not in (None, ""))
+            suffix = f" | {detail}" if detail else ""
+            if exc_type is not None:
+                suffix += f" | 异常 {exc_type.__name__}"
+            add_dashboard_log(
+                "warn" if exc_type is None else "error",
+                f"🐌 慢查询 {self.label} | {elapsed_ms:.0f}ms{suffix}",
+                category="performance",
+            )
+        return False
+
+
+async def _event_loop_lag_monitor():
+    """每秒唤醒一次，唤醒延迟就是事件循环被同步代码占住的时长。
+
+    用于区分「某个接口自己慢」和「整个服务被阻塞」：
+    后者会让所有请求一起卡，前者不会。
+    """
+    interval = 1.0
+    while True:
+        started = time.perf_counter()
+        try:
+            await asyncio.sleep(interval)
+        except asyncio.CancelledError:
+            return
+        lag_ms = (time.perf_counter() - started - interval) * 1000
+        if lag_ms >= EVENT_LOOP_LAG_MS:
+            add_dashboard_log(
+                "warn" if lag_ms < 2000 else "error",
+                f"🚧 事件循环被阻塞 {lag_ms:.0f}ms（期间所有请求都在等）",
+                category="performance",
+            )
+
 def _serialize_dashboard_conversation_message(row) -> dict:
     """Serialize one conversation DB row for Dashboard message list."""
     metadata = None

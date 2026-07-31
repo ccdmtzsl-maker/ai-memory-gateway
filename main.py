@@ -187,6 +187,55 @@ SLOW_QUERY_MS = 300          # 单个 DB 查询超过这个耗时就记一条
 EVENT_LOOP_LAG_MS = 500      # 事件循环每秒唤醒延迟超过这个就记一条
 
 
+# 当前活动栈：只用于诊断，让阻塞探针能报出「卡住的时候在跑什么」。
+# 注意：单事件循环下可能有多个协程交错，栈里可能同时有几项，
+# 因此它给的是线索而不是精确归因。
+_ACTIVITY_STACK = []
+
+
+class activity:
+    """标记一段正在进行的重量级操作。
+
+    用法：
+        with activity("记忆宫殿向量打分"):
+            ...
+    """
+
+    def __init__(self, label: str):
+        self.label = label
+
+    def __enter__(self):
+        try:
+            _ACTIVITY_STACK.append((self.label, time.perf_counter()))
+        except Exception:
+            pass
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        try:
+            for i in range(len(_ACTIVITY_STACK) - 1, -1, -1):
+                if _ACTIVITY_STACK[i][0] == self.label:
+                    _ACTIVITY_STACK.pop(i)
+                    break
+        except Exception:
+            pass
+        return False
+
+
+def _current_activity_text() -> str:
+    """把活动栈渲染成一行文字，带各自已运行的时长。"""
+    try:
+        if not _ACTIVITY_STACK:
+            return "空闲（没有已标记的操作）"
+        now = time.perf_counter()
+        parts = [
+            f"{label}(已跑{(now - started) * 1000:.0f}ms)"
+            for label, started in _ACTIVITY_STACK[-4:]
+        ]
+        return " + ".join(parts)
+    except Exception:
+        return "未知"
+
 class timed_block:
     """给一段代码计时，超阈值写 Dashboard 日志。
 
@@ -238,7 +287,7 @@ async def _event_loop_lag_monitor():
         if lag_ms >= EVENT_LOOP_LAG_MS:
             add_dashboard_log(
                 "warn" if lag_ms < 2000 else "error",
-                f"🚧 事件循环被阻塞 {lag_ms:.0f}ms（期间所有请求都在等）",
+                f"🚧 事件循环被阻塞 {lag_ms:.0f}ms（期间所有请求都在等）| 当时在跑: {_current_activity_text()}",
                 category="performance",
             )
 

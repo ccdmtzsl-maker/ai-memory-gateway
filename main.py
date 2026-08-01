@@ -2196,6 +2196,53 @@ def _memory_palace_source_time_bounds(source_messages: list, tolerance_minutes: 
     return min(values) - tolerance, max(values) + tolerance
 
 
+# 召回记账保留期。过期记录清掉：它们只在自动提取时用来重建「当时想起过什么」，
+# 而提取通常在几轮对话内就会发生，30 天足够宽裕。
+MEMORY_PALACE_RECEIPT_RETENTION_DAYS = int(os.getenv("MEMORY_PALACE_RECEIPT_RETENTION_DAYS", "30"))
+# 清理节流：进程内记录上次清理时间，最多一天跑一次。
+_memory_palace_receipt_cleanup_at = None
+
+
+async def cleanup_memory_palace_recall_receipts(days: int = None) -> int:
+    """删除超过保留期的召回记账。
+
+    取舍：如果某个会话超过保留期都没触发过自动提取，它的记账会先被清掉，
+    提取时 receipts 不足会退回语义检索兜底——降级而非报错。相比让这张表
+    无限增长，这个代价是可接受的。
+    """
+    keep_days = max(1, int(days if days is not None else MEMORY_PALACE_RECEIPT_RETENTION_DAYS))
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        deleted = await conn.fetchval(
+            """
+            WITH removed AS (
+                DELETE FROM memory_palace_recall_receipts
+                WHERE injected_at < NOW() - ($1 || ' days')::interval
+                RETURNING 1
+            )
+            SELECT COUNT(*)::int FROM removed
+            """,
+            str(keep_days),
+        )
+    return int(deleted or 0)
+
+
+async def _maybe_cleanup_memory_palace_recall_receipts():
+    """每天最多跑一次清理，失败只打日志不影响聊天。"""
+    global _memory_palace_receipt_cleanup_at
+    now = datetime.now(timezone.utc)
+    last = _memory_palace_receipt_cleanup_at
+    if last is not None and (now - last).total_seconds() < 86400:
+        return
+    _memory_palace_receipt_cleanup_at = now
+    try:
+        deleted = await cleanup_memory_palace_recall_receipts()
+        if deleted:
+            print(f"🧹 清理过期召回记账 {deleted} 条（保留 {MEMORY_PALACE_RECEIPT_RETENTION_DAYS} 天）")
+    except Exception as e:
+        print(f"⚠️ 清理召回记账失败: {e}")
+
+
 async def record_memory_palace_recall_receipts(rows: list, pinned_count: int = 0, boxes: dict = None, character_id: str = "default", session_id: str = "") -> int:
     """记录本轮实际注入 prompt 的记忆 id，供后续提取纠错/relatedTo 兜底。"""
     ids = []
@@ -2245,6 +2292,11 @@ async def record_memory_palace_recall_receipts(rows: list, pinned_count: int = 0
             [session_id or ""] * len(ids),
             ids,
         )
+    # 后台清理，不让聊天请求等它。
+    try:
+        asyncio.create_task(_maybe_cleanup_memory_palace_recall_receipts())
+    except Exception:
+        pass
     return len(rows)
 
 

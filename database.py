@@ -636,9 +636,14 @@ async def init_tables():
                 character_id TEXT DEFAULT 'default',
                 session_id TEXT DEFAULT '',
                 memory_id TEXT NOT NULL REFERENCES memory_palace_nodes(id) ON DELETE CASCADE,
+                anchor_message_id BIGINT,
                 injected_at TIMESTAMPTZ DEFAULT NOW(),
                 metadata JSONB DEFAULT '{}'::jsonb
             );
+        """)
+        await conn.execute("""
+            ALTER TABLE memory_palace_recall_receipts
+            ADD COLUMN IF NOT EXISTS anchor_message_id BIGINT;
         """)
         await conn.execute("""
             CREATE INDEX IF NOT EXISTS idx_mp_recall_receipts_time
@@ -648,12 +653,11 @@ async def init_tables():
             CREATE INDEX IF NOT EXISTS idx_mp_recall_receipts_memory
             ON memory_palace_recall_receipts (memory_id);
         """)
-        # 支撑写入去重的 NOT EXISTS 探测：同一天同一会话同一条记忆只记一行。
-        # 不建唯一索引，因为历史数据里已有大量重复行，建唯一索引会直接失败，
-        # 而清理历史重复属于破坏性操作，不适合放在启动流程里自动跑。
+        # 按消息 ID 精确重建自动提取区间内的真实召回；历史行没有 anchor_message_id
+        # 时仍可回退到 injected_at 时间窗。
         await conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_mp_recall_receipts_dedupe
-            ON memory_palace_recall_receipts (character_id, session_id, memory_id, injected_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_mp_recall_receipts_anchor
+            ON memory_palace_recall_receipts (character_id, session_id, anchor_message_id, id);
         """)
 
         await conn.execute("""

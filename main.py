@@ -34,7 +34,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from fastapi.middleware.gzip import GZipMiddleware
 
-from database import init_tables, close_pool, save_message, get_pool, get_gateway_config, set_gateway_config, set_gateway_config_many, get_all_gateway_config, get_conversation_messages, get_session_cache_state, save_session_cache_state, delete_session_cache_state, save_token_usage, ensure_token_usage_table, get_conversations_paginated, get_conversation_messages_after_id, delete_conversation, batch_delete_conversations, merge_sessions_to_target, list_all_session_cache_states, export_all_conversations, import_conversations, get_last_user_content, update_last_assistant_message, update_last_assistant_if_same_user, db_row_to_message, search_conversations, update_message_content, rename_session_id, get_conversation_messages_by_date, upsert_daily_impression, get_daily_impression, list_daily_impressions
+from database import init_tables, close_pool, save_message, get_pool, get_gateway_config, set_gateway_config, set_gateway_config_many, get_all_gateway_config, get_conversation_messages, get_session_cache_state, save_session_cache_state, delete_session_cache_state, save_token_usage, ensure_token_usage_table, get_conversations_paginated, get_conversation_messages_after_id, delete_conversation, batch_delete_conversations, merge_sessions_to_target, list_all_session_cache_states, export_all_conversations, import_conversations, get_last_user_content, update_last_assistant_message, update_last_assistant_if_same_user, db_row_to_message, search_conversations, update_message_content, rename_session_id, get_conversation_messages_by_date, upsert_daily_impression, get_daily_impression, list_daily_impressions, search_memory_palace_vector_scores, memory_palace_vector_ready
 from database import list_memory_palace_rooms, list_memory_palace_nodes, get_memory_palace_node, create_memory_palace_node, update_memory_palace_node, delete_memory_palace_node, clear_expired_memory_palace_pins, get_user_impression, upsert_user_impression, delete_user_impression, normalize_user_impression
 import database as _db_module  # 用于 /api/settings 热更新 database.py 全局变量
 from memory_extractor import get_extraction_prompt, set_extraction_prompt, _DEFAULT_EXTRACTION_PROMPT
@@ -9295,6 +9295,26 @@ async def compute_memory_palace_embedding(text: str) -> list:
         return []
 
 
+async def _sync_memory_palace_vector_column(conn, memory_id: str, embedding) -> None:
+    """把向量同时写进 pgvector 列，让数据库能直接算相似度。
+
+    embedding_json 仍然是权威存储（可移植、可重建），vector 列只是
+    为了让数据库能做最近邻检索。所以这里失败不算错误：大不了那条记忆
+    这次走 Python 回退路径，下次重建向量时会补上。
+    """
+    if not embedding:
+        return
+    if not memory_palace_vector_ready(len(embedding)):
+        return
+    try:
+        literal = "[" + ",".join(repr(float(x)) for x in embedding) + "]"
+        await conn.execute(
+            "UPDATE memory_palace_vectors SET embedding = $2::vector WHERE memory_id = $1",
+            memory_id, literal,
+        )
+    except Exception as e:
+        print(f"ℹ️ 写入 pgvector 列失败（不影响 embedding_json）: {str(e)[:120]}")
+
 async def save_memory_palace_embedding(memory_id: str, content: str) -> bool:
     """保存/刷新记忆宫殿向量。只在 embedding 成功后 UPSERT，不先删除旧向量。"""
     content = str(content or "").strip()
@@ -9314,6 +9334,7 @@ async def save_memory_palace_embedding(memory_id: str, content: str) -> bool:
                 model = EXCLUDED.model,
                 updated_at = NOW()
         """, memory_id, json.dumps(embedding), len(embedding), getattr(_db_module, "EMBEDDING_MODEL", ""))
+        await _sync_memory_palace_vector_column(conn, memory_id, embedding)
         await conn.execute("UPDATE memory_palace_nodes SET embedded = TRUE, updated_at = NOW() WHERE id = $1", memory_id)
     return True
 
@@ -9347,6 +9368,7 @@ async def save_memory_palace_embedding_if_missing(memory_id: str, content: str) 
                OR TRIM(memory_palace_vectors.embedding_json) !~ '^\\[[[:space:]]*-?[0-9]'
         """, memory_id, json.dumps(embedding), len(embedding), getattr(_db_module, "EMBEDDING_MODEL", ""))
         if res.endswith("1"):
+            await _sync_memory_palace_vector_column(conn, memory_id, embedding)
             await conn.execute("UPDATE memory_palace_nodes SET embedded=TRUE, updated_at=NOW() WHERE id=$1", memory_id)
             return "inserted"
         await conn.execute("UPDATE memory_palace_nodes SET embedded=TRUE, updated_at=NOW() WHERE id=$1", memory_id)

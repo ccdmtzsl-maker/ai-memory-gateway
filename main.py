@@ -9445,6 +9445,32 @@ async def get_memory_palace_vector_stats() -> dict:
             LEFT JOIN memory_palace_nodes n ON n.id = v.memory_id
             WHERE n.id IS NULL
         """)
+
+        # pgvector 列的填充情况。检索走数据库还是走 Python 回退，就看这两个数：
+        # 进了列的走数据库（快、不阻塞事件循环），没进的每次都要在 Python 里
+        # 解析 JSON + 算余弦。没进通常是因为向量维度和列维度对不上。
+        pgvector_filled = 0
+        pgvector_pending = 0
+        try:
+            vrow = await conn.fetchrow("""
+                SELECT
+                    COUNT(*) FILTER (WHERE v.embedding IS NOT NULL)::int AS filled,
+                    COUNT(*) FILTER (
+                        WHERE v.embedding IS NULL
+                          AND NULLIF(TRIM(COALESCE(v.embedding_json, '')), '') IS NOT NULL
+                          AND LOWER(TRIM(v.embedding_json)) NOT IN ('[]', 'null')
+                    )::int AS pending
+                FROM memory_palace_vectors v
+                JOIN memory_palace_nodes n ON n.id = v.memory_id
+                WHERE n.archived = FALSE
+            """)
+            pgvector_filled = (vrow["filled"] if vrow else 0) or 0
+            pgvector_pending = (vrow["pending"] if vrow else 0) or 0
+        except Exception:
+            # 列不存在（pgvector 不可用）：两个数都留 0，前端会显示成未启用
+            pgvector_filled = 0
+            pgvector_pending = 0
+
         return {
             "total_nodes": row["total_nodes"] or 0,
             "active_nodes": row["active_nodes"] or 0,
@@ -9458,6 +9484,8 @@ async def get_memory_palace_vector_stats() -> dict:
             "embedded_true_without_vector": row["embedded_true_without_vector"] or 0,
             "embedded_false_with_vector": row["embedded_false_with_vector"] or 0,
             "empty_content_nodes": row["empty_content_nodes"] or 0,
+            "pgvector_filled": pgvector_filled,
+            "pgvector_pending": pgvector_pending,
         }
 
 @app.post("/api/memory-palace/extract-preview-sessions")

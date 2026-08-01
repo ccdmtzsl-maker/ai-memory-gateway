@@ -10301,7 +10301,16 @@ async def api_memory_palace_clear_archived_vectors():
 
 @app.post("/api/memory-palace/backfill-embeddings")
 async def api_mp_backfill_embeddings():
-    """给记忆宫殿中缺少向量的节点补算 embedding（不覆盖已有向量）。"""
+    """补算记忆宫殿向量。
+
+    处理两类节点：
+      1. 缺失/无效向量 → 新算，不碰任何已有数据
+      2. 向量有效但维度和 pgvector 列不符 → 用当前模型重算并覆盖
+
+    第 2 类是换过 embedding 模型留下的历史数据。它们本身是有效向量，
+    所以旧逻辑判定「不缺向量」直接跳过，导致这些节点永远进不了
+    pgvector 列、每次检索都要退回 Python 慢速计算。
+    """
     if not MEMORY_ENABLED:
         return {"error": "记忆系统未启用"}
     if _mp_backfill_status["running"]:
@@ -10367,9 +10376,11 @@ async def api_mp_backfill_embeddings():
     _mp_backfill_status["empty"] = 0
     _mp_backfill_status["failed"] = 0
     _mp_backfill_status["error"] = None
+    rebuild_count = sum(1 for r in rows if r["needs_rebuild"])
+    new_count = len(rows) - rebuild_count
     _mp_backfill_status["message"] = (
-        f"当前未归档节点 {before_stats.get('active_nodes', 0)} 条，向量 {before_stats.get('total_vectors', 0)} 条，"
-        f"缺失 {before_stats.get('missing_vectors', len(rows))} 条；准备补全 {len(rows)} 条"
+        f"当前未归档节点 {before_stats.get('active_nodes', 0)} 条，向量 {before_stats.get('total_vectors', 0)} 条；"
+        f"准备处理 {len(rows)} 条（新补 {new_count} 条，维度不符重算 {rebuild_count} 条）"
     )
     _mp_backfill_status["before_stats"] = before_stats
     _mp_backfill_status["after_stats"] = None
@@ -10406,11 +10417,12 @@ async def api_mp_backfill_embeddings():
                 await asyncio.sleep(0.1)
             _mp_backfill_status["finished_at"] = datetime.now(timezone.utc).isoformat()
             _mp_backfill_status["after_stats"] = await get_memory_palace_vector_stats()
+            _after = _mp_backfill_status["after_stats"]
             _mp_backfill_status["message"] = (
-                f"向量补全完成：新增 {_mp_backfill_status['inserted']} 条，"
-                f"跳过/已有 {_mp_backfill_status['skipped']} 条，空内容 {_mp_backfill_status.get('empty', 0)} 条，失败 {_mp_backfill_status['failed']} 条；"
-                f"当前向量 {_mp_backfill_status['after_stats'].get('total_vectors', 0)} 条，"
-                f"仍缺 {_mp_backfill_status['after_stats'].get('missing_vectors', 0)} 条"
+                f"向量补全完成：新增/重算 {_mp_backfill_status['inserted']} 条，"
+                f"跳过 {_mp_backfill_status['skipped']} 条，空内容 {_mp_backfill_status.get('empty', 0)} 条，失败 {_mp_backfill_status['failed']} 条；"
+                f"当前向量 {_after.get('total_vectors', 0)} 条，仍缺 {_after.get('missing_vectors', 0)} 条；"
+                f"数据库检索就绪 {_after.get('pgvector_filled', 0)} 条，待处理 {_after.get('pgvector_pending', 0)} 条"
             )
             print(f"[mp-backfill] 记忆宫殿向量补算完成: {_mp_backfill_status['done']}/{_mp_backfill_status['total']}, inserted={_mp_backfill_status['inserted']}, skipped={_mp_backfill_status['skipped']}, empty={_mp_backfill_status.get('empty', 0)}, failed={_mp_backfill_status['failed']}")
         except Exception as e:

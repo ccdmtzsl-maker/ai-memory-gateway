@@ -192,6 +192,72 @@ async def _ensure_memory_palace_vector_column(conn):
         except Exception as e:
             print(f"ℹ️ 记忆宫殿向量索引 {label} 建立失败: {str(e)[:120]}")
 
+# 向量粗筛上限：数据库按余弦距离排序后最多返回这么多条。
+# 节点少于这个数时等于「全部算一遍」，行为和原来完全一致；
+# 涨上去之后就变成「先粗筛 top-N，再由 Python 综合重排」。
+MEMORY_PALACE_VECTOR_CANDIDATES = 500
+
+
+def memory_palace_vector_ready(query_dim: int = 0) -> bool:
+    """pgvector 路径能不能用。
+
+    维度必须完全一致：pgvector 的 vector(N) 对不上维度会直接报错，
+    而 Python 版余弦会截断到较短的那个长度。宁可回退也不要报错。
+    """
+    if not HAS_PGVECTOR or not MEMORY_PALACE_VECTOR_DIM:
+        return False
+    if query_dim and int(query_dim) != int(MEMORY_PALACE_VECTOR_DIM):
+        return False
+    return True
+
+
+async def search_memory_palace_vector_scores(
+    query_embedding,
+    character_id: str = "default",
+    room: str = None,
+    include_archived: bool = False,
+    limit: int = None,
+) -> dict:
+    """让数据库算余弦相似度，返回 {memory_id: similarity}。
+
+    替代原来「把所有向量的 JSON 文本拉到 Python、逐个 json.loads、
+    纯 Python 算余弦」的做法。同样的计算在数据库里用 C 完成，而且
+    不占用事件循环（这里是 await，会让出控制权）。
+
+    `<=>` 是 pgvector 的余弦距离运算符，相似度 = 1 - 距离。距离最大
+    可以到 2（方向完全相反），所以要夹到 [0, 1]，和 Python 版
+    max(0, min(1, ...)) 的口径保持一致。
+    """
+    if not query_embedding:
+        return {}
+    if not memory_palace_vector_ready(len(query_embedding)):
+        return {}
+
+    cap = int(limit or MEMORY_PALACE_VECTOR_CANDIDATES)
+    cap = max(1, min(cap, 5000))
+    # asyncpg 没有 vector 类型的编解码器，用文本字面量再显式转型。
+    vector_literal = "[" + ",".join(repr(float(x)) for x in query_embedding) + "]"
+
+    sql = """
+        SELECT v.memory_id,
+               GREATEST(0.0, LEAST(1.0, 1.0 - (v.embedding <=> $1::vector))) AS similarity
+        FROM memory_palace_vectors v
+        JOIN memory_palace_nodes n ON n.id = v.memory_id
+        WHERE v.embedding IS NOT NULL
+          AND n.character_id = $2
+          AND ($3::boolean OR n.archived = FALSE)
+    """
+    params = [vector_literal, character_id, include_archived]
+    if room:
+        sql += " AND n.room = $4"
+        params.append(room)
+    sql += f" ORDER BY v.embedding <=> $1::vector LIMIT {cap}"
+
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(sql, *params)
+    return {r["memory_id"]: float(r["similarity"]) for r in rows}
+
 async def init_tables():
     global HAS_PGVECTOR
     pool = await get_pool()

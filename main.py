@@ -8764,10 +8764,18 @@ async def get_memory_palace_related_refs(character_id: str = "default", limit: i
 
 
 def _memory_palace_strip_ref_internals(refs: list) -> list:
-    """去掉内部排序字段，只留下 prompt 需要的 id / room / content。"""
+    """去掉内部排序字段，保留 id / room / content 和来源标记。
+
+    source 不带下划线前缀，因为 prompt 要用它把「当时真的想起过」和
+    「系统补充的」分段展示。其它消费方（event links / corrections）只读
+    id / room / content，多一个键无影响。
+    """
     cleaned = []
     for ref in refs or []:
         item = {k: v for k, v in ref.items() if not k.startswith("_")}
+        source = ref.get("_source") or ref.get("source")
+        if source:
+            item["source"] = source
         if item.get("content"):
             cleaned.append(item)
     return cleaned
@@ -9038,7 +9046,27 @@ async def build_memory_palace_extraction_prompt(messages_text: str, pinned_refs:
     pinned_refs = pinned_refs or []
     related_refs = related_refs or []
     if related_refs:
-        related_lines = "\n".join(f"O{i}. [{r.get('room', 'living_room')}] {r.get('content', '')}" for i, r in enumerate(related_refs))
+        # 分段展示：让模型知道哪些是「当时真的想起过的」，哪些是系统补充的猜测。
+        # 编号保持全局连续（O0..On），relatedTo 的解析和映射逻辑不受影响。
+        recall_lines = []
+        search_lines = []
+        for i, r in enumerate(related_refs):
+            line = f"O{i}. [{r.get('room', 'living_room')}] {r.get('content', '')}"
+            if (r.get("source") or "recall") == "search":
+                search_lines.append(line)
+            else:
+                recall_lines.append(line)
+        segments = []
+        if recall_lines:
+            if search_lines:
+                segments.append("（这段对话进行时，你脑海里浮现过下面这些记忆）")
+            segments.extend(recall_lines)
+        if search_lines:
+            if recall_lines:
+                segments.append("")
+            segments.append("（下面是系统补充的、可能相关的旧记忆，当时未必想起过）")
+            segments.extend(search_lines)
+        related_lines = "\n".join(segments)
         related_block = f"\n## 已有记忆\n如果新记忆与某条旧记忆描述的是同一件事或直接相关，请在 relatedTo 中标注编号，并给出 eventName / eventTags 用于建/合并事件盒。\n{related_lines}\n"
         related_rule = '\n9. **事件盒关联**（relatedTo / sameAs + eventName + eventTags）：与旧记忆同事件或直接相关时，在 relatedTo 中写对应 O 编号（如 ["O0"]）；与本次输出的前面某条新记忆同事件时，在 sameAs 中写其 0 基索引（如 ["0"]）。只标真正同一事件、后续、结局、复现或直接因果；仅主题相似不要标。只要 relatedTo 或 sameAs 非空，必须同时写 eventName（5-12 字名词短语）和 eventTags（3-6 个具体标签）。\n10. **纠正旧记忆**（correct，可选）：仅当对话中明确指出某条已有记忆记错、过时或不准确时，在 JSON 数组末尾额外追加 {"correct":"O0","note":"新的准确事实"}。note 写简短陈述句，不写解释；事件后续用 relatedTo，不要滥用 correct。'
         related_format = ',\n    "relatedTo": ["O0"],\n    "sameAs": ["0"],\n    "eventName": "买衣服的话题",\n    "eventTags": ["衣服", "购物", "退货"]'

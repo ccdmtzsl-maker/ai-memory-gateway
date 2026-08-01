@@ -168,8 +168,12 @@ async def _ensure_memory_palace_vector_column(conn):
             FROM memory_palace_vectors
             WHERE embedding IS NULL
               AND embedding_json IS NOT NULL
-              AND dimensions = {dim}
               AND TRIM(embedding_json) ~ '^\\[[[:space:]]*-?[0-9]'
+              AND (
+                    dimensions = {dim}
+                    OR (dimensions IS NULL
+                        AND json_array_length(embedding_json::json) = {dim})
+              )
             LIMIT 5000
         ), updated AS (
             UPDATE memory_palace_vectors v

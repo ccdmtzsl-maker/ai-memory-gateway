@@ -1204,18 +1204,34 @@ async def _memory_palace_fetch_rows(room: str = None, character_id: str = "defau
         """, character_id, include_archived)
 
 
-def _memory_palace_score_rows(rows, query: str, query_embedding=None, discount: float = 1.0):
+def _memory_palace_score_rows(rows, query: str, query_embedding=None, discount: float = 1.0,
+                              vector_scores=None):
+    """给候选记忆打分排序。
+
+    vector_scores 是数据库算好的 {memory_id: 余弦相似度}。有它就直接查表，
+    不用再把 embedding_json 解析成 1024 个浮点数、也不用在 Python 里跑
+    余弦循环——那条路 130 个节点约 90ms，而且是纯计算，期间事件循环
+    完全被占住（日志里出现过 1087ms 阻塞）。
+
+    没查到的节点仍然走 Python 回退：可能是 pgvector 列还没回填，或者
+    维度和查询向量对不上。宁可慢一点，也不能让某条记忆凭空拿 0 分。
+    """
     scored = []
     query = (query or "").strip()
+    vector_scores = vector_scores or {}
     for row in rows:
         content = row["content"] or ""
         tags = row["tags"] or ""
         vector_score = 0.0
-        if query_embedding and row["embedding_json"]:
-            try:
-                vector_score = _memory_palace_cosine(query_embedding, json.loads(row["embedding_json"]))
-            except Exception:
-                vector_score = 0.0
+        if query_embedding:
+            db_score = vector_scores.get(row["id"])
+            if db_score is not None:
+                vector_score = float(db_score)
+            elif row["embedding_json"]:
+                try:
+                    vector_score = _memory_palace_cosine(query_embedding, json.loads(row["embedding_json"]))
+                except Exception:
+                    vector_score = 0.0
         keyword_score = _memory_palace_keyword_score(query, content, tags) if query else 0.0
         if query_embedding:
             similarity = _MEMORY_PALACE_VECTOR_WEIGHT * vector_score + _MEMORY_PALACE_BM25_WEIGHT * keyword_score
@@ -1257,7 +1273,23 @@ async def search_memory_palace_for_prompt(query: str = "", limit: int = 5, room:
             print(f"⚠️ Memory Palace query embedding failed: {e}")
             query_embedding = None
     rows = rows if rows is not None else await _memory_palace_fetch_rows(room=room, character_id=character_id)
-    return _memory_palace_score_rows(rows, query=query, query_embedding=query_embedding)[:limit]
+
+    # 相似度交给数据库算（pgvector）。失败或不可用时返回空字典，
+    # 打分函数会自动退回 Python 计算，结果一致只是慢一些。
+    vector_scores = {}
+    if query_embedding:
+        try:
+            vector_scores = await search_memory_palace_vector_scores(
+                query_embedding, character_id=character_id, room=room,
+            )
+        except Exception as e:
+            print(f"ℹ️ pgvector 检索失败，回退 Python 计算: {str(e)[:120]}")
+            vector_scores = {}
+
+    return _memory_palace_score_rows(
+        rows, query=query, query_embedding=query_embedding,
+        vector_scores=vector_scores,
+    )[:limit]
 
 
 def _memory_palace_person_link_strength(a: dict, b: dict) -> float:

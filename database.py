@@ -648,6 +648,13 @@ async def init_tables():
             CREATE INDEX IF NOT EXISTS idx_mp_recall_receipts_memory
             ON memory_palace_recall_receipts (memory_id);
         """)
+        # 支撑写入去重的 NOT EXISTS 探测：同一天同一会话同一条记忆只记一行。
+        # 不建唯一索引，因为历史数据里已有大量重复行，建唯一索引会直接失败，
+        # 而清理历史重复属于破坏性操作，不适合放在启动流程里自动跑。
+        await conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_mp_recall_receipts_dedupe
+            ON memory_palace_recall_receipts (character_id, session_id, memory_id, injected_at DESC);
+        """)
 
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS memory_palace_state (

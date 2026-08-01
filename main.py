@@ -2115,18 +2115,31 @@ def _memory_palace_source_session_ids(source_messages: list) -> list:
 
 
 def _memory_palace_group_receipts_by_round(rows: list, gap_seconds: int = None) -> list:
-    """把 receipts 按注入时刻聚成「轮」。一轮 = 一次记忆注入 = 一轮对话。"""
+    """把 receipts 聚成「轮」。一轮 = 一次记忆注入 = 一轮对话。
+
+    新数据优先按 anchor_message_id 分组：同一轮注入发生在保存本轮 user / assistant
+    之前，因此 anchor_message_id 相同。历史数据没有 anchor 时，才按 injected_at
+    间隔近似聚类。
+    """
     gap = float(gap_seconds if gap_seconds is not None else _MEMORY_PALACE_RECALL_ROUND_GAP_SECONDS)
     rounds = []
     current = []
     last_at = None
+    last_anchor = object()
     for row in rows or []:
+        anchor = row.get("anchor_message_id") if hasattr(row, "get") else None
         at = _memory_palace_aware_dt(row.get("injected_at") if hasattr(row, "get") else None)
-        if last_at is not None and at is not None and (at - last_at).total_seconds() > gap:
-            if current:
-                rounds.append(current)
+        split = False
+        if current:
+            if anchor is not None or last_anchor is not None:
+                split = anchor != last_anchor
+            elif last_at is not None and at is not None:
+                split = (at - last_at).total_seconds() > gap
+        if split:
+            rounds.append(current)
             current = []
         current.append(row)
+        last_anchor = anchor
         if at is not None:
             last_at = at
     if current:
@@ -2318,7 +2331,7 @@ async def record_memory_palace_recall_receipts(rows: list, pinned_count: int = 0
                 (character_id, session_id, memory_id, anchor_message_id, injected_at, metadata)
             VALUES ($1, $2, $3, $4, NOW(), '{}'::jsonb)
             """,
-            [(character_id, session_id or "", memory_id, anchor_id or None) for memory_id in ids],
+            [(character_id, session_id or "", memory_id, anchor_id) for memory_id in ids],
         )
     # 后台清理，不让聊天请求等它。
     try:

@@ -2243,6 +2243,25 @@ async def _maybe_cleanup_memory_palace_recall_receipts():
         print(f"⚠️ 清理召回记账失败: {e}")
 
 
+async def get_conversation_last_message_id(session_id: str) -> int:
+    """返回当前会话已落库的最后一条消息 id。
+
+    记忆注入发生在本轮 user/assistant 保存之前，所以这个 id 是“锚点”：
+    后续自动提取某个消息区间时，可以用 anchor_message_id 精确找回
+    这几轮对话当时实际注入过的记忆，而不再靠 injected_at 时间窗猜。
+    """
+    sid = str(session_id or "").strip()
+    if not sid:
+        return 0
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        value = await conn.fetchval(
+            "SELECT MAX(id)::bigint FROM conversations WHERE session_id = $1",
+            sid,
+        )
+    return int(value or 0)
+
+
 async def record_memory_palace_recall_receipts(rows: list, pinned_count: int = 0, boxes: dict = None, character_id: str = "default", session_id: str = "") -> int:
     """记录本轮实际注入 prompt 的记忆 id，供后续提取纠错/relatedTo 兜底。"""
     ids = []
@@ -2263,41 +2282,26 @@ async def record_memory_palace_recall_receipts(rows: list, pinned_count: int = 0
     ids = list(dict.fromkeys(ids))[:40]
     if not ids:
         return 0
+    anchor_id = await get_conversation_last_message_id(session_id)
     pool = await get_pool()
     async with pool.acquire() as conn:
-        # 写入去重：同一会话、同一条记忆、同一天只留一行。
-        #
-        # 为什么需要：一条高重要记忆可能连续几十轮都被召回，原来每轮写一行，
-        # 每轮最多 40 行，长期跑下去这是库里最大的一张表。而下游只需要知道
-        # 「这段对话期间这条记忆被想起过」，同一天注入了几次并不影响取样。
-        #
-        # 代价：同一天内的轮次结构会被压平，转圈取样在当天内退化成「每条
-        # 记忆一个代表」。这正是我们想要的效果——跨天的轮次覆盖不受影响。
-        rows = await conn.fetch(
+        # 不做写入去重：每轮注入都如实记一组 receipts。
+        # 重复记账是信息，不是脏数据：同一条记忆连续多轮出现，说明它是这段
+        # 对话的持续主题。后续取样会按 memory_id 去重，重复不会浪费 prompt 名额。
+        await conn.executemany(
             """
-            INSERT INTO memory_palace_recall_receipts (character_id, session_id, memory_id, injected_at, metadata)
-            SELECT v.character_id, v.session_id, v.memory_id, NOW(), '{}'::jsonb
-            FROM unnest($1::text[], $2::text[], $3::text[])
-                 AS v(character_id, session_id, memory_id)
-            WHERE NOT EXISTS (
-                SELECT 1 FROM memory_palace_recall_receipts r
-                WHERE r.character_id = v.character_id
-                  AND r.session_id = v.session_id
-                  AND r.memory_id = v.memory_id
-                  AND r.injected_at >= date_trunc('day', NOW())
-            )
-            RETURNING id
+            INSERT INTO memory_palace_recall_receipts
+                (character_id, session_id, memory_id, anchor_message_id, injected_at, metadata)
+            VALUES ($1, $2, $3, $4, NOW(), '{}'::jsonb)
             """,
-            [character_id] * len(ids),
-            [session_id or ""] * len(ids),
-            ids,
+            [(character_id, session_id or "", memory_id, anchor_id or None) for memory_id in ids],
         )
     # 后台清理，不让聊天请求等它。
     try:
         asyncio.create_task(_maybe_cleanup_memory_palace_recall_receipts())
     except Exception:
         pass
-    return len(rows)
+    return len(ids)
 
 
 async def get_memory_palace_receipt_refs(source_messages: list, character_id: str = "default", limit: int = 20) -> list:

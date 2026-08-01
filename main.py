@@ -10348,15 +10348,8 @@ async def api_mp_backfill_embeddings():
                     OR NULLIF(TRIM(COALESCE(v.embedding_json, '')), '') IS NULL
                     OR LOWER(TRIM(v.embedding_json)) IN ('[]', 'null')
                     OR TRIM(v.embedding_json) !~ '^\\[[[:space:]]*-?[0-9]'
-                    -- 或者：向量有效但维度和 pgvector 列不一致
-                    OR (
-                        $1 > 0
-                        AND v.embedding IS NULL
-                        AND COALESCE(
-                              v.dimensions,
-                              json_array_length(v.embedding_json::json)
-                            ) <> $1
-                    )
+                    -- 或者：向量有效，但启动回填没收下它（维度和 pgvector 列不符）
+                    OR ($1 > 0 AND v.embedding IS NULL)
                 )
                 ORDER BY n.created_at
             """, target_dim)

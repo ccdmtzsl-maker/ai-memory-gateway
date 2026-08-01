@@ -10321,21 +10321,45 @@ async def api_mp_backfill_embeddings():
                   AND LOWER(TRIM(v.embedding_json)) NOT IN ('[]', 'null')
                   AND TRIM(v.embedding_json) ~ '^\\[[[:space:]]*-?[0-9]'
             """)
-            # 只补真正缺失向量的节点，避免破坏已有向量。
+            # 需要处理的节点分两类：
+            #   1. 真的没有向量（needs_rebuild = FALSE）→ 只补，不碰已有数据
+            #   2. 有向量但维度和 pgvector 列对不上（needs_rebuild = TRUE）
+            #      → 必须用当前模型重算并覆盖，否则永远进不了 pgvector 列、
+            #        每次检索都要走 Python 慢速计算
+            #
+            # 第 2 类是换过 embedding 模型留下的：早期 256 维的向量本身是
+            # 有效的，所以旧逻辑判定「不缺向量」直接跳过，用户点补全也没反应。
+            target_dim = int(getattr(_db_module, "MEMORY_PALACE_VECTOR_DIM", 0) or 0)
             rows = await conn.fetch("""
-                SELECT n.id, n.content
+                SELECT n.id, n.content,
+                       (
+                         v.memory_id IS NOT NULL
+                         AND NULLIF(TRIM(COALESCE(v.embedding_json, '')), '') IS NOT NULL
+                         AND LOWER(TRIM(v.embedding_json)) NOT IN ('[]', 'null')
+                         AND TRIM(v.embedding_json) ~ '^\\[[[:space:]]*-?[0-9]'
+                       ) AS needs_rebuild
                 FROM memory_palace_nodes n
                 LEFT JOIN memory_palace_vectors v ON v.memory_id = n.id
                 WHERE n.archived = FALSE
+                  AND COALESCE(NULLIF(TRIM(n.content), ''), '') <> ''
                   AND (
+                    -- 缺失或无效向量
                     v.memory_id IS NULL
                     OR NULLIF(TRIM(COALESCE(v.embedding_json, '')), '') IS NULL
                     OR LOWER(TRIM(v.embedding_json)) IN ('[]', 'null')
                     OR TRIM(v.embedding_json) !~ '^\\[[[:space:]]*-?[0-9]'
+                    -- 或者：向量有效但维度和 pgvector 列不一致
+                    OR (
+                        $1 > 0
+                        AND v.embedding IS NULL
+                        AND COALESCE(
+                              v.dimensions,
+                              json_array_length(v.embedding_json::json)
+                            ) <> $1
+                    )
                 )
-                  AND COALESCE(NULLIF(TRIM(n.content), ''), '') <> ''
                 ORDER BY n.created_at
-            """)
+            """, target_dim)
     except Exception as e:
         return {"error": f"查询待补算节点失败: {e}"}
     if not rows:

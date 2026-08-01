@@ -133,8 +133,8 @@ async def _ensure_memory_palace_vector_column(conn):
           AND a.attnum > 0 AND NOT a.attisdropped
     """)
 
-    if existing_dim is not None:
-        # 列已存在。atttypmod 就是 vector 的维度。
+    if existing_dim is not None and int(existing_dim) > 0:
+        # 列已存在。pgvector 把维度直接存在 atttypmod 里（不像 varchar 会 +4）。
         MEMORY_PALACE_VECTOR_DIM = int(existing_dim)
         target_dim = await _detect_memory_palace_vector_dim(conn)
         if target_dim != MEMORY_PALACE_VECTOR_DIM:
@@ -144,6 +144,12 @@ async def _ensure_memory_palace_vector_column(conn):
                 f"⚠️ 记忆宫殿向量列是 {MEMORY_PALACE_VECTOR_DIM} 维，"
                 f"但现有向量多为 {target_dim} 维；新维度的向量不会写入 pgvector 列"
             )
+    elif existing_dim is not None:
+        # 列存在但没写死维度（`vector` 而非 `vector(N)`）。pgvector 不能给
+        # 这种列建索引，也没法保证插入维度一致，直接判为不可用。
+        MEMORY_PALACE_VECTOR_DIM = None
+        print("⚠️ 记忆宫殿向量列没有固定维度，pgvector 路径不可用")
+        return
     else:
         dim = await _detect_memory_palace_vector_dim(conn)
         await conn.execute(

@@ -10388,7 +10388,13 @@ async def api_mp_backfill_embeddings():
                 if not _mp_backfill_status["running"]:
                     break
                 try:
-                    result = await save_memory_palace_embedding_if_missing(row["id"], row["content"])
+                    if row["needs_rebuild"]:
+                        # 维度不符：必须覆盖旧向量，用 _if_missing 会被判为
+                        # 「已存在」直接跳过，这也是之前点补全没反应的原因。
+                        ok = await save_memory_palace_embedding(row["id"], row["content"])
+                        result = "inserted" if ok else "failed"
+                    else:
+                        result = await save_memory_palace_embedding_if_missing(row["id"], row["content"])
                     if result == "inserted":
                         _mp_backfill_status["inserted"] += 1
                     elif result == "failed":

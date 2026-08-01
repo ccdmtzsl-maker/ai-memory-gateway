@@ -95,6 +95,103 @@ async def close_pool():
 # 表结构初始化
 # ============================================================
 
+# 记忆宫殿向量列的实际维度。None 表示尚未就绪（没建列或建失败）。
+MEMORY_PALACE_VECTOR_DIM = None
+
+
+async def _detect_memory_palace_vector_dim(conn) -> int:
+    """决定 vector 列用多少维。
+
+    pgvector 的 vector(N) 必须写死维度，写错了插入就会报错。所以不能
+    直接信 EMBEDDING_DIM 这个环境变量——它默认 256，而实际用的模型
+    （比如 bge-m3）返回 1024 维。以库里已有向量的真实维度为准最可靠。
+    """
+    row = await conn.fetchrow("""
+        SELECT dimensions, COUNT(*) AS cnt
+        FROM memory_palace_vectors
+        WHERE dimensions IS NOT NULL AND dimensions > 0
+        GROUP BY dimensions
+        ORDER BY cnt DESC, dimensions DESC
+        LIMIT 1
+    """)
+    if row and row["dimensions"]:
+        return int(row["dimensions"])
+    # 库里还没有任何向量：用设置里的维度
+    return int(EMBEDDING_DIM or 1024)
+
+
+async def _ensure_memory_palace_vector_column(conn):
+    """建 vector 列、回填历史数据、建索引。可重复执行。"""
+    global MEMORY_PALACE_VECTOR_DIM
+
+    existing_dim = await conn.fetchval("""
+        SELECT a.atttypmod
+        FROM pg_attribute a
+        JOIN pg_class c ON c.oid = a.attrelid
+        WHERE c.relname = 'memory_palace_vectors'
+          AND a.attname = 'embedding'
+          AND a.attnum > 0 AND NOT a.attisdropped
+    """)
+
+    if existing_dim is not None:
+        # 列已存在。atttypmod 就是 vector 的维度。
+        MEMORY_PALACE_VECTOR_DIM = int(existing_dim)
+        target_dim = await _detect_memory_palace_vector_dim(conn)
+        if target_dim != MEMORY_PALACE_VECTOR_DIM:
+            # 换过 embedding 模型，维度变了。不自动重建（会丢数据），
+            # 只告警；要迁移就走仪表盘的重建向量流程。
+            print(
+                f"⚠️ 记忆宫殿向量列是 {MEMORY_PALACE_VECTOR_DIM} 维，"
+                f"但现有向量多为 {target_dim} 维；新维度的向量不会写入 pgvector 列"
+            )
+    else:
+        dim = await _detect_memory_palace_vector_dim(conn)
+        await conn.execute(
+            f"ALTER TABLE memory_palace_vectors ADD COLUMN embedding vector({dim})"
+        )
+        MEMORY_PALACE_VECTOR_DIM = dim
+        print(f"✅ 记忆宫殿向量列已创建（{dim} 维）")
+
+    dim = MEMORY_PALACE_VECTOR_DIM
+
+    # 回填：把 embedding_json 里维度对得上的向量灌进 vector 列。
+    # 只处理 embedding IS NULL 的行，所以重复执行不会重做已完成的部分。
+    filled = await conn.fetchval(f"""
+        WITH candidates AS (
+            SELECT memory_id, embedding_json
+            FROM memory_palace_vectors
+            WHERE embedding IS NULL
+              AND embedding_json IS NOT NULL
+              AND dimensions = {dim}
+              AND TRIM(embedding_json) ~ '^\\[[[:space:]]*-?[0-9]'
+            LIMIT 5000
+        ), updated AS (
+            UPDATE memory_palace_vectors v
+            SET embedding = c.embedding_json::vector
+            FROM candidates c
+            WHERE v.memory_id = c.memory_id
+            RETURNING 1
+        )
+        SELECT COUNT(*) FROM updated
+    """)
+    if filled:
+        print(f"✅ 记忆宫殿向量回填 {filled} 条到 pgvector 列")
+
+    # 索引：优先 HNSW（查询更快），旧版 pgvector 没有就退 IVFFlat。
+    # 数据量小的时候索引意义不大，但先建好，省得以后涨上来再折腾。
+    for stmt, label in (
+        ("""CREATE INDEX IF NOT EXISTS idx_mp_vectors_embedding_hnsw
+            ON memory_palace_vectors USING hnsw (embedding vector_cosine_ops)""", "HNSW"),
+        ("""CREATE INDEX IF NOT EXISTS idx_mp_vectors_embedding_ivf
+            ON memory_palace_vectors USING ivfflat (embedding vector_cosine_ops)
+            WITH (lists = 20)""", "IVFFlat"),
+    ):
+        try:
+            await conn.execute(stmt)
+            break
+        except Exception as e:
+            print(f"ℹ️ 记忆宫殿向量索引 {label} 建立失败: {str(e)[:120]}")
+
 async def init_tables():
     global HAS_PGVECTOR
     pool = await get_pool()
@@ -356,6 +453,22 @@ async def init_tables():
             CREATE INDEX IF NOT EXISTS idx_mp_vectors_character
             ON memory_palace_vectors (character_id);
         """)
+
+        # 记忆宫殿向量：pgvector 列 + 索引
+        #
+        # 原来只有 embedding_json TEXT，数据库看到的是一串文本，没法做
+        # 向量最近邻搜索。结果每次检索都要把全部节点的向量捞到 Python，
+        # 逐个 json.loads + 纯 Python 算余弦，130 节点约 90ms 且完全
+        # 阻塞事件循环（实测日志里出现过 1087ms 阻塞）。
+        #
+        # 加一个真正的 vector 列，让数据库自己算 top-K。
+        # embedding_json 保留不动：它是重建向量列的依据，也是 pgvector
+        # 不可用时的回退路径。
+        if HAS_PGVECTOR:
+            try:
+                await _ensure_memory_palace_vector_column(conn)
+            except Exception as e:
+                print(f"⚠️ 记忆宫殿 pgvector 列初始化失败（将回退 Python 计算）: {e}")
         
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS memory_palace_links (

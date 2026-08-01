@@ -182,139 +182,6 @@ def add_dashboard_log(level: str, message: str, category: str = "memory", sessio
     print(message)
 
 
-# 慢查询 / 事件循环阻塞诊断：只记日志，不改业务行为。
-SLOW_QUERY_MS = 300          # 单个 DB 查询超过这个耗时就记一条
-EVENT_LOOP_LAG_MS = 500      # 事件循环每秒唤醒延迟超过这个就记一条
-
-
-# 当前活动栈：只用于诊断，让阻塞探针能报出「卡住的时候在跑什么」。
-# 注意：单事件循环下可能有多个协程交错，栈里可能同时有几项，
-# 因此它给的是线索而不是精确归因。
-_ACTIVITY_STACK = []
-# 刚结束的耗时操作：阻塞探针往往在操作结束后才醒来，
-# 此时栈已弹空，只能靠这里回溯是谁把它压住的。
-_RECENT_ACTIVITIES = deque(maxlen=8)
-ACTIVITY_RECORD_MS = 200        # 自身耗时超过这个才值得记
-ACTIVITY_LOOKBACK_SEC = 3.0     # 探针回溯多久之内刚结束的操作
-
-
-class activity:
-    """标记一段正在进行的重量级操作。
-
-    用法：
-        with activity("记忆宫殿向量打分"):
-            ...
-    """
-
-    def __init__(self, label: str):
-        self.label = label
-
-    def __enter__(self):
-        try:
-            _ACTIVITY_STACK.append((self.label, time.perf_counter()))
-        except Exception:
-            pass
-        return self
-
-    def __exit__(self, exc_type, exc, tb):
-        try:
-            started = None
-            for i in range(len(_ACTIVITY_STACK) - 1, -1, -1):
-                if _ACTIVITY_STACK[i][0] == self.label:
-                    started = _ACTIVITY_STACK[i][1]
-                    _ACTIVITY_STACK.pop(i)
-                    break
-            if started is not None:
-                elapsed_ms = (time.perf_counter() - started) * 1000
-                if elapsed_ms >= ACTIVITY_RECORD_MS:
-                    _RECENT_ACTIVITIES.append(
-                        (self.label, elapsed_ms, time.perf_counter())
-                    )
-        except Exception:
-            pass
-        return False
-
-
-def _current_activity_text() -> str:
-    """渲染「此刻在跑什么」。
-
-    栈非空时报进行中的操作；栈空时回溯最近刚结束的耗时操作——
-    因为探针通常是在阻塞结束、事件循环恢复之后才被唤醒的。
-    """
-    try:
-        now = time.perf_counter()
-        if _ACTIVITY_STACK:
-            parts = [
-                f"{label}(进行中{(now - started) * 1000:.0f}ms)"
-                for label, started in _ACTIVITY_STACK[-4:]
-            ]
-            return " + ".join(parts)
-        recent = [
-            f"{label}(刚结束, 耗时{ms:.0f}ms)"
-            for label, ms, done_at in _RECENT_ACTIVITIES
-            if (now - done_at) <= ACTIVITY_LOOKBACK_SEC
-        ]
-        if recent:
-            return " + ".join(recent[-3:])
-        return "无已标记操作（阻塞源在标记范围之外）"
-    except Exception:
-        return "未知"
-
-class timed_block:
-    """给一段代码计时，超阈值写 Dashboard 日志。
-
-    用法：
-        with timed_block("conversations 分页查询", page=1):
-            ...
-    本身无副作用，异常也不吞掉。
-    """
-
-    def __init__(self, label: str, threshold_ms: int = None, **extra):
-        self.label = label
-        self.threshold_ms = SLOW_QUERY_MS if threshold_ms is None else threshold_ms
-        self.extra = extra
-        self.started = 0.0
-
-    def __enter__(self):
-        self.started = time.perf_counter()
-        return self
-
-    def __exit__(self, exc_type, exc, tb):
-        elapsed_ms = (time.perf_counter() - self.started) * 1000
-        if elapsed_ms >= self.threshold_ms or exc_type is not None:
-            detail = ", ".join(f"{k}={v}" for k, v in self.extra.items() if v not in (None, ""))
-            suffix = f" | {detail}" if detail else ""
-            if exc_type is not None:
-                suffix += f" | 异常 {exc_type.__name__}"
-            add_dashboard_log(
-                "warn" if exc_type is None else "error",
-                f"🐌 慢查询 {self.label} | {elapsed_ms:.0f}ms{suffix}",
-                category="performance",
-            )
-        return False
-
-
-async def _event_loop_lag_monitor():
-    """每秒唤醒一次，唤醒延迟就是事件循环被同步代码占住的时长。
-
-    用于区分「某个接口自己慢」和「整个服务被阻塞」：
-    后者会让所有请求一起卡，前者不会。
-    """
-    interval = 1.0
-    while True:
-        started = time.perf_counter()
-        try:
-            await asyncio.sleep(interval)
-        except asyncio.CancelledError:
-            return
-        lag_ms = (time.perf_counter() - started - interval) * 1000
-        if lag_ms >= EVENT_LOOP_LAG_MS:
-            add_dashboard_log(
-                "warn" if lag_ms < 2000 else "error",
-                f"🚧 事件循环被阻塞 {lag_ms:.0f}ms（期间所有请求都在等）| 当时在跑: {_current_activity_text()}",
-                category="performance",
-            )
-
 def _serialize_dashboard_conversation_message(row) -> dict:
     """Serialize one conversation DB row for Dashboard message list."""
     metadata = None
@@ -702,18 +569,8 @@ async def lifespan(app: FastAPI):
     else:
         print("ℹ️  记忆系统已关闭（设置 MEMORY_ENABLED=true 开启）")
     
-    # 事件循环阻塞探针：诊断用，开销可忽略（每秒一次 sleep）
-    _lag_task = None
-    try:
-        _lag_task = asyncio.create_task(_event_loop_lag_monitor())
-        print("🚧 事件循环阻塞探针已启动（阈值 %dms）" % EVENT_LOOP_LAG_MS)
-    except Exception as e:
-        print(f"⚠️  事件循环探针启动失败: {e}")
-    
     yield
     
-    if _lag_task is not None:
-        _lag_task.cancel()
     if MEMORY_ENABLED:
         await close_pool()
 
@@ -749,111 +606,16 @@ def _database_pool_snapshot() -> str:
         return f"pool=读取失败({e})"
 
 
-# 代理层可能带上「请求进入边缘节点的时刻」，各家用的头不一样。
-# 如果能读到，就能算出请求在应用外面躺了多久——这段时间中间件测不到。
-_PROXY_START_HEADERS = (
-    "x-request-start",        # Heroku / 部分 nginx 配置
-    "x-queue-start",
-    "x-request-received",
-    "x-envoy-downstream-service-time",
-)
-
-
-def _request_wait_text(request: Request) -> str:
-    """算出请求从进代理到被应用处理之间等了多久。
-
-    读不到就返回代理带来的头名字，这样至少知道有哪些线索可用，
-    下次可以换个头解析。
-    """
-    try:
-        for name in _PROXY_START_HEADERS:
-            raw = request.headers.get(name)
-            if not raw:
-                continue
-            token = raw.strip().lower().lstrip("t=").rstrip("m")
-            try:
-                value = float(token)
-            except ValueError:
-                continue
-            # 有的用秒、有的用毫秒、有的用微秒，按量级判断
-            if value > 1e15:
-                start_sec = value / 1e6
-            elif value > 1e12:
-                start_sec = value / 1e3
-            else:
-                start_sec = value
-            wait_ms = (time.time() - start_sec) * 1000
-            if -60000 < wait_ms < 600000:
-                return f"{name}={wait_ms:.0f}ms"
-        # 一个都没读到：把代理相关的头名列出来，供下一步排查
-        proxy_headers = [
-            k for k in request.headers.keys()
-            if k.lower().startswith(("x-", "cf-", "fly-", "render-", "via"))
-        ]
-        if proxy_headers:
-            return "无时间戳头, 代理头: " + ",".join(sorted(proxy_headers)[:10])
-        return "无代理头"
-    except Exception as exc:
-        return f"读取失败({exc})"
-
-
-def _wrap_response_send_timing(request: Request, response, path: str) -> None:
-    """给响应体的迭代器包一层计时。
-
-    中间件的 elapsed 只覆盖「生成响应对象」，body 是在中间件返回之后
-    才被逐块发出去的。如果客户端读得慢、或出口带宽被限，时间会花在这里
-    而现有日志完全看不见。
-
-    出错一律吞掉：诊断代码绝对不能让正常响应挂掉。
-    """
-    try:
-        iterator = getattr(response, "body_iterator", None)
-        if iterator is None:
-            return
-        # SSE 流式对话本身就是长连接，逐字输出几十秒是正常的，不测
-        content_type = str(response.headers.get("content-type") or "")
-        if "text/event-stream" in content_type:
-            return
-
-        query = request.url.query
-        target = f"{path}?{query}" if query else path
-
-        async def _timed_body():
-            send_started = time.perf_counter()
-            total_bytes = 0
-            chunks = 0
-            try:
-                async for chunk in iterator:
-                    total_bytes += len(chunk or b"")
-                    chunks += 1
-                    yield chunk
-            finally:
-                send_ms = (time.perf_counter() - send_started) * 1000
-                if send_ms >= SLOW_QUERY_MS:
-                    add_dashboard_log(
-                        "error" if send_ms >= 3000 else "run",
-                        f"📤 响应发送耗时 {target} | {send_ms:.0f}ms | "
-                        f"{total_bytes}B / {chunks}块（压缩前）",
-                        category="performance",
-                    )
-
-        response.body_iterator = _timed_body()
-    except Exception:
-        return
-
 @app.middleware("http")
 async def dashboard_performance_diagnostic_middleware(request: Request, call_next):
     path = request.url.path
+    watched = any(path.startswith(prefix) for prefix in _PERF_DIAGNOSTIC_PREFIXES)
     # 后台日志接口必须排除，否则日志页轮询会记录自己。
-    if path.startswith("/api/dashboard/") or path.startswith("/static/"):
+    if not watched or path.startswith("/api/dashboard/"):
         return await call_next(request)
 
-    watched = any(path.startswith(prefix) for prefix in _PERF_DIAGNOSTIC_PREFIXES)
-    # 慢请求兜底：即使不在观察前缀里，只要超过慢查询阈值也记一条，
-    # 否则「没点到的东西在自己跑」这类问题永远看不见。
-    slow_only = not watched
-    if watched and not PERF_DIAGNOSTIC_ENABLED:
-        slow_only = True
+    if not PERF_DIAGNOSTIC_ENABLED:
+        return await call_next(request)
 
     started = time.perf_counter()
     pool_before = _database_pool_snapshot()
@@ -861,28 +623,18 @@ async def dashboard_performance_diagnostic_middleware(request: Request, call_nex
     try:
         response = await call_next(request)
         status_code = int(getattr(response, "status_code", 200) or 200)
-        # 响应体的发送发生在中间件返回之后，上面那个 elapsed_ms 测不到它。
-        # 实测浏览器等了 24 秒而这里只报 55ms，差值可能就藏在发送阶段，
-        # 所以把 body 迭代器包一层，量出「首字节之后到发完」用了多久。
-        _wrap_response_send_timing(request, response, path)
         return response
     finally:
         elapsed_ms = (time.perf_counter() - started) * 1000
-        _should_log = (
-            status_code >= 500
-            or elapsed_ms >= SLOW_QUERY_MS
-            or not slow_only
+        pool_after = _database_pool_snapshot()
+        level = "error" if status_code >= 500 else ("run" if elapsed_ms >= 800 else "info")
+        query = request.url.query
+        target = f"{path}?{query}" if query else path
+        add_dashboard_log(
+            level,
+            f"⏱️ API性能 {request.method} {target} | {elapsed_ms:.0f}ms | HTTP {status_code} | 开始[{pool_before}] | 结束[{pool_after}]",
+            category="performance",
         )
-        if _should_log:
-            pool_after = _database_pool_snapshot()
-            level = "error" if status_code >= 500 else ("run" if elapsed_ms >= 800 else "info")
-            query = request.url.query
-            target = f"{path}?{query}" if query else path
-            add_dashboard_log(
-                level,
-                f"⏱️ API性能 {request.method} {target} | {elapsed_ms:.0f}ms | HTTP {status_code} | 开始[{pool_before}] | 结束[{pool_after}] | 入口等待[{_request_wait_text(request)}]",
-                category="performance",
-            )
 
 # 响应压缩：Dashboard 的 JS/CSS/HTML 都是纯文本，未压缩共 ~260KB，
 # 在 Render 免费实例的出口带宽下直接造成白屏等待。gzip 后通常能降到 1/4 左右。
@@ -1504,10 +1256,8 @@ async def search_memory_palace_for_prompt(query: str = "", limit: int = 5, room:
         except Exception as e:
             print(f"⚠️ Memory Palace query embedding failed: {e}")
             query_embedding = None
-    with activity("记忆宫殿取节点(DB+JSON)"):
-        rows = rows if rows is not None else await _memory_palace_fetch_rows(room=room, character_id=character_id)
-    with activity("记忆宫殿向量打分(%d节点)" % len(rows)):
-        return _memory_palace_score_rows(rows, query=query, query_embedding=query_embedding)[:limit]
+    rows = rows if rows is not None else await _memory_palace_fetch_rows(room=room, character_id=character_id)
+    return _memory_palace_score_rows(rows, query=query, query_embedding=query_embedding)[:limit]
 
 
 def _memory_palace_person_link_strength(a: dict, b: dict) -> float:
@@ -4900,9 +4650,6 @@ async def process_memories_background(session_id: str, user_msg: str, assistant_
     """
     global _round_counter
     
-    _bg_started = time.perf_counter()
-    _bg_act = activity("回复后台存储+自动提取")
-    _bg_act.__enter__()
     try:
         # Debug: 打印存储分支判断依据
         print(f"💾 process_memories_background: user_msg={bool(user_msg)}, tool_messages={len(tool_messages) if tool_messages else 0}, "
@@ -5002,19 +4749,10 @@ async def process_memories_background(session_id: str, user_msg: str, assistant_
         # 和回复保存后的分区后台自动提取负责，避免旧 gateway_config 书签逻辑与新游标混淆。
         if not skip_conversation_log:
             await run_partition_auto_extract_after_response(session_id)
-        _bg_ms = (time.perf_counter() - _bg_started) * 1000
-        if _bg_ms >= 1000:
-            add_dashboard_log(
-                "warn",
-                f"🐌 回复后台处理 {_bg_ms:.0f}ms（存储+自动提取）",
-                category="performance", session_id=session_id,
-            )
         return
             
     except Exception as e:
         add_dashboard_log("error", f"⚠️ 后台记忆处理失败: {e}", session_id=session_id if 'session_id' in locals() else "")
-    finally:
-        _bg_act.__exit__(None, None, None)
 
 
 # ============================================================
@@ -6212,46 +5950,6 @@ async def api_dashboard_last_request():
         "body": _last_upstream_request_body,
     }
 
-
-@app.post("/api/dashboard/client-timing")
-async def api_dashboard_client_timing(request: Request):
-    """接收浏览器侧的耗时上报，写进后台日志。
-
-    服务端中间件只能测「应用开始处理」之后的时间，测不到
-    请求在队列里的等待、也测不到浏览器主线程被占住的时间。
-    平板上没法开 F12，所以让前端把这些数字回传过来。
-    """
-    try:
-        body = await request.json()
-    except Exception:
-        return {"error": "invalid json"}
-
-    kind = str(body.get("kind") or "")[:40]
-    label = str(body.get("label") or "")[:200]
-    try:
-        ms = float(body.get("ms") or 0)
-    except Exception:
-        ms = 0.0
-    detail = str(body.get("detail") or "")[:300]
-
-    icons = {
-        "longtask": "🧊 浏览器主线程卡住",
-        "click_to_fetch": "👆 点击到请求发出",
-        "fetch": "🌐 浏览器实测请求",
-        "render": "🎨 前端渲染",
-        "page_load": "📄 页面加载",
-        "retry": "🔁 GET超时重发",
-        "segments": "🧭 请求分段",
-    }
-    prefix = icons.get(kind, f"📱 客户端[{kind}]")
-    level = "error" if ms >= 3000 else "warn"
-    suffix = f" | {detail}" if detail else ""
-    add_dashboard_log(
-        level,
-        f"{prefix} {label} | {ms:.0f}ms{suffix}",
-        category="performance",
-    )
-    return {"status": "ok"}
 
 @app.post("/api/dashboard/logs/clear")
 async def api_clear_dashboard_logs():
@@ -10163,8 +9861,7 @@ async def api_conversations(page: int = 1, per_page: int = 20):
     page = max(1, int(page))
     per_page = max(1, min(int(per_page), 100))
     try:
-        with timed_block("对话列表分页 get_conversations_paginated", page=page, per_page=per_page):
-            results, total = await get_conversations_paginated(page, per_page)
+        results, total = await get_conversations_paginated(page, per_page)
         total_pages = max(1, -(-total // per_page))  # 向上取整
         result = {"conversations": results, "total": total, "page": page, "per_page": per_page, "total_pages": total_pages}
         return result
@@ -10180,8 +9877,7 @@ async def api_conversation_messages(session_id: str, limit: int = 30, offset: in
     offset = max(0, int(offset or 0))
     try:
         pool = await get_pool()
-        with timed_block("会话消息查询", session_id=session_id, limit=limit, offset=offset):
-          async with pool.acquire() as conn:
+        async with pool.acquire() as conn:
             total = await conn.fetchval(
                 "SELECT COUNT(*) FROM conversations WHERE session_id = $1", session_id
             )

@@ -10584,11 +10584,48 @@ async def test_memory_model(request: Request):
 
 @app.put("/api/settings")
 async def save_settings(request: Request):
-    """保存高级设置（写入数据库 + 热更新运行时变量，立即生效无需重启）"""
+    """保存高级设置（写入数据库 + 热更新运行时变量，立即生效无需重启）
+
+    性能说明：前端每次点保存都会把设置页全部 35 个字段发过来，不管改没改。
+    原来的实现对每个字段单独 await set_gateway_config，也就是 35 次数据库
+    往返；数据库在美国，单次约 25ms，实测总耗时 776ms。
+
+    现在改成两件事：
+      1. 先一次读出当前全部配置，值没变的不写库（跳过 = 省一次往返）
+      2. 真正要写的攒起来，最后用 set_gateway_config_many 一次写完
+
+    往返次数从 35 次降到 2 次（1 读 + 1 批量写）。
+
+    一个重要的取舍：跳过的只是「数据库写入」和「缓存失效」这类有成本的
+    动作。内存里的运行时变量赋值一律照做——它几乎不花时间，而且进程重启后
+    内存值可能已经回到默认，如果因为「数据库里的值没变」就跳过赋值，
+    会导致设置显示正确但实际没生效。
+    """
     try:
         data = await request.json()
         updated = []
         skipped = []
+        unchanged = []
+
+        # 一次读出现有配置，后面所有比对都用这份快照，不再逐个查库
+        try:
+            existing = await get_all_gateway_config()
+        except Exception as exc:
+            print(f"[save_settings] 读取现有配置失败，退化为全量写入: {exc}")
+            existing = {}
+
+        # 待写入队列：key → 字符串值。最后一次性提交。
+        pending = {}
+
+        def queue_write(cfg_key: str, cfg_value, label: str = "") -> bool:
+            """把一项配置放进待写队列。值和库里一样就不写，返回 False。"""
+            text = str(cfg_value)
+            if cfg_key in existing and existing[cfg_key] == text:
+                unchanged.append(label or cfg_key)
+                return False
+            pending[cfg_key] = text
+            updated.append(label or cfg_key)
+            return True
 
         # main.py 全局变量映射（key → 类型转换函数）
         _MAIN_VARS = {
@@ -10645,7 +10682,7 @@ async def save_settings(request: Request):
                     skipped.append(key)
                     continue
                 if not str_val:
-                    await set_gateway_config(key, "")
+                    queue_write(key, "")
                     if key in _MAIN_VARS:
                         globals()[key] = ""
                     elif key in _DB_VARS:
@@ -10654,29 +10691,27 @@ async def save_settings(request: Request):
                         import memory_extractor as _me_mod
                         _me_mod.MEMORY_API_KEY = ""
                     os.environ[key] = ""
-                    updated.append(key)
                     continue
 
             # --- systemPrompt 特殊处理 ---
             if key == "systemPrompt":
-                await set_gateway_config("systemPrompt", str(value))
-                invalidate_system_prompt_cache()
-                updated.append("systemPrompt")
-                print(f"[settings] systemPrompt 已更新（{len(str(value))} 字）")
+                # 缓存失效有成本（下次聊天要多查一次库），只在真改了时才清
+                if queue_write("systemPrompt", value):
+                    invalidate_system_prompt_cache()
+                    print(f"[settings] systemPrompt 已更新（{len(str(value))} 字）")
                 continue
 
             # --- extractionPrompt 特殊处理 ---
             if key == "extractionPrompt":
-                await set_gateway_config("extractionPrompt", str(value))
+                queue_write("extractionPrompt", value)
+                # 内存赋值无论如何都做：重启后内存里可能是默认值
                 set_extraction_prompt(str(value))
-                updated.append("extractionPrompt")
                 continue
 
             # --- dailyImpressionPrompt 特殊处理 ---
             if key == "dailyImpressionPrompt":
-                await set_gateway_config("dailyImpressionPrompt", str(value))
+                queue_write("dailyImpressionPrompt", value)
                 set_daily_impression_prompt(str(value))
-                updated.append("dailyImpressionPrompt")
                 continue
 
             # --- modelPresets 特殊处理 ---
@@ -10694,30 +10729,26 @@ async def save_settings(request: Request):
                     presets_json = json.dumps(cleaned_presets, ensure_ascii=False)
                 else:
                     presets_json = str(presets_value)
-                await set_gateway_config("modelPresets", presets_json)
-                updated.append("modelPresets")
+                queue_write("modelPresets", presets_json)
                 continue
 
             # --- activatePreset 特殊处理（激活某个预设 → 切换 DEFAULT_MODEL / URL / Key）---
             if key == "activatePreset":
                 new_model = str(value)
                 globals()["DEFAULT_MODEL"] = new_model
-                await set_gateway_config("DEFAULT_MODEL", new_model)
-                updated.append(f"DEFAULT_MODEL→{new_model}")
+                queue_write("DEFAULT_MODEL", new_model, label=f"DEFAULT_MODEL→{new_model}")
                 continue
 
             if key == "activatePresetUrl":
                 if value:
                     globals()["API_BASE_URL"] = str(value)
-                    await set_gateway_config("API_BASE_URL", str(value))
-                    updated.append(f"API_BASE_URL→{value}")
+                    queue_write("API_BASE_URL", str(value), label=f"API_BASE_URL→{value}")
                 continue
 
             if key == "activatePresetKey":
                 if value and not _is_masked(str(value)):
                     globals()["API_KEY"] = str(value)
-                    await set_gateway_config("API_KEY", str(value))
-                    updated.append(f"API_KEY→***")
+                    queue_write("API_KEY", str(value), label="API_KEY→***")
                 continue
 
 
@@ -10727,9 +10758,8 @@ async def save_settings(request: Request):
                 continue
 
             # --- 常规字段 ---
-            await set_gateway_config(key, str(value))
-
             if key in _MAIN_VARS:
+                queue_write(key, str(value))
                 typed_value = _MAIN_VARS[key](value)
                 globals()[key] = typed_value
                 os.environ[key] = str(value)
@@ -10739,32 +10769,41 @@ async def save_settings(request: Request):
                 if key == "MEMORY_API_BASE_URL":
                     import memory_extractor as _me_mod
                     _me_mod.MEMORY_API_BASE_URL = str(value)
-                updated.append(key)
-                print(f"[settings] {key} = {typed_value}")
 
             elif key in _DB_VARS:
+                queue_write(key, str(value))
                 typed_value = _DB_VARS[key](value)
                 setattr(_db_module, key, typed_value)
                 os.environ[key] = str(value)
-                updated.append(key)
-                print(f"[settings] {key} = {typed_value} (database)")
 
             elif key in _ENV_ONLY:
+                queue_write(key, str(value))
                 typed_value = _ENV_ONLY[key](value)
                 os.environ[key] = str(typed_value)
                 if key == "MEMORY_MODEL":
                     import memory_extractor as _me_mod
                     _me_mod.MEMORY_MODEL = str(typed_value)
-                updated.append(key)
-                print(f"[settings] {key} = {typed_value} (env)")
 
             else:
+                # 不认识的 key：仍然存库（保持原行为），但不动任何运行时变量
+                queue_write(key, str(value))
                 skipped.append(key)
+
+        # 一次性写入所有变化项
+        if pending:
+            await set_gateway_config_many(pending)
+            print(f"[settings] 批量写入 {len(pending)} 项（跳过未变化 {len(unchanged)} 项）")
+        else:
+            print(f"[settings] 无变化，未写库（提交 {len(data)} 项）")
+
+        # 未变化的也算「跳过」，前端会显示成「跳过 N 项（未修改）」
+        skipped_all = skipped + unchanged
 
         return {
             "status": "ok",
             "updated": updated,
-            "skipped": skipped,
+            "skipped": skipped_all,
+            "unchanged": unchanged,
             "message": f"已更新 {len(updated)} 项配置，立即生效"
         }
     except Exception as e:

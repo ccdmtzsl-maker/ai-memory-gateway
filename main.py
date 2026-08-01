@@ -8707,48 +8707,70 @@ def split_memory_palace_extraction_snippets(messages_text: str = "", source_mess
 
 
 async def get_memory_palace_related_refs(character_id: str = "default", limit: int = 20, query_text: str = "", source_messages: list = None) -> list:
-    """给提取模型的旧记忆引用：多 query 相关检索优先，最近/高重要兜底。"""
+    """给提取模型的旧记忆引用：以「当时真实召回过什么」为唯一主力来源。
+
+    设计取舍（2024 重构）：
+      * 主力 = recall receipts。聊天时注入哪些记忆是有账可查的事实，提取时
+        直接复现，不再用另一套检索逻辑重新猜。
+      * 语义检索降级为应急预案，只在 receipts 几乎为空时启动（历史数据、
+        注入未开启、记忆已归档等）。不为凑满名额启动——少量干净材料胜过
+        大量混着系统猜测的材料。
+      * 删掉了原来按 last_accessed_at 排序的兜底。那一层会把「最近几轮聊天
+        刚检索到的记忆」塞进旧对话的提取材料，等于用未来的记忆理解过去的
+        对话，是参考材料被污染的根源。
+      * 不为特定房间留配额。阁楼（未解决矛盾）recency 权重为 0、不衰减，
+        日常闲聊里本就很少被召回；它没进 receipts 是「当时真的没想起」，
+        硬塞进来会让模型以为这条矛盾在对话里是活跃的。要让阁楼多露面属于
+        注入端的旋钮，与提取端无关。
+    """
     max_total = max(0, min(int(limit or 20), 50))
     if max_total <= 0:
         return []
+    refs = await get_memory_palace_receipt_refs(source_messages, character_id=character_id, limit=max_total) if source_messages else []
+    if len(refs) >= _MEMORY_PALACE_RECALL_MIN_REFS:
+        return _memory_palace_strip_ref_internals(refs)
+    # ---- 以下为应急兜底：receipts 不足，退回语义检索 ----
+    seen_ids = {r["id"] for r in refs}
     rows = await _memory_palace_fetch_rows(room=None, character_id=character_id)
-    receipt_refs = await get_memory_palace_receipt_refs(source_messages, character_id=character_id, limit=5) if source_messages else []
-    refs_by_id = {r["id"]: dict(r, _score=999.0) for r in receipt_refs}
     snippets = split_memory_palace_extraction_snippets(query_text, source_messages, max_snippets=25)
+    fallback_by_id = {}
     for snippet in snippets:
         try:
             hits = await search_memory_palace_for_prompt(snippet, limit=3, character_id=character_id, rows=rows)
         except Exception as e:
-            print(f"⚠️ 记忆宫殿 related refs 检索失败: {e}")
+            print(f"⚠️ 记忆宫殿 related refs 兜底检索失败: {e}")
             continue
         for hit in hits:
+            if hit["id"] in seen_ids:
+                continue
             sim = float(hit.get("similarity_score") or hit.get("score") or 0.0)
             if sim < 0.40:
                 continue
-            old = refs_by_id.get(hit["id"])
-            if old is None or sim > old.get("_score", 0.0):
-                content = str(hit.get("content") or "").strip().replace("\n", " ")
+            prev = fallback_by_id.get(hit["id"])
+            if prev is None or sim > prev.get("_score", 0.0):
+                content = re.sub(r"\s+", " ", str(hit.get("content") or "")).strip()
                 if content:
-                    refs_by_id[hit["id"]] = {"id": hit["id"], "room": hit.get("room") or "living_room", "content": content[:120], "_score": sim}
-    refs = sorted(refs_by_id.values(), key=lambda r: r.get("_score", 0.0), reverse=True)[:min(15, max_total)]
-    seen_ids = {r["id"] for r in refs}
-    if len(refs) < max_total:
-        fallback_rows = sorted(rows, key=lambda r: (r.get("last_accessed_at") or r.get("created_at"), r.get("importance") or 5), reverse=True)
-        for row in fallback_rows:
-            if row["id"] in seen_ids:
-                continue
-            content = str(row.get("content") or "").strip().replace("\n", " ")
-            if not content:
-                continue
-            refs.append({"id": row["id"], "room": row.get("room") or "living_room", "content": content[:120]})
-            seen_ids.add(row["id"])
-            if len(refs) >= max_total:
-                break
-    for ref in refs:
-        ref.pop("_score", None)
-    if snippets:
-        print(f"🏰 记忆宫殿 related refs：{len(snippets)} 段 query → {len(refs)} 条候选")
-    return refs
+                    fallback_by_id[hit["id"]] = {
+                        "id": hit["id"],
+                        "room": hit.get("room") or "living_room",
+                        "content": content,
+                        "_score": sim,
+                        "_source": "search",
+                    }
+    extra = sorted(fallback_by_id.values(), key=lambda r: r.get("_score", 0.0), reverse=True)
+    refs = list(refs) + extra[:max(0, max_total - len(refs))]
+    print(f"🏰 记忆宫殿参考兜底：真实召回不足（{len(seen_ids)} 条），语义检索补 {len(refs) - len(seen_ids)} 条")
+    return _memory_palace_strip_ref_internals(refs)
+
+
+def _memory_palace_strip_ref_internals(refs: list) -> list:
+    """去掉内部排序字段，只留下 prompt 需要的 id / room / content。"""
+    cleaned = []
+    for ref in refs or []:
+        item = {k: v for k, v in ref.items() if not k.startswith("_")}
+        if item.get("content"):
+            cleaned.append(item)
+    return cleaned
 
 
 def parse_memory_palace_event_links(raw_items: list, created_nodes: list, related_refs: list) -> tuple:

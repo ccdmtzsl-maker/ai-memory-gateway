@@ -2218,14 +2218,34 @@ async def record_memory_palace_recall_receipts(rows: list, pinned_count: int = 0
         return 0
     pool = await get_pool()
     async with pool.acquire() as conn:
-        await conn.executemany(
+        # 写入去重：同一会话、同一条记忆、同一天只留一行。
+        #
+        # 为什么需要：一条高重要记忆可能连续几十轮都被召回，原来每轮写一行，
+        # 每轮最多 40 行，长期跑下去这是库里最大的一张表。而下游只需要知道
+        # 「这段对话期间这条记忆被想起过」，同一天注入了几次并不影响取样。
+        #
+        # 代价：同一天内的轮次结构会被压平，转圈取样在当天内退化成「每条
+        # 记忆一个代表」。这正是我们想要的效果——跨天的轮次覆盖不受影响。
+        rows = await conn.fetch(
             """
             INSERT INTO memory_palace_recall_receipts (character_id, session_id, memory_id, injected_at, metadata)
-            VALUES ($1, $2, $3, NOW(), '{}'::jsonb)
+            SELECT v.character_id, v.session_id, v.memory_id, NOW(), '{}'::jsonb
+            FROM unnest($1::text[], $2::text[], $3::text[])
+                 AS v(character_id, session_id, memory_id)
+            WHERE NOT EXISTS (
+                SELECT 1 FROM memory_palace_recall_receipts r
+                WHERE r.character_id = v.character_id
+                  AND r.session_id = v.session_id
+                  AND r.memory_id = v.memory_id
+                  AND r.injected_at >= date_trunc('day', NOW())
+            )
+            RETURNING id
             """,
-            [(character_id, session_id or "", memory_id) for memory_id in ids],
+            [character_id] * len(ids),
+            [session_id or ""] * len(ids),
+            ids,
         )
-    return len(ids)
+    return len(rows)
 
 
 async def get_memory_palace_receipt_refs(source_messages: list, character_id: str = "default", limit: int = 20) -> list:

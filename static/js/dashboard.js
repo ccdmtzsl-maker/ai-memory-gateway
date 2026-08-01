@@ -50,214 +50,6 @@ if (_gatewayKey) {
 }
 
 // ============================================
-// 客户端性能诊断（临时排查用）
-// 服务端中间件只能测「应用开始处理」之后的耗时，测不到请求在
-// 队列里的等待，也测不到浏览器主线程被占住的时间。平板上开不了
-// F12，所以这里把浏览器实测的数字回传到后台日志。
-// ============================================
-const CLIENT_PERF = {
-    fetchSlowMs: 800,        // 浏览器实测请求超过这个才上报
-    longTaskMs: 300,         // 主线程单次卡顿超过这个才上报
-    renderSlowMs: 300,       // 渲染耗时超过这个才上报
-};
-
-// 上报自身不能再被计时，否则会无限循环。
-const _perfSkipUrls = ['/api/dashboard/client-timing', '/api/dashboard/logs'];
-
-function reportClientTiming(kind, label, ms, detail) {
-    try {
-        const body = JSON.stringify({
-            kind: kind,
-            label: String(label || '').slice(0, 200),
-            ms: Math.round(ms),
-            detail: String(detail || '').slice(0, 300),
-        });
-        // keepalive: 页面切换时也能发出去
-        const opts = { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: body, keepalive: true };
-        if (_gatewayKey) opts.headers['X-Gateway-Key'] = _gatewayKey;
-        (window._origFetchForPerf || window.fetch)('/api/dashboard/client-timing', opts).catch(() => {});
-    } catch (e) { /* 诊断代码不能影响正常功能 */ }
-}
-
-// 包一层 fetch：测「浏览器发出请求 → 收到响应」的真实耗时。
-// 这个数字减去服务端日志里的耗时，差值就是排队 + 网络传输时间。
-(function instrumentFetch() {
-    const inner = window.fetch;
-    window._origFetchForPerf = inner;
-    window.fetch = function(url, opts) {
-        const urlText = typeof url === 'string' ? url : (url && url.url) || '';
-        if (_perfSkipUrls.some(u => urlText.indexOf(u) >= 0)) {
-            return inner.call(this, url, opts);
-        }
-        const started = performance.now();
-        return inner.call(this, url, opts).then(resp => {
-            const ms = performance.now() - started;
-            if (ms >= CLIENT_PERF.fetchSlowMs) {
-                reportClientTiming('fetch', urlText.slice(0, 120), ms, 'HTTP ' + resp.status);
-            }
-            return resp;
-        }).catch(err => {
-            const ms = performance.now() - started;
-            reportClientTiming('fetch', urlText.slice(0, 120), ms, '失败: ' + (err && err.message));
-            throw err;
-        });
-    };
-})();
-
-// 长任务观察：主线程被单个任务占住多久。
-// 如果白屏时这里有大量记录，说明是前端在卡，跟后端无关。
-(function observeLongTasks() {
-    try {
-        if (typeof PerformanceObserver === 'undefined') return;
-        const obs = new PerformanceObserver(list => {
-            list.getEntries().forEach(entry => {
-                if (entry.duration >= CLIENT_PERF.longTaskMs) {
-                    reportClientTiming('longtask', entry.name || 'longtask', entry.duration);
-                }
-            });
-        });
-        obs.observe({ entryTypes: ['longtask'] });
-    } catch (e) { /* Safari 等不支持 longtask，忽略 */ }
-})();
-
-// 请求分段耗时（Resource Timing）
-//
-// 这是定位这次问题的关键工具。浏览器本来就把每个请求拆成了
-// DNS 解析、TCP 建连、TLS 握手、等首字节、下载 这几段并记录耗时，
-// 只是平时没人去读。同源请求能拿到全部字段，不需要额外配置。
-//
-// 怎么看结果：
-//   DNS 占了大头        -> 域名解析慢，跟服务器无关
-//   建连/TLS 占了大头   -> 网络链路或握手慢
-//   等首字节占了大头     -> 请求已发出但迟迟没回，问题在服务端或其代理
-//   建连为 0            -> 复用了已有连接，没有新建
-(function observeResourceTiming() {
-    try {
-        if (typeof PerformanceObserver === 'undefined') return;
-
-        const seg = (a, b) => Math.max(0, Math.round(b - a));
-
-        const obs = new PerformanceObserver(list => {
-            list.getEntries().forEach(e => {
-                if (e.initiatorType !== 'fetch' && e.initiatorType !== 'xmlhttprequest') return;
-                if (e.duration < CLIENT_PERF.fetchSlowMs) return;
-                if (String(e.name).indexOf('/api/dashboard/client-timing') >= 0) return;
-
-                // startTime -> fetchStart 之间是浏览器内部排队（连接池占满等）
-                const queued = seg(e.startTime, e.fetchStart);
-                const dns = seg(e.domainLookupStart, e.domainLookupEnd);
-                const tcp = seg(e.connectStart, e.connectEnd);
-                const tls = e.secureConnectionStart > 0 ? seg(e.secureConnectionStart, e.connectEnd) : 0;
-                const wait = seg(e.requestStart, e.responseStart);   // 等首字节
-                const down = seg(e.responseStart, e.responseEnd);
-                const reused = (e.connectStart === e.connectEnd) ? '复用连接' : '新建连接';
-
-                const path = String(e.name).replace(location.origin, '').slice(0, 90);
-                reportClientTiming(
-                    'segments', path, e.duration,
-                    reused +
-                    ' | 浏览器排队' + queued + 'ms' +
-                    ' | DNS' + dns + 'ms' +
-                    ' | 建连' + tcp + 'ms(含TLS' + tls + 'ms)' +
-                    ' | 等首字节' + wait + 'ms' +
-                    ' | 下载' + down + 'ms' +
-                    ' | 传输' + (e.transferSize || 0) + 'B'
-                );
-            });
-        });
-        obs.observe({ entryTypes: ['resource'] });
-    } catch (e) { /* 不支持就算了，不能影响页面 */ }
-})();
-
-// 页面整体加载耗时：只报一次。
-window.addEventListener('load', () => {
-    try {
-        const nav = performance.getEntriesByType('navigation')[0];
-        if (!nav) return;
-        reportClientTiming(
-            'page_load', location.pathname, nav.duration,
-            '首字节' + Math.round(nav.responseStart - nav.requestStart) + 'ms, ' +
-            'DOM就绪' + Math.round(nav.domContentLoadedEventEnd) + 'ms'
-        );
-    } catch (e) {}
-});
-
-// ============================================
-// GET 请求超时重试
-//
-// 背景：连接空闲一段时间后可能被中间设备静默丢弃（平板省电、运营商
-// NAT 超时、边缘代理回收都会导致）。浏览器不知情，仍把请求发进这条
-// 死连接，然后进入 TCP 重传退避，实测要等约 30 秒才放弃。
-// 实测数据：浏览器端 29482ms，服务端应用内只花 66ms。
-//
-// 处理：GET 请求 5 秒没响应就中止重发，新请求会走新连接。
-//
-// 只对 GET 生效。POST/PUT/DELETE 重发可能造成重复导入、重复删除、
-// 重复触发模型生成，一律不碰——宁可让写操作干等，也不能重复执行。
-// ============================================
-// 实测结论：重试无效，已关闭。日志证据（08-01 02:56:30）：
-//   第1次 5011ms 被超时中止 -> 重发 -> 第2次 24519ms HTTP 200
-// 重发走的是新连接，却同样卡了 24.5 秒，说明卡点不在连接本身。
-// 代码保留，改成开关关闭，避免白发请求和日志噪音。
-const GET_RETRY = {
-    timeoutMs: 5000,      // 首次尝试的超时时间
-    enabled: false,
-};
-
-(function instrumentGetRetry() {
-    const inner = window.fetch;
-
-    const isPlainGet = (url, opts) => {
-        if (!GET_RETRY.enabled) return false;
-        // Request 对象形式不处理：拿不准里面的 method 和 body
-        if (typeof url !== 'string') return false;
-        const method = String((opts && opts.method) || 'GET').toUpperCase();
-        if (method !== 'GET') return false;
-        // 调用方自带 signal 说明它自己管取消，不插手
-        if (opts && opts.signal) return false;
-        // 上报接口自身不参与，避免出问题时互相触发
-        if (url.indexOf('/api/dashboard/client-timing') >= 0) return false;
-        return true;
-    };
-
-    window.fetch = function(url, opts) {
-        if (!isPlainGet(url, opts)) {
-            return inner.call(this, url, opts);
-        }
-
-        const self = this;
-        const controller = new AbortController();
-        let timedOut = false;
-        const timer = setTimeout(() => {
-            timedOut = true;
-            try { controller.abort(); } catch (e) {}
-        }, GET_RETRY.timeoutMs);
-
-        const firstOpts = Object.assign({}, opts || {}, { signal: controller.signal });
-
-        return inner.call(self, url, firstOpts).then(resp => {
-            clearTimeout(timer);
-            return resp;
-        }).catch(err => {
-            clearTimeout(timer);
-            if (!timedOut) throw err;   // 真实错误，原样抛出
-
-            // 超时了：重发一次。这次不设超时——如果这个接口本来就慢
-            // （比如导出），第二次要让它跑完，否则会陷入无限超时。
-            if (typeof reportClientTiming === 'function') {
-                reportClientTiming(
-                    'retry', url.slice(0, 120), GET_RETRY.timeoutMs,
-                    '首次无响应，已中止并重发'
-                );
-            }
-            const retryOpts = Object.assign({}, opts || {});
-            delete retryOpts.signal;
-            return inner.call(self, url, retryOpts);
-        });
-    };
-})();
-
-// ============================================
 // 全局状态
 // ============================================
 let pendingJsonData = null;
@@ -292,16 +84,6 @@ function initNavigation() {
 }
 
 function switchSection(name) {
-    // 端到端计时：从点击到该页数据加载完成。
-    // 这个数字才是你实际感受到的等待时间。
-    const _sectionStarted = performance.now();
-    const _reportSection = (tag) => {
-        const ms = performance.now() - _sectionStarted;
-        if (ms >= CLIENT_PERF.renderSlowMs) {
-            reportClientTiming('render', '切到 ' + name + ' 页(' + tag + ')', ms);
-        }
-    };
-
     // 更新导航激活状态
     document.querySelectorAll('.nav-item[data-section]').forEach(item => {
         item.classList.toggle('active', item.dataset.section === name);
@@ -317,12 +99,10 @@ function switchSection(name) {
         loadExportStats();
     }
     if (name === 'conversations') {
-        const p = loadConversationList(1);
-        if (p && p.then) p.then(() => _reportSection('数据到手')).catch(() => {});
+        loadConversationList(1);
     }
     if (name === 'threads') {
-        const p = loadThreads();
-        if (p && p.then) p.then(() => _reportSection('数据到手')).catch(() => {});
+        loadThreads();
     }
     if (name === 'user-impression') {
         loadUserImpression();
@@ -331,11 +111,8 @@ function switchSection(name) {
         loadDashboardLogs();
     }
     if (name === 'settings') {
-        const p = loadSettings();
-        if (p && p.then) p.then(() => _reportSection('数据到手')).catch(() => {});
+        loadSettings();
     }
-    // DOM 切换本身（不含数据请求）耗时多少：下一帧就能量出来。
-    requestAnimationFrame(() => _reportSection('DOM切换'));
 }
 
 // ============================================

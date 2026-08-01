@@ -2068,6 +2068,118 @@ async def retrieve_memory_palace_rows_for_prompt(query: str = "", limit: int = 5
     return final_rows, len(pinned)
 
 
+# 同一轮注入的 receipts 是一次 executemany 写进去的，NOW() 取事务开始时间，
+# 所以同轮的 injected_at 完全相同。留 5 秒余量兜住极端情况。
+_MEMORY_PALACE_RECALL_ROUND_GAP_SECONDS = 5
+# receipts 少于这个数才启用语义检索兜底。不为凑数启动：
+# 6 条干净的真实召回，胜过 20 条混着系统猜测的材料。
+_MEMORY_PALACE_RECALL_MIN_REFS = 5
+
+
+def _memory_palace_source_session_ids(source_messages: list) -> list:
+    """待提取消息属于哪些会话。用来隔离 receipts，避免别的会话串味。"""
+    ids = []
+    for msg in source_messages or []:
+        try:
+            sid = msg.get("session_id") if hasattr(msg, "get") else msg["session_id"]
+        except Exception:
+            continue
+        sid = str(sid or "").strip()
+        if sid and sid not in ids:
+            ids.append(sid)
+    return ids
+
+
+def _memory_palace_group_receipts_by_round(rows: list, gap_seconds: int = None) -> list:
+    """把 receipts 按注入时刻聚成「轮」。一轮 = 一次记忆注入 = 一轮对话。"""
+    gap = float(gap_seconds if gap_seconds is not None else _MEMORY_PALACE_RECALL_ROUND_GAP_SECONDS)
+    rounds = []
+    current = []
+    last_at = None
+    for row in rows or []:
+        at = _memory_palace_aware_dt(row.get("injected_at") if hasattr(row, "get") else None)
+        if last_at is not None and at is not None and (at - last_at).total_seconds() > gap:
+            if current:
+                rounds.append(current)
+            current = []
+        current.append(row)
+        if at is not None:
+            last_at = at
+    if current:
+        rounds.append(current)
+    return rounds
+
+
+def _memory_palace_round_robin_receipts(rows: list, limit: int) -> list:
+    """按轮次转圈取样。
+
+    为什么不直接按时间倒序取前 N 条：一批自动提取最多吃 120 条消息、可能
+    横跨十几轮，倒序取只会拿到最后两三轮，前面每一轮当时想起过什么全丢。
+    转圈取样让每一轮都有代表。
+
+    同一条记忆在多轮里反复出现是常态（高重要记忆连续被召回），按 memory_id
+    全局去重，重复的跳过、不占名额，腾出的名额自动流向别的轮次。
+    """
+    if limit <= 0:
+        return []
+    rounds = _memory_palace_group_receipts_by_round(rows)
+    if not rounds:
+        return []
+    # 轮数超过名额时，均匀抽取轮次而不是只要前面几轮，保证覆盖整个时间跨度。
+    sampled = _memory_palace_sample_evenly(list(range(len(rounds))), limit) if len(rounds) > limit else list(range(len(rounds)))
+    # 一条记忆出现在几轮里。名额被上限截断时用它决胜：反复出现说明是这段
+    # 对话的持续主题。只在截断时生效，否则会压倒「每轮都有代表」的目标。
+    appearances = {}
+    for idx in sampled:
+        for mid in {r["id"] for r in rounds[idx]}:
+            appearances[mid] = appearances.get(mid, 0) + 1
+    # 轮内顺序：receipts 是按 score 顺序（便利贴→高分→扩散）写入的自增主键，
+    # 所以 receipt_id 升序就是当时的重要度排名，不需要额外存分数。
+    cursors = {idx: 0 for idx in sampled}
+    active = list(sampled)
+    claimed = set()
+    picked = []
+    while active and len(picked) < limit:
+        pass_rows = []
+        still = []
+        for idx in active:
+            rnd = rounds[idx]
+            pos = cursors[idx]
+            while pos < len(rnd) and rnd[pos]["id"] in claimed:
+                pos += 1
+            cursors[idx] = pos
+            if pos >= len(rnd):
+                continue
+            row = rnd[pos]
+            cursors[idx] = pos + 1
+            claimed.add(row["id"])
+            pass_rows.append((idx, row))
+            still.append(idx)
+        if not pass_rows:
+            break
+        if len(picked) + len(pass_rows) > limit:
+            pass_rows.sort(key=lambda x: appearances.get(x[1]["id"], 0), reverse=True)
+        picked.extend(pass_rows[:max(0, limit - len(picked))])
+        active = still
+    # 输出按时间顺序，模型读起来符合对话推进的直觉。
+    picked.sort(key=lambda x: (x[0], x[1].get("receipt_id") or 0))
+    refs = []
+    for _idx, row in picked:
+        # 不截断：重要记忆常把铺垫放前面、重点放后面，截断正好切掉重点。
+        # 只把换行折叠成空格，保住 "O0. 内容" 的单行编号格式。
+        content = re.sub(r"\s+", " ", str(row.get("content") or "")).strip()
+        if not content:
+            continue
+        refs.append({
+            "id": row["id"],
+            "room": row.get("room") or "living_room",
+            "content": content,
+            "_source": "recall",
+            "_rounds": appearances.get(row["id"], 1),
+        })
+    return refs
+
+
 def _memory_palace_source_time_bounds(source_messages: list, tolerance_minutes: int = 10):
     values = []
     for msg in source_messages or []:

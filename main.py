@@ -2076,6 +2076,30 @@ _MEMORY_PALACE_RECALL_ROUND_GAP_SECONDS = 5
 _MEMORY_PALACE_RECALL_MIN_REFS = 5
 
 
+def _memory_palace_source_message_id_bounds(source_messages: list) -> tuple:
+    """待提取消息 id 范围。
+
+    新版 receipts 写入 anchor_message_id：记忆注入发生时，该会话已落库的
+    最后一条消息 id。提取某个消息区间时，用这个 id 范围精确找回当时
+    实际注入过的记忆；历史没有 anchor 的记录才回退时间窗。
+    """
+    ids = []
+    for msg in source_messages or []:
+        try:
+            mid = msg.get("id") if hasattr(msg, "get") else msg["id"]
+        except Exception:
+            mid = None
+        try:
+            mid = int(mid)
+        except Exception:
+            continue
+        if mid > 0:
+            ids.append(mid)
+    if not ids:
+        return None, None
+    return min(ids), max(ids)
+
+
 def _memory_palace_source_session_ids(source_messages: list) -> list:
     """待提取消息属于哪些会话。用来隔离 receipts，避免别的会话串味。"""
     ids = []
@@ -2307,12 +2331,13 @@ async def record_memory_palace_recall_receipts(rows: list, pinned_count: int = 0
 async def get_memory_palace_receipt_refs(source_messages: list, character_id: str = "default", limit: int = 20) -> list:
     """重建这批消息当时的真实召回状态：那几轮对话实际注入过哪些记忆。
 
-    这是提取参考材料的唯一主力来源。聊天时每轮注入都如实记账（含语义命中、
-    模糊日期命中、扩散激活、便利贴、事件盒整盒展开），提取时直接复现，不再
-    重新猜一遍——猜的那套和聊天时的检索逻辑本就不是同一套。
+    新数据优先按 anchor_message_id 查：这比 injected_at 时间窗精确，能避免
+    同时段其它会话串味，也不怕同一句话删了重发后时间戳很近。历史记录没有
+    anchor_message_id 时，才回退到时间窗查询。
     """
+    start_id, end_id = _memory_palace_source_message_id_bounds(source_messages)
     start_at, end_at = _memory_palace_source_time_bounds(source_messages, tolerance_minutes=10)
-    if not start_at or not end_at:
+    if (not start_id or not end_id) and (not start_at or not end_at):
         return []
     limit = max(0, min(int(limit or 20), 50))
     if limit <= 0:
@@ -2321,28 +2346,37 @@ async def get_memory_palace_receipt_refs(source_messages: list, character_id: st
     pool = await get_pool()
     async with pool.acquire() as conn:
         # 不做 DISTINCT ON：轮次结构要保留，去重交给转圈取样按 memory_id 处理。
-        # session_ids 为空（历史数据没记会话）时不加过滤，退回原有行为。
+        # 新记录走 anchor_message_id；历史记录 anchor 为空时用时间窗兜底。
         rows = await conn.fetch(
             """
-            SELECT r.id AS receipt_id, r.injected_at,
+            SELECT r.id AS receipt_id, r.injected_at, r.anchor_message_id,
                    n.id, n.room, n.content
             FROM memory_palace_recall_receipts r
             JOIN memory_palace_nodes n ON n.id = r.memory_id
             WHERE r.character_id = $1
-              AND r.injected_at >= $2
-              AND r.injected_at <= $3
               AND n.character_id = $1
               AND n.archived = FALSE
-              AND ($4::text[] IS NULL OR r.session_id = ANY($4::text[]))
-            ORDER BY r.injected_at ASC, r.id ASC
+              AND ($6::text[] IS NULL OR r.session_id = ANY($6::text[]))
+              AND (
+                    ($2::bigint IS NOT NULL AND $3::bigint IS NOT NULL
+                     AND r.anchor_message_id >= ($2::bigint - 1)
+                     AND r.anchor_message_id < $3::bigint)
+                    OR
+                    (r.anchor_message_id IS NULL
+                     AND $4::timestamptz IS NOT NULL AND $5::timestamptz IS NOT NULL
+                     AND r.injected_at >= $4::timestamptz
+                     AND r.injected_at <= $5::timestamptz)
+              )
+            ORDER BY r.anchor_message_id ASC NULLS LAST, r.injected_at ASC, r.id ASC
             """,
-            character_id, start_at, end_at, (session_ids or None),
+            character_id, start_id, end_id, start_at, end_at, (session_ids or None),
         )
     rows = [dict(r) for r in rows]
     refs = _memory_palace_round_robin_receipts(rows, limit)
     if refs:
         rounds = len(_memory_palace_group_receipts_by_round(rows))
-        print(f"🧾 记忆宫殿真实召回：{rounds} 轮 / {len(rows)} 条记账 → {len(refs)} 条参考")
+        anchored = sum(1 for r in rows if r.get("anchor_message_id") is not None)
+        print(f"🧾 记忆宫殿真实召回：{rounds} 轮 / {len(rows)} 条记账（anchor {anchored}）→ {len(refs)} 条参考")
     return refs
 
 

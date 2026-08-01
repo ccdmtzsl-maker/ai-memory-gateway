@@ -827,6 +827,43 @@ async def set_gateway_config(key: str, value: str):
         """, key, value)
 
 
+async def set_gateway_config_many(items: dict) -> int:
+    """批量写入配置，一次数据库往返搞定。
+
+    原来保存设置页会对每个字段单独调 set_gateway_config，35 个字段
+    就是 35 次借还连接 + 35 次往返。数据库在美国，单次往返约 25ms，
+    加起来接近 800ms。这里合并成一条多值 INSERT。
+
+    返回实际写入的条目数。传空字典时不碰数据库。
+    """
+    if not items:
+        return 0
+
+    keys = list(items.keys())
+    values = [str(items[k]) for k in keys]
+
+    # 构造 ($1,$2),($3,$4),... 的占位符。asyncpg 不支持展开列表，
+    # 只能手动拼占位符，但参数仍然是绑定传入的，没有注入风险。
+    placeholders = ", ".join(
+        f"(${i * 2 + 1}, ${i * 2 + 2})" for i in range(len(keys))
+    )
+    params = []
+    for k, v in zip(keys, values):
+        params.append(k)
+        params.append(v)
+
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            f"""
+            INSERT INTO gateway_config (key, value)
+            VALUES {placeholders}
+            ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
+            """,
+            *params,
+        )
+    return len(keys)
+
 async def get_all_gateway_config() -> dict:
     """获取所有配置项"""
     pool = await get_pool()

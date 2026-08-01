@@ -1189,13 +1189,28 @@ async function showMemoryPalaceVectorStats() {
         const resp = await fetch('/api/memory-palace/vector-stats');
         const data = await resp.json();
         if (data.error) throw new Error(data.error);
+        // pgvector 列的填充情况：进了列的检索走数据库，没进的每次都要在
+        // Python 里解析 JSON + 算余弦（慢，而且会占住事件循环）。
+        const filled = data.pgvector_filled || 0;
+        const pending = data.pgvector_pending || 0;
+        let vectorLine = '';
+        if (filled > 0 && pending === 0) {
+            vectorLine = '；🚀 数据库检索：全部 ' + filled + ' 条已就绪';
+        } else if (filled > 0) {
+            vectorLine = '；⚠️ 数据库检索：' + filled + ' 条已就绪，' +
+                         pending + ' 条仍走慢速计算（点「补全缺失向量」可修复）';
+        } else if (data.total_vectors > 0) {
+            vectorLine = '；⚠️ 数据库检索未启用，全部走慢速计算';
+        }
+
         showMemoryPalaceBackfillStatus(
             '📊 当前向量：有效节点 ' + (data.active_nodes || 0) +
             ' 条，有效向量 ' + (data.total_vectors || 0) +
             ' 条，缺失/空向量 ' + (data.missing_vectors || 0) +
             ' 条；归档节点 ' + (data.archived_nodes || 0) +
             ' 条，归档向量 ' + (data.archived_vectors || 0) +
-            ' 条，孤儿向量 ' + (data.orphan_vectors || 0) + ' 条'
+            ' 条，孤儿向量 ' + (data.orphan_vectors || 0) + ' 条' +
+            vectorLine
         );
     } catch (e) {
         showMemoryPalaceBackfillStatus('❌ 查询向量数量失败：' + e.message, 'error');

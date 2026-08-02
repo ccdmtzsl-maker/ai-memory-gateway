@@ -2057,9 +2057,21 @@ def collapse_memory_palace_rows_by_event_box(rows: list, pinned_count: int, boxe
 
 
 def _memory_palace_friendly_date(row: dict) -> str:
-    """将日期转为友好显示：今天/昨天/前天/原始日期。"""
+    """记忆日期转成人话：今天 / 昨天 / 原始日期。
+
+    「2026-08-02」这种写法要模型自己跟当前日期做减法才知道是多久以前，
+    容易算错，也读不出「刚刚发生」的感觉。今天和昨天直接写字面意思。
+    更早的仍给具体日期——那时候「几天前」反而不如日期精确。
+
+    datetime 也是 date 的子类，所以要先判 datetime 再取 .date()，
+    否则拿到的是带时分秒的对象，跟 today 相减会差一截。
+    """
     raw = row.get("date") or row.get("created_at") or ""
-    if hasattr(raw, "year"):
+    d = None
+    if isinstance(raw, datetime):
+        d = (raw.astimezone(timezone(timedelta(hours=TIMEZONE_HOURS)))
+             if raw.tzinfo else raw).date()
+    elif hasattr(raw, "toordinal") and hasattr(raw, "year"):
         d = raw
     else:
         raw_str = str(raw)[:10]
@@ -2068,17 +2080,13 @@ def _memory_palace_friendly_date(row: dict) -> str:
         except Exception:
             return raw_str
     try:
-        tz = timezone(timedelta(hours=TIMEZONE_HOURS))
-        today = datetime.now(tz).date()
+        today = (datetime.now(timezone.utc) + timedelta(hours=TIMEZONE_HOURS)).date()
         diff = (today - d).days
         if diff == 0:
             return "今天"
-        elif diff == 1:
+        if diff == 1:
             return "昨天"
-        elif diff == 2:
-            return "前天"
-        else:
-            return d.strftime("%Y-%m-%d")
+        return d.strftime("%Y-%m-%d")
     except Exception:
         return str(raw)[:10]
 
@@ -2626,7 +2634,9 @@ async def format_memory_palace_for_prompt(limit: int = 5, room: str = None, quer
             if row.get("_event_box"):
                 lines.append(format_memory_palace_event_box_item(row))
                 continue
-            date_text = str(row["date"] or "")[:10] or str(row["created_at"] or "")[:10]
+            # 之前这里直接写死日期，只有事件盒里的片段走了 friendly_date，
+            # 所以「今天/昨天」看起来像没生效——普通记忆走的就是这一行。
+            date_text = _memory_palace_friendly_date(row)
             tags = (row["tags"] or "").strip()
             meta = f"{date_text}｜重要性:{row['importance'] or 5}｜情绪:{row['mood'] or 'neutral'}"
             if tags:

@@ -9018,10 +9018,20 @@ async def get_memory_palace_related_refs(character_id: str = "default", limit: i
     # 第二层：语义检索。最多 25 段，切词同样只做一次。
     snippets = split_memory_palace_extraction_snippets(query_text, source_messages, max_snippets=25)
     bm25_index = _memory_palace_build_bm25_index(rows) if snippets else None
-    fallback_by_id = {}
-    for snippet in snippets:
+    # 最多 25 段，逐段发请求就是 25 个来回。一次批量发完（内部按 16 段分批、
+    # 批间并行），失败自动退回逐条。
+    snippet_embeds = []
+    if snippets:
         try:
-            hits = await search_memory_palace_for_prompt(snippet, limit=3, character_id=character_id, rows=rows, bm25_index=bm25_index)
+            snippet_embeds = await compute_memory_palace_embeddings(snippets)
+        except Exception as e:
+            print(f"⚠️ 记忆宫殿提取兜底批量向量化失败，改为逐条: {e}")
+            snippet_embeds = []
+    fallback_by_id = {}
+    for si, snippet in enumerate(snippets):
+        try:
+            snippet_embed = snippet_embeds[si] if si < len(snippet_embeds) else None
+            hits = await search_memory_palace_for_prompt(snippet, limit=3, character_id=character_id, rows=rows, bm25_index=bm25_index, query_embedding=snippet_embed or None)
         except Exception as e:
             print(f"⚠️ 记忆宫殿 related refs 检索失败: {e}")
             continue

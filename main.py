@@ -947,8 +947,9 @@ def _memory_palace_bm25_tokenize(text: str) -> list:
             # 去掉空白和标点，只留下参与 2-gram 的实义字符。
             # 原来写的 \p{P} 是 PCRE 语法，Python re 不支持，它实际匹配的是
             # 字面量 p / { / } / P，等于没删标点。这里改成显式列举：
-            # ASCII 标点 + CJK 标点(\u3000-\u303f) + 全角形式(\uff00-\uffef)。
-            cleaned = re.sub(r'[\s!-/:-@\[-`{-~\u3000-\u303f\uff00-\uffef]', '', trimmed)
+            # ASCII 标点 + 间隔号 + 通用标点(\u2000-\u206f，含省略号/破折号/各种引号)
+            # + CJK 标点(\u3000-\u303f) + 全角形式(\uff00-\uffef)。
+            cleaned = re.sub(r'[\s!-/:-@\[-`{-~\u00b7\u2000-\u206f\u3000-\u303f\uff00-\uffef]', '', trimmed)
             if len(cleaned) == 1:
                 tokens.append(cleaned)
             else:

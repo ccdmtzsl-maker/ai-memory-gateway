@@ -4621,7 +4621,8 @@ async def _build_basic_cached(
         })
     
     _sparse_ts = await get_runtime_sparse_timestamp_enabled()
-    h_cleaned = _prepend_timestamp_to_user_messages(history, sparse=_sparse_ts)
+    h_cleaned, _ts_state = _prepend_timestamp_to_user_messages(
+        history, sparse=_sparse_ts, return_state=True)
     
     # 从末尾往前找第一条非tool消息打BP
     for j in range(len(h_cleaned) - 1, -1, -1):
@@ -4638,7 +4639,7 @@ async def _build_basic_cached(
             shorten_time=False,
         )
         if _sparse_ts:
-            _prev_dt = _last_message_dt(history)
+            _prev_dt = (_ts_state or {}).get("prev_dt") or _last_message_dt(history)
             _cur_prefix = build_current_message_timestamp_prefix(_prev_dt, current_content)
             if _cur_prefix:
                 current_content = _prepend_text_to_content(current_content, _cur_prefix)

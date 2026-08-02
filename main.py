@@ -936,16 +936,19 @@ def _memory_palace_bm25_tokenize(text: str) -> list:
     if not text:
         return []
     tokens = []
-    parts = _re.split(r'([a-zA-Z0-9]+)', (text or "").lower())
+    parts = re.split(r'([a-zA-Z0-9]+)', (text or "").lower())
     for part in parts:
         trimmed = part.strip()
         if not trimmed:
             continue
-        if _re.match(r'^[a-zA-Z0-9]+$', trimmed):
+        if re.match(r'^[a-zA-Z0-9]+$', trimmed):
             tokens.append(trimmed)
         else:
-            cleaned = _re.sub(r'[\s\p{P}]', '', trimmed)
-            cleaned = _re.sub(r'[\s＀-\uffef\u3000-\u303f]', '', cleaned)
+            # 去掉空白和标点，只留下参与 2-gram 的实义字符。
+            # 原来写的 \p{P} 是 PCRE 语法，Python re 不支持，它实际匹配的是
+            # 字面量 p / { / } / P，等于没删标点。这里改成显式列举：
+            # ASCII 标点 + CJK 标点(\u3000-\u303f) + 全角形式(\uff00-\uffef)。
+            cleaned = re.sub(r'[\s!-/:-@\[-`{-~\u3000-\u303f\uff00-\uffef]', '', trimmed)
             if len(cleaned) == 1:
                 tokens.append(cleaned)
             else:

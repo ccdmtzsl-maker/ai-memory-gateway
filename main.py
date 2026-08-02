@@ -9691,58 +9691,180 @@ def is_valid_memory_palace_embedding_json(value) -> bool:
     return isinstance(arr, list) and len(arr) > 0 and all(isinstance(x, (int, float)) for x in arr)
 
 
-async def compute_memory_palace_embedding(text: str) -> list:
-    """记忆宫殿专用 embedding 调用：兼容常见 OpenAI/SiliconFlow embeddings 参数差异。"""
-    text = str(text or "").strip()
-    if not text:
-        return []
-    if len(text) > 4000:
-        text = text[:4000]
-    api_key = str(getattr(_db_module, "EMBEDDING_API_KEY", "") or "").strip()
-    base_url = str(getattr(_db_module, "EMBEDDING_BASE_URL", "") or "").strip().rstrip("/")
-    model = str(getattr(_db_module, "EMBEDDING_MODEL", "") or "").strip()
-    dim = int(getattr(_db_module, "EMBEDDING_DIM", 0) or 0)
-    if not api_key or not base_url or not model:
-        print("[mp-embedding] EMBEDDING_API_KEY / EMBEDDING_BASE_URL / EMBEDDING_MODEL 未完整配置")
-        return []
-    endpoint = base_url if base_url.endswith("/embeddings") else (base_url + "/embeddings")
-    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+# 记住「这个服务商 + 模型能吃哪种请求体」。
+# 探测本身没问题，但不缓存的话每次算向量都要先撞几次 400 才成功：
+# 一轮聊天要算几十次向量，等于白扔几十个失败请求 + 几十倍延迟。
+# key = (endpoint, model, dim)，value = variants 里那个能用的下标。
+_MP_EMBEDDING_VARIANT_CACHE = {}
+# 已经抱怨过的问题，避免同一句话在日志里刷屏。
+_MP_EMBEDDING_WARNED = set()
+
+
+def _mp_embedding_variants(model: str, text, dim: int) -> list:
+    """按优先级排出候选请求体。
+
+    记忆宫殿必须优先遵守仪表盘里的 EMBEDDING_DIM：先带 dimensions 请求，
+    只有服务商明确不接受时才退回不带。不然兼容端会直接返回模型默认维度
+    （例如 bge-m3=1024），和设置页对不上。
+    """
     variants = []
-    # 记忆宫殿必须优先遵守仪表盘里的 EMBEDDING_DIM。
-    # 之前这里先请求无 dimensions，兼容端会直接返回模型默认维度（例如 bge-m3=1024），
-    # 导致 memory_palace_vectors.dimensions 与设置页不一致。
-    # 现在改为：先带 dimensions；只有服务商明确不接受时，再 fallback 到无 dimensions。
     if dim > 0:
         variants.append({"model": model, "input": text, "dimensions": dim})
         variants.append({"model": model, "input": [text], "dimensions": dim})
     variants.append({"model": model, "input": text})
     variants.append({"model": model, "input": [text]})
+    return variants
+
+
+def _mp_embedding_warn_once(key: str, message: str) -> None:
+    if key in _MP_EMBEDDING_WARNED:
+        return
+    _MP_EMBEDDING_WARNED.add(key)
+    print(message)
+
+
+def _mp_embedding_config() -> dict:
+    api_key = str(getattr(_db_module, "EMBEDDING_API_KEY", "") or "").strip()
+    base_url = str(getattr(_db_module, "EMBEDDING_BASE_URL", "") or "").strip().rstrip("/")
+    model = str(getattr(_db_module, "EMBEDDING_MODEL", "") or "").strip()
+    dim = int(getattr(_db_module, "EMBEDDING_DIM", 0) or 0)
+    endpoint = ""
+    if base_url:
+        endpoint = base_url if base_url.endswith("/embeddings") else (base_url + "/embeddings")
+    return {
+        "api_key": api_key,
+        "base_url": base_url,
+        "model": model,
+        "dim": dim,
+        "endpoint": endpoint,
+        "ready": bool(api_key and base_url and model),
+    }
+
+
+async def compute_memory_palace_embedding(text: str) -> list:
+    """记忆宫殿专用 embedding 调用：兼容常见 OpenAI/SiliconFlow embeddings 参数差异。
+
+    第一次调用会依次试几种请求体，成功的那种记进 _MP_EMBEDDING_VARIANT_CACHE，
+    之后直接用它，不再重复撞 400。
+    """
+    text = str(text or "").strip()
+    if not text:
+        return []
+    if len(text) > 4000:
+        text = text[:4000]
+    cfg = _mp_embedding_config()
+    if not cfg["ready"]:
+        _mp_embedding_warn_once(
+            "unconfigured",
+            "[mp-embedding] EMBEDDING_API_KEY / EMBEDDING_BASE_URL / EMBEDDING_MODEL 未完整配置",
+        )
+        return []
+    endpoint, model, dim = cfg["endpoint"], cfg["model"], cfg["dim"]
+    headers = {"Authorization": f"Bearer {cfg['api_key']}", "Content-Type": "application/json"}
+    variants = _mp_embedding_variants(model, text, dim)
+    cache_key = (endpoint, model, dim)
+    # 已知可用的那种排到最前面，其余保留做退路（服务商换了行为也不会彻底失效）。
+    order = list(range(len(variants)))
+    known = _MP_EMBEDDING_VARIANT_CACHE.get(cache_key)
+    if known is not None and known < len(variants):
+        order = [known] + [i for i in order if i != known]
     try:
         async with httpx.AsyncClient() as client:
             last_error = ""
-            for idx, body in enumerate(variants, 1):
+            for pos, vi in enumerate(order):
+                body = variants[vi]
+                idx = vi + 1
                 try:
                     resp = await client.post(endpoint, headers=headers, json=body, timeout=30.0)
                     if resp.status_code >= 400:
                         last_error = resp.text[:500]
-                        print(f"[mp-embedding] variant#{idx} HTTP {resp.status_code}: {last_error}")
+                        _mp_embedding_warn_once(
+                            f"http:{cache_key}:{idx}:{resp.status_code}",
+                            f"[mp-embedding] variant#{idx} HTTP {resp.status_code}: {last_error}"
+                            + ("（已记住，后续请求会跳过这种格式）" if pos == 0 else ""),
+                        )
                         continue
                     data = resp.json()
                     emb = (data.get("data") or [{}])[0].get("embedding")
                     if emb:
+                        if _MP_EMBEDDING_VARIANT_CACHE.get(cache_key) != vi:
+                            _MP_EMBEDDING_VARIANT_CACHE[cache_key] = vi
+                            print(f"[mp-embedding] 记住可用请求格式 variant#{idx}（维度 {len(emb)}），后续直接用它")
                         if dim > 0 and len(emb) != dim:
-                            print(f"[mp-embedding] WARNING: provider returned dimension {len(emb)} but EMBEDDING_DIM is {dim}; variant#{idx}")
+                            _mp_embedding_warn_once(
+                                f"dim:{cache_key}:{len(emb)}",
+                                f"[mp-embedding] 注意：服务商返回 {len(emb)} 维，但设置里 EMBEDDING_DIM={dim}。"
+                                f"建议把设置页改成 {len(emb)}，否则新旧向量维度会混。",
+                            )
                         return emb
                     last_error = str(data)[:500]
-                    print(f"[mp-embedding] variant#{idx} 无 embedding: {last_error}")
+                    _mp_embedding_warn_once(
+                        f"noemb:{cache_key}:{idx}",
+                        f"[mp-embedding] variant#{idx} 无 embedding: {last_error}",
+                    )
                 except Exception as e:
                     last_error = f"{type(e).__name__}: {e}"
                     print(f"[mp-embedding] variant#{idx} failed: {last_error}")
+            # 全挂了：清掉缓存，下次重新完整探测一遍
+            _MP_EMBEDDING_VARIANT_CACHE.pop(cache_key, None)
             print(f"[mp-embedding] 所有请求格式均失败: endpoint={endpoint}, model={model}, last={last_error}")
             return []
     except Exception as e:
         print(f"[mp-embedding] 请求异常: {type(e).__name__}: {e}")
         return []
+
+
+async def diagnose_memory_palace_embedding(text: str = "记忆宫殿向量接口自检") -> dict:
+    """逐个试所有请求格式，把服务商的原话带回来。给仪表盘按钮用。
+
+    和 compute_memory_palace_embedding 不同，这里不走缓存、不提前返回，
+    因为要的就是「每种格式分别是什么结果」。
+    """
+    cfg = _mp_embedding_config()
+    result = {
+        "endpoint": cfg["endpoint"],
+        "model": cfg["model"],
+        "configured_dim": cfg["dim"],
+        "has_key": bool(cfg["api_key"]),
+        "ok": False,
+        "returned_dim": 0,
+        "working_variant": None,
+        "attempts": [],
+    }
+    if not cfg["ready"]:
+        result["error"] = "EMBEDDING_API_KEY / EMBEDDING_BASE_URL / EMBEDDING_MODEL 未填全"
+        return result
+    headers = {"Authorization": f"Bearer {cfg['api_key']}", "Content-Type": "application/json"}
+    variants = _mp_embedding_variants(cfg["model"], str(text or "test").strip()[:200], cfg["dim"])
+    async with httpx.AsyncClient() as client:
+        for idx, body in enumerate(variants, 1):
+            label = ("input=字符串" if isinstance(body["input"], str) else "input=数组") + \
+                    ("，带 dimensions" if "dimensions" in body else "，不带 dimensions")
+            attempt = {"variant": idx, "label": label, "ok": False, "status": 0, "detail": ""}
+            try:
+                resp = await client.post(cfg["endpoint"], headers=headers, json=body, timeout=20.0)
+                attempt["status"] = resp.status_code
+                if resp.status_code >= 400:
+                    attempt["detail"] = resp.text[:300]
+                else:
+                    emb = ((resp.json().get("data") or [{}])[0] or {}).get("embedding")
+                    if emb:
+                        attempt["ok"] = True
+                        attempt["dim"] = len(emb)
+                        attempt["detail"] = f"返回 {len(emb)} 维"
+                        if not result["ok"]:
+                            result["ok"] = True
+                            result["returned_dim"] = len(emb)
+                            result["working_variant"] = idx
+                            result["working_label"] = label
+                    else:
+                        attempt["detail"] = "响应里没有 embedding 字段"
+            except Exception as e:
+                attempt["detail"] = f"{type(e).__name__}: {e}"
+            result["attempts"].append(attempt)
+    if result["ok"] and result["configured_dim"] > 0 and result["returned_dim"] != result["configured_dim"]:
+        result["dim_mismatch"] = True
+    return result
 
 
 async def _sync_memory_palace_vector_column(conn, memory_id: str, embedding) -> None:

@@ -268,6 +268,83 @@ async def search_memory_palace_vector_scores(
         rows = await conn.fetch(sql, *params)
     return {r["memory_id"]: float(r["similarity"]) for r in rows}
 
+async def search_memory_palace_vector_scores_multi(
+    query_embeddings,
+    character_id: str = "default",
+    room: str = None,
+    include_archived: bool = False,
+    limit: int = None,
+) -> list:
+    """一条 SQL 同时给多个查询向量算相似度，返回与输入等长的字典列表。
+
+    一轮检索有好几路（每个用户消息片段一路 + 上下文一路），以前每路各发
+    一次数据库查询。这里用 unnest 把几个查询向量当成一张小表，和向量表
+    做一次连接，数据库内部一趟算完。
+
+    LIMIT 不能直接套在整体上——那样某一路可能把名额全占了，别的路一条
+    都拿不到。所以用窗口函数按查询分组各取前 N 条，等价于分别查询。
+
+    维度对不上或 pgvector 不可用时返回空字典列表，调用方会退回 Python 计算。
+    """
+    embeds = list(query_embeddings or [])
+    out = [{} for _ in embeds]
+    # 有效的（下标, 向量）。空向量和维度不符的直接留空字典。
+    usable = []
+    for i, emb in enumerate(embeds):
+        if not emb:
+            continue
+        if not memory_palace_vector_ready(len(emb)):
+            continue
+        usable.append((i, emb))
+    if not usable:
+        return out
+
+    cap = int(limit or MEMORY_PALACE_VECTOR_CANDIDATES)
+    cap = max(1, min(cap, 5000))
+    # asyncpg 没有 vector 类型的编解码器，用文本字面量再显式转型。
+    literals = ["[" + ",".join(repr(float(x)) for x in emb) + "]" for _i, emb in usable]
+
+    sql = """
+        WITH q AS (
+            SELECT ord, lit::vector AS vec
+            FROM unnest($1::text[]) WITH ORDINALITY AS t(lit, ord)
+        ),
+        scored AS (
+            SELECT q.ord,
+                   v.memory_id,
+                   GREATEST(0.0, LEAST(1.0, 1.0 - (v.embedding <=> q.vec))) AS similarity,
+                   ROW_NUMBER() OVER (PARTITION BY q.ord ORDER BY v.embedding <=> q.vec) AS rn
+            FROM q
+            CROSS JOIN memory_palace_vectors v
+            JOIN memory_palace_nodes n ON n.id = v.memory_id
+            WHERE v.embedding IS NOT NULL
+              AND n.character_id = $2
+              AND ($3::boolean OR n.archived = FALSE)
+    """
+    params = [literals, character_id, include_archived]
+    if room:
+        sql += " AND n.room = $5"
+    sql += """
+        )
+        SELECT ord, memory_id, similarity
+        FROM scored
+        WHERE rn <= $4
+    """
+    params.append(cap)
+    if room:
+        params.append(room)
+
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(sql, *params)
+    for r in rows:
+        # ordinality 从 1 开始，映射回调用方传进来的原始下标
+        pos = int(r["ord"]) - 1
+        if 0 <= pos < len(usable):
+            out[usable[pos][0]][r["memory_id"]] = float(r["similarity"])
+    return out
+
+
 async def init_tables():
     global HAS_PGVECTOR
     pool = await get_pool()

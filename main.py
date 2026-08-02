@@ -4313,7 +4313,8 @@ def build_current_message_timestamp_prefix(prev_dt, content) -> str:
         return ""
     return chr(10).join(parts) + chr(10) + chr(10)
 
-def _prepend_timestamp_to_user_messages(messages: list, sparse: bool = False) -> list:
+def _prepend_timestamp_to_user_messages(messages: list, sparse: bool = False,
+                                        state: dict = None, return_state: bool = False):
     """给历史消息加时间戳。
 
     sparse=False（默认，兼容旧行为）：只给 user 消息打紧凑戳，每条都打。
@@ -4322,11 +4323,17 @@ def _prepend_timestamp_to_user_messages(messages: list, sparse: bool = False) ->
       - 首条、跨天、间隔≥15分钟才打戳；间隔≥6小时额外补一行说明
       - 形如 "[07-29 周三 18:17]" 后接空行再正文
       - 间隔一律按 created_at 计算，与消息有无附件无关
+
+    state / return_state：分区模式要分两次调用（A 区、B 区），中间的
+    prev_dt / last_date 必须接上，否则 B 区首条会被当成整段对话的第一条
+    重打完整戳，而且 A→B 之间那个间隔算不出来——正好是「离开一段时间
+    再回来」最需要提示的位置。
     """
-    last_date = None
-    prev_dt = None
+    state = state or {}
+    last_date = state.get("last_date")
+    prev_dt = state.get("prev_dt")
+    first_seen = bool(state.get("first_seen"))
     stamped = []
-    first_seen = False
     for msg in messages:
         m = dict(msg)
         role = m.get("role")
@@ -4378,6 +4385,8 @@ def _prepend_timestamp_to_user_messages(messages: list, sparse: bool = False) ->
         m.pop("id", None)
         m.pop("created_at", None)
         stamped.append(m)
+    if return_state:
+        return stamped, {"last_date": last_date, "prev_dt": prev_dt, "first_seen": first_seen}
     return stamped
 
 

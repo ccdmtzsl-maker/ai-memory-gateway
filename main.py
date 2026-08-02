@@ -35,7 +35,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from fastapi.middleware.gzip import GZipMiddleware
 
-from database import init_tables, close_pool, save_message, get_pool, get_gateway_config, set_gateway_config, set_gateway_config_many, get_all_gateway_config, get_conversation_messages, get_session_cache_state, save_session_cache_state, delete_session_cache_state, save_token_usage, ensure_token_usage_table, get_conversations_paginated, get_conversation_messages_after_id, delete_conversation, batch_delete_conversations, merge_sessions_to_target, list_all_session_cache_states, export_all_conversations, import_conversations, get_last_user_content, update_last_assistant_message, update_last_assistant_if_same_user, db_row_to_message, search_conversations, update_message_content, rename_session_id, get_conversation_messages_by_date, upsert_daily_impression, get_daily_impression, list_daily_impressions, search_memory_palace_vector_scores, memory_palace_vector_ready
+from database import init_tables, close_pool, save_message, get_pool, get_gateway_config, set_gateway_config, set_gateway_config_many, get_all_gateway_config, get_conversation_messages, get_session_cache_state, save_session_cache_state, delete_session_cache_state, save_token_usage, ensure_token_usage_table, get_conversations_paginated, get_conversation_messages_after_id, delete_conversation, batch_delete_conversations, merge_sessions_to_target, list_all_session_cache_states, export_all_conversations, import_conversations, get_last_user_content, update_last_assistant_message, update_last_assistant_if_same_user, db_row_to_message, search_conversations, update_message_content, rename_session_id, get_conversation_messages_by_date, upsert_daily_impression, get_daily_impression, list_daily_impressions, search_memory_palace_vector_scores, search_memory_palace_vector_scores_multi, memory_palace_vector_ready
 from database import list_memory_palace_rooms, list_memory_palace_nodes, get_memory_palace_node, create_memory_palace_node, update_memory_palace_node, delete_memory_palace_node, clear_expired_memory_palace_pins, get_user_impression, upsert_user_impression, delete_user_impression, normalize_user_impression
 import database as _db_module  # 用于 /api/settings 热更新 database.py 全局变量
 from memory_extractor import get_extraction_prompt, set_extraction_prompt, _DEFAULT_EXTRACTION_PROMPT
@@ -1370,7 +1370,7 @@ def _memory_palace_score_rows(rows, query: str, query_embedding=None, discount: 
     return scored
 
 
-async def search_memory_palace_for_prompt(query: str = "", limit: int = 5, room: str = None, character_id: str = "default", rows=None, bm25_index=None, query_embedding=None):
+async def search_memory_palace_for_prompt(query: str = "", limit: int = 5, room: str = None, character_id: str = "default", rows=None, bm25_index=None, query_embedding=None, vector_scores=None):
     """单路检索。
 
     query_embedding 已经算好时直接用，不再自己发请求：一轮检索有好几路，
@@ -1388,15 +1388,18 @@ async def search_memory_palace_for_prompt(query: str = "", limit: int = 5, room:
 
     # 相似度交给数据库算（pgvector）。失败或不可用时返回空字典，
     # 打分函数会自动退回 Python 计算，结果一致只是慢一些。
-    vector_scores = {}
-    if query_embedding:
-        try:
-            vector_scores = await search_memory_palace_vector_scores(
-                query_embedding, character_id=character_id, room=room,
-            )
-        except Exception as e:
-            print(f"ℹ️ pgvector 检索失败，回退 Python 计算: {str(e)[:120]}")
-            vector_scores = {}
+    # vector_scores 已经算好时直接用：一轮检索有好几路，调用方会用一条 SQL
+    # 把所有路的相似度一起算完，省掉逐路的数据库往返。
+    if vector_scores is None:
+        vector_scores = {}
+        if query_embedding:
+            try:
+                vector_scores = await search_memory_palace_vector_scores(
+                    query_embedding, character_id=character_id, room=room,
+                )
+            except Exception as e:
+                print(f"ℹ️ pgvector 检索失败，回退 Python 计算: {str(e)[:120]}")
+                vector_scores = {}
 
     return _memory_palace_score_rows(
         rows, query=query, query_embedding=query_embedding,

@@ -2003,10 +2003,14 @@ async def _memory_palace_strengthen_coactivated(node_ids, character_id: str = "d
                     LIMIT 1
                 """, character_id, source_id, target_id)
                 if existing:
+                    # 参数编号必须从 $1 开始连续。原来写成 $2/$3 但只传两个参数，
+                    # $1 悬空，asyncpg 无法推断它的类型，每轮都报
+                    # "could not determine data type of parameter $1"，
+                    # 于是共激活强化整段被异常吞掉，从未真正生效过。
                     await conn.execute("""
                         UPDATE memory_palace_links
-                        SET strength = LEAST(1.0, strength + $2), updated_at = NOW()
-                        WHERE id = $3
+                        SET strength = LEAST(1.0, strength + $1), updated_at = NOW()
+                        WHERE id = $2
                     """, _MEMORY_PALACE_CO_ACTIVATION_INCREMENT, existing['id'])
                 else:
                     await conn.execute("""

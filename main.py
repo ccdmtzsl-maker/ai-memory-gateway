@@ -9194,27 +9194,14 @@ async def build_memory_palace_extraction_prompt(messages_text: str, pinned_refs:
     pinned_refs = pinned_refs or []
     related_refs = related_refs or []
     if related_refs:
-        # 分段展示：让模型知道哪些是「当时真的想起过的」，哪些是系统补充的猜测。
-        # 编号保持全局连续（O0..On），relatedTo 的解析和映射逻辑不受影响。
-        recall_lines = []
-        search_lines = []
-        for i, r in enumerate(related_refs):
-            line = f"O{i}. [{r.get('room', 'living_room')}] {r.get('content', '')}"
-            if (r.get("source") or "recall") == "recall":
-                recall_lines.append(line)
-            else:
-                search_lines.append(line)
-        segments = []
-        if recall_lines:
-            if search_lines:
-                segments.append("（这段对话进行时，你脑海里浮现过下面这些记忆）")
-            segments.extend(recall_lines)
-        if search_lines:
-            if recall_lines:
-                segments.append("")
-            segments.append("（下面是系统补充的、可能相关的旧记忆，当时未必想起过）")
-            segments.extend(search_lines)
-        related_lines = "\n".join(segments)
+        # 只按编号平铺列出，不标注来源。
+        # 原来分成「当时想起过」和「系统补充的、当时未必想起」两段，会让模型
+        # 把后一段当成不可信材料，反而不敢标 relatedTo / correct。对判断是不是
+        # 同一件事来说，材料从哪来无关紧要，只有内容本身有用。
+        related_lines = "\n".join(
+            f"O{i}. [{r.get('room', 'living_room')}] {r.get('content', '')}"
+            for i, r in enumerate(related_refs)
+        )
         related_block = f"\n## 已有记忆\n如果新记忆与某条旧记忆描述的是同一件事或直接相关，请在 relatedTo 中标注编号，并给出 eventName / eventTags 用于建/合并事件盒。\n{related_lines}\n"
         related_rule = '\n9. **事件盒关联**（relatedTo / sameAs + eventName + eventTags）：与旧记忆同事件或直接相关时，在 relatedTo 中写对应 O 编号（如 ["O0"]）；与本次输出的前面某条新记忆同事件时，在 sameAs 中写其 0 基索引（如 ["0"]）。只标真正同一事件、后续、结局、复现或直接因果；仅主题相似不要标。只要 relatedTo 或 sameAs 非空，必须同时写 eventName（5-12 字名词短语）和 eventTags（3-6 个具体标签）。\n10. **纠正旧记忆**（correct，可选）：仅当对话中明确指出某条已有记忆记错、过时或不准确时，在 JSON 数组末尾额外追加 {"correct":"O0","note":"新的准确事实"}。note 写简短陈述句，不写解释；事件后续用 relatedTo，不要滥用 correct。'
         related_format = ',\n    "relatedTo": ["O0"],\n    "sameAs": ["0"],\n    "eventName": "买衣服的话题",\n    "eventTags": ["衣服", "购物", "退货"]'

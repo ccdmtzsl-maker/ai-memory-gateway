@@ -1370,11 +1370,15 @@ def _memory_palace_score_rows(rows, query: str, query_embedding=None, discount: 
     return scored
 
 
-async def search_memory_palace_for_prompt(query: str = "", limit: int = 5, room: str = None, character_id: str = "default", rows=None, bm25_index=None):
+async def search_memory_palace_for_prompt(query: str = "", limit: int = 5, room: str = None, character_id: str = "default", rows=None, bm25_index=None, query_embedding=None):
+    """单路检索。
+
+    query_embedding 已经算好时直接用，不再自己发请求：一轮检索有好几路，
+    调用方会把所有路的查询文本一次性批量向量化，省掉逐路的网络往返。
+    """
     limit = max(1, min(int(limit or 5), 30))
     query = (query or "").strip()
-    query_embedding = None
-    if query:
+    if query and not query_embedding:
         try:
             query_embedding = await compute_memory_palace_embedding(query)
         except Exception as e:

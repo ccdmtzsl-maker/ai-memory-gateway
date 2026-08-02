@@ -1311,7 +1311,7 @@ async def _memory_palace_fetch_rows(room: str = None, character_id: str = "defau
 
 
 def _memory_palace_score_rows(rows, query: str, query_embedding=None, discount: float = 1.0,
-                              vector_scores=None):
+                              vector_scores=None, bm25_index=None):
     """给候选记忆打分排序。
 
     vector_scores 是数据库算好的 {memory_id: 余弦相似度}。有它就直接查表，
@@ -1325,7 +1325,7 @@ def _memory_palace_score_rows(rows, query: str, query_embedding=None, discount: 
     scored = []
     query = (query or "").strip()
     vector_scores = vector_scores or {}
-    bm25_scores = _memory_palace_bm25_scores(query, rows) if query else {}
+    bm25_scores = _memory_palace_bm25_scores(query, rows, index=bm25_index) if query else {}
     for row in rows:
         content = row["content"] or ""
         tags = row["tags"] or ""
@@ -1369,7 +1369,7 @@ def _memory_palace_score_rows(rows, query: str, query_embedding=None, discount: 
     return scored
 
 
-async def search_memory_palace_for_prompt(query: str = "", limit: int = 5, room: str = None, character_id: str = "default", rows=None):
+async def search_memory_palace_for_prompt(query: str = "", limit: int = 5, room: str = None, character_id: str = "default", rows=None, bm25_index=None):
     limit = max(1, min(int(limit or 5), 30))
     query = (query or "").strip()
     query_embedding = None
@@ -1395,7 +1395,7 @@ async def search_memory_palace_for_prompt(query: str = "", limit: int = 5, room:
 
     return _memory_palace_score_rows(
         rows, query=query, query_embedding=query_embedding,
-        vector_scores=vector_scores,
+        vector_scores=vector_scores, bm25_index=bm25_index,
     )[:limit]
 
 

@@ -2142,19 +2142,22 @@ async def retrieve_memory_palace_rows_for_prompt(query: str = "", limit: int = 5
     limit = max(1, min(int(limit or 5), 30))
     await clear_expired_memory_palace_pins(character_id)
     rows = await _memory_palace_fetch_rows(room=room, character_id=character_id)
+    # 一轮检索会分成好几路（每个用户消息片段一路 + 上下文一路）。切词只跟
+    # 记忆本身有关、跟查什么无关，所以整轮只切一次，所有路共用。
+    bm25_index = _memory_palace_build_bm25_index(rows)
     merged = {}
     spikes, context_query, fallback_query = _memory_palace_split_last_turn_queries(recent_messages or [])
     if not spikes and query:
         spikes = [{"label": "q", "text": query.strip()}]
     if spikes:
         for spike in spikes:
-            results = await search_memory_palace_for_prompt(spike["text"], limit=30, room=room, character_id=character_id, rows=rows)
+            results = await search_memory_palace_for_prompt(spike["text"], limit=30, room=room, character_id=character_id, rows=rows, bm25_index=bm25_index)
             for item in results:
                 old = merged.get(item["id"])
                 if old is None or item["score"] > old["score"]:
                     merged[item["id"]] = item
         if context_query:
-            ctx_results = await search_memory_palace_for_prompt(context_query, limit=30, room=room, character_id=character_id, rows=rows)
+            ctx_results = await search_memory_palace_for_prompt(context_query, limit=30, room=room, character_id=character_id, rows=rows, bm25_index=bm25_index)
             for item in ctx_results:
                 item = dict(item)
                 item["score"] *= 0.5
@@ -2163,7 +2166,7 @@ async def retrieve_memory_palace_rows_for_prompt(query: str = "", limit: int = 5
                     merged[item["id"]] = item
     else:
         fallback = fallback_query or query
-        for item in await search_memory_palace_for_prompt(fallback, limit=30, room=room, character_id=character_id, rows=rows):
+        for item in await search_memory_palace_for_prompt(fallback, limit=30, room=room, character_id=character_id, rows=rows, bm25_index=bm25_index):
             merged[item["id"]] = item
     date_query = "\n".join([query or "", context_query or "", fallback_query or ""] + [s["text"] for s in spikes])
     date_ranges = _memory_palace_resolve_fuzzy_date_references(date_query)
@@ -8996,12 +8999,13 @@ async def get_memory_palace_related_refs(character_id: str = "default", limit: i
 
     rows = await _memory_palace_fetch_rows(room=None, character_id=character_id)
 
-    # 第二层：语义检索
+    # 第二层：语义检索。最多 25 段，切词同样只做一次。
     snippets = split_memory_palace_extraction_snippets(query_text, source_messages, max_snippets=25)
+    bm25_index = _memory_palace_build_bm25_index(rows) if snippets else None
     fallback_by_id = {}
     for snippet in snippets:
         try:
-            hits = await search_memory_palace_for_prompt(snippet, limit=3, character_id=character_id, rows=rows)
+            hits = await search_memory_palace_for_prompt(snippet, limit=3, character_id=character_id, rows=rows, bm25_index=bm25_index)
         except Exception as e:
             print(f"⚠️ 记忆宫殿 related refs 检索失败: {e}")
             continue

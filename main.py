@@ -2009,8 +2009,35 @@ def collapse_memory_palace_rows_by_event_box(rows: list, pinned_count: int, boxe
     return pinned + collapsed
 
 
+def _memory_palace_friendly_date(row: dict) -> str:
+    """将日期转为友好显示：今天/昨天/前天/原始日期。"""
+    raw = row.get("date") or row.get("created_at") or ""
+    if hasattr(raw, "year"):
+        d = raw
+    else:
+        raw_str = str(raw)[:10]
+        try:
+            d = datetime.strptime(raw_str, "%Y-%m-%d").date()
+        except Exception:
+            return raw_str
+    try:
+        tz = timezone(timedelta(hours=TIMEZONE_HOURS))
+        today = datetime.now(tz).date()
+        diff = (today - d).days
+        if diff == 0:
+            return "今天"
+        elif diff == 1:
+            return "昨天"
+        elif diff == 2:
+            return "前天"
+        else:
+            return d.strftime("%Y-%m-%d")
+    except Exception:
+        return str(raw)[:10]
+
+
 def _memory_palace_format_node_line(row: dict) -> str:
-    date_text = str(row.get("date") or "")[:10] or str(row.get("created_at") or "")[:10]
+    date_text = _memory_palace_friendly_date(row)
     meta = f"{date_text}｜重要性:{row.get('importance') or 5}｜情绪:{row.get('mood') or 'neutral'}"
     content = str(row.get("content") or "").strip()
     return f"- {meta}\n  {content}"

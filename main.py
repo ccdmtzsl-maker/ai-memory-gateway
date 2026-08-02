@@ -965,13 +965,13 @@ def _memory_palace_build_bm25_index(rows: list) -> dict:
     做一次。以前每一路搜索都从头切一遍：255 条记忆里，切词占单路耗时的
     七成半，4 路搜索就白切 3 遍。
 
-    顺带把 df（每个词出现在几篇文档里）也先数出来。原来每个查询词都要
-    扫一遍全部文档去数，现在直接查表。
+    df（每个词出现在几篇文档里）不在这里预算：一篇记忆有上百个词，全量数
+    一遍比查询实际用到的那十几个词贵得多，单路检索会反而变慢。这里只留一个
+    空缓存，谁用到哪个词就数哪个，数过的下一路直接查表。
     """
     doc_tf = []
     doc_len = []
     ids = []
-    df = {}
     for row in rows or []:
         content = row.get("content") or ""
         tags = row.get("tags") or ""
@@ -979,8 +979,6 @@ def _memory_palace_build_bm25_index(rows: list) -> dict:
         tf = {}
         for t in toks:
             tf[t] = tf.get(t, 0) + 1
-        for t in tf:
-            df[t] = df.get(t, 0) + 1
         doc_tf.append(tf)
         doc_len.append(len(toks))
         ids.append(row.get("id"))
@@ -989,7 +987,7 @@ def _memory_palace_build_bm25_index(rows: list) -> dict:
         "ids": ids,
         "doc_tf": doc_tf,
         "doc_len": doc_len,
-        "df": df,
+        "df_cache": {},
         "doc_count": doc_count,
         "avg_dl": (sum(doc_len) / doc_count) if doc_count else 0.0,
     }
@@ -1008,12 +1006,12 @@ def _memory_palace_bm25_scores(query: str, rows: list, index: dict = None) -> di
     if not query_tokens:
         return {}
     # 索引和 rows 必须是同一批数据，长度对不上就宁可重建，不能错位打分
-    if not index or index.get("doc_count") != len(rows):
+    if not index or index.get("doc_count") != len(rows) or "df_cache" not in index:
         index = _memory_palace_build_bm25_index(rows)
     doc_tf = index["doc_tf"]
     doc_len = index["doc_len"]
     ids = index["ids"]
-    df_map = index["df"]
+    df_cache = index["df_cache"]
     doc_count = index["doc_count"]
     avg_dl = index["avg_dl"]
     if avg_dl == 0:
@@ -1021,7 +1019,10 @@ def _memory_palace_bm25_scores(query: str, rows: list, index: dict = None) -> di
     unique_qtokens = list(set(query_tokens))
     idf = {}
     for qt in unique_qtokens:
-        df = df_map.get(qt, 0)
+        df = df_cache.get(qt)
+        if df is None:
+            df = sum(1 for tf in doc_tf if qt in tf)
+            df_cache[qt] = df
         idf[qt] = _math.log((doc_count - df + 0.5) / (df + 0.5) + 1)
     scores = {}
     for i in range(doc_count):

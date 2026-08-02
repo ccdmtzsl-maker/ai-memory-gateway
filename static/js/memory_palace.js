@@ -1223,55 +1223,6 @@ async function showMemoryPalaceVectorStats() {
 }
 
 
-async function runMemoryPalaceVectorSelfTest() {
-    const btn = document.getElementById('mpVectorSelfTestBtn');
-    if (btn) {
-        btn.disabled = true;
-        btn.textContent = '自检中...';
-    }
-    showMemoryPalaceBackfillStatus('正在向服务商索取一条测试向量...');
-    try {
-        const resp = await fetch('/api/memory-palace/vectors/self-test', {
-            method: 'POST',
-            headers: {'Content-Type':'application/json'},
-            body: JSON.stringify({})
-        });
-        const data = await resp.json();
-        if (data.error || data.status === 'error') throw new Error(data.error || '自检失败');
-        const r = data.result || {};
-        if (r.ok) {
-            let msg = '✅ 向量接口正常：' + (r.working_label || '') +
-                      '，返回 ' + (r.returned_dim || 0) + ' 维';
-            if (r.dim_mismatch) {
-                msg += '；⚠️ 但设置里写的是 ' + r.configured_dim +
-                       ' 维，建议改成 ' + r.returned_dim + ' 维，否则新旧向量维度会混';
-            }
-            showMemoryPalaceBackfillStatus(msg);
-        } else {
-            // 把每种请求格式的结果都摆出来，直接看到服务商拒绝的原话
-            const lines = (r.attempts || []).map(function (a) {
-                return '　· ' + a.label + ' → HTTP ' + (a.status || '-') + ' ' + (a.detail || '');
-            });
-            let msg = '❌ 向量接口不可用';
-            if (r.error) msg += '：' + r.error;
-            msg += '\n　接口：' + (r.endpoint || '(未配置)') +
-                   '\n　模型：' + (r.model || '(未配置)') +
-                   '\n　密钥：' + (r.has_key ? '已填' : '未填') +
-                   '\n　设置维度：' + (r.configured_dim || 0);
-            if (lines.length) msg += '\n' + lines.join('\n');
-            showMemoryPalaceBackfillStatus(msg, 'error');
-        }
-    } catch (e) {
-        showMemoryPalaceBackfillStatus('❌ 向量接口自检失败：' + e.message, 'error');
-    } finally {
-        if (btn) {
-            btn.disabled = false;
-            btn.textContent = '向量接口自检';
-        }
-    }
-}
-
-
 async function clearArchivedMemoryPalaceVectors() {
     if (!confirm('确定清除已归档记忆的向量吗？\n\n这不会删除记忆本体，但归档记忆如果恢复，可能需要重新补向量。')) return;
     const btn = document.getElementById('mpClearArchivedVectorsBtn');

@@ -9814,59 +9814,6 @@ async def compute_memory_palace_embedding(text: str) -> list:
         return []
 
 
-async def diagnose_memory_palace_embedding(text: str = "记忆宫殿向量接口自检") -> dict:
-    """逐个试所有请求格式，把服务商的原话带回来。给仪表盘按钮用。
-
-    和 compute_memory_palace_embedding 不同，这里不走缓存、不提前返回，
-    因为要的就是「每种格式分别是什么结果」。
-    """
-    cfg = _mp_embedding_config()
-    result = {
-        "endpoint": cfg["endpoint"],
-        "model": cfg["model"],
-        "configured_dim": cfg["dim"],
-        "has_key": bool(cfg["api_key"]),
-        "ok": False,
-        "returned_dim": 0,
-        "working_variant": None,
-        "attempts": [],
-    }
-    if not cfg["ready"]:
-        result["error"] = "EMBEDDING_API_KEY / EMBEDDING_BASE_URL / EMBEDDING_MODEL 未填全"
-        return result
-    headers = {"Authorization": f"Bearer {cfg['api_key']}", "Content-Type": "application/json"}
-    variants = _mp_embedding_variants(cfg["model"], str(text or "test").strip()[:200], cfg["dim"])
-    async with httpx.AsyncClient() as client:
-        for idx, body in enumerate(variants, 1):
-            label = ("input=字符串" if isinstance(body["input"], str) else "input=数组") + \
-                    ("，带 dimensions" if "dimensions" in body else "，不带 dimensions")
-            attempt = {"variant": idx, "label": label, "ok": False, "status": 0, "detail": ""}
-            try:
-                resp = await client.post(cfg["endpoint"], headers=headers, json=body, timeout=20.0)
-                attempt["status"] = resp.status_code
-                if resp.status_code >= 400:
-                    attempt["detail"] = resp.text[:300]
-                else:
-                    emb = ((resp.json().get("data") or [{}])[0] or {}).get("embedding")
-                    if emb:
-                        attempt["ok"] = True
-                        attempt["dim"] = len(emb)
-                        attempt["detail"] = f"返回 {len(emb)} 维"
-                        if not result["ok"]:
-                            result["ok"] = True
-                            result["returned_dim"] = len(emb)
-                            result["working_variant"] = idx
-                            result["working_label"] = label
-                    else:
-                        attempt["detail"] = "响应里没有 embedding 字段"
-            except Exception as e:
-                attempt["detail"] = f"{type(e).__name__}: {e}"
-            result["attempts"].append(attempt)
-    if result["ok"] and result["configured_dim"] > 0 and result["returned_dim"] != result["configured_dim"]:
-        result["dim_mismatch"] = True
-    return result
-
-
 async def _sync_memory_palace_vector_column(conn, memory_id: str, embedding) -> None:
     """把向量同时写进 pgvector 列，让数据库能直接算相似度。
 
@@ -10804,33 +10751,6 @@ async def api_memory_palace_vector_stats():
     except Exception as e:
         print(f"[mp-vector-stats] 查询失败: {e}")
         return {"error": str(e)}
-
-
-@app.post("/api/memory-palace/vectors/self-test")
-async def api_memory_palace_vector_self_test():
-    """向量接口自检：直接问服务商要一条向量，把它的回话原样带回来。
-
-    不写库、不改配置。日志里那种 400 用这个按钮就能看清是哪个字段不合胃口。
-    """
-    if not MEMORY_ENABLED:
-        return {"error": "记忆系统未启用"}
-    try:
-        result = await diagnose_memory_palace_embedding()
-        if result.get("ok"):
-            add_dashboard_log(
-                "success",
-                f"🔬 向量接口自检通过：{result.get('working_label')}，返回 {result.get('returned_dim')} 维",
-                category="mp-vector",
-            )
-        else:
-            add_dashboard_log(
-                "error",
-                f"🔬 向量接口自检失败：{result.get('error') or '所有请求格式都被拒绝'}",
-                category="mp-vector",
-            )
-        return {"status": "ok", "result": result}
-    except Exception as e:
-        return {"status": "error", "error": str(e)}
 
 
 @app.post("/api/memory-palace/vectors/clear-archived")

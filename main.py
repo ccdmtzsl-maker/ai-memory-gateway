@@ -9035,17 +9035,27 @@ async def get_memory_palace_related_refs(character_id: str = "default", limit: i
     # 最多 25 段，逐段发请求就是 25 个来回。一次批量发完（内部按 16 段分批、
     # 批间并行），失败自动退回逐条。
     snippet_embeds = []
+    snippet_scores = []
     if snippets:
         try:
             snippet_embeds = await compute_memory_palace_embeddings(snippets)
         except Exception as e:
             print(f"⚠️ 记忆宫殿提取兜底批量向量化失败，改为逐条: {e}")
             snippet_embeds = []
+        if any(snippet_embeds):
+            try:
+                snippet_scores = await search_memory_palace_vector_scores_multi(
+                    snippet_embeds, character_id=character_id,
+                )
+            except Exception as e:
+                print(f"ℹ️ 记忆宫殿提取兜底 pgvector 批量检索失败，逐路回退: {str(e)[:120]}")
+                snippet_scores = []
     fallback_by_id = {}
     for si, snippet in enumerate(snippets):
         try:
             snippet_embed = snippet_embeds[si] if si < len(snippet_embeds) else None
-            hits = await search_memory_palace_for_prompt(snippet, limit=3, character_id=character_id, rows=rows, bm25_index=bm25_index, query_embedding=snippet_embed or None)
+            snippet_score = snippet_scores[si] if si < len(snippet_scores) else None
+            hits = await search_memory_palace_for_prompt(snippet, limit=3, character_id=character_id, rows=rows, bm25_index=bm25_index, query_embedding=snippet_embed or None, vector_scores=snippet_score)
         except Exception as e:
             print(f"⚠️ 记忆宫殿 related refs 检索失败: {e}")
             continue

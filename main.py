@@ -18,6 +18,7 @@ import uuid
 import asyncio
 import time
 import re
+import math as _math
 import hashlib
 import hmac
 import base64
@@ -922,21 +923,91 @@ _MEMORY_PALACE_PERSONALITY_WEIGHTS = {
 }
 
 
-def _memory_palace_tokenize(text: str):
-    text = (text or "").lower()
-    return re.findall(r"[\w\u4e00-\u9fff]+", text)
+_BM25_K1 = 1.2
+_BM25_B = 0.75
 
 
-def _memory_palace_keyword_score(query: str, content: str, tags: str = "") -> float:
-    query_tokens = _memory_palace_tokenize(query)
+def _memory_palace_bm25_tokenize(text: str) -> list:
+    """中文 2-gram + 英文整词分词。
+    "小明去了北京" → ["小明", "明去", "去了", "了北", "北京"]
+    "hello world" → ["hello", "world"]
+    "小明说hello" → ["小明", "明说", "hello"]
+    """
+    if not text:
+        return []
+    tokens = []
+    parts = _re.split(r'([a-zA-Z0-9]+)', (text or "").lower())
+    for part in parts:
+        trimmed = part.strip()
+        if not trimmed:
+            continue
+        if _re.match(r'^[a-zA-Z0-9]+$', trimmed):
+            tokens.append(trimmed)
+        else:
+            cleaned = _re.sub(r'[\s\p{P}]', '', trimmed)
+            cleaned = _re.sub(r'[\s＀-\uffef\u3000-\u303f]', '', cleaned)
+            if len(cleaned) == 1:
+                tokens.append(cleaned)
+            else:
+                for i in range(len(cleaned) - 1):
+                    tokens.append(cleaned[i:i + 2])
+    return tokens
+
+
+def _memory_palace_bm25_scores(query: str, rows: list) -> dict:
+    """对候选记忆节点计算 BM25 分数，返回 {memory_id: score} 字典。
+    分数归一化到 0-1 范围（除以最大分）。
+    """
+    if not rows or not query:
+        return {}
+    query_tokens = _memory_palace_bm25_tokenize(query)
     if not query_tokens:
-        return 0.0
-    target = ((content or "") + " " + (tags or "")).lower()
-    hit = 0.0
-    for token in query_tokens:
-        if token and token in target:
-            hit += 1.0
-    return min(1.0, hit / max(1, len(query_tokens)))
+        return {}
+    # 预处理：为每个文档建立 token 频率表
+    doc_tokens = []
+    doc_tf = []
+    doc_len = []
+    for row in rows:
+        content = row.get("content") or ""
+        tags = row.get("tags") or ""
+        text = (content + " " + tags).lower()
+        toks = _memory_palace_bm25_tokenize(text)
+        tf = {}
+        for t in toks:
+            tf[t] = tf.get(t, 0) + 1
+        doc_tokens.append(toks)
+        doc_tf.append(tf)
+        doc_len.append(len(toks))
+    doc_count = len(rows)
+    avg_dl = sum(doc_len) / doc_count if doc_count > 0 else 0.0
+    if avg_dl == 0:
+        return {}
+    # 计算 IDF
+    unique_qtokens = list(set(query_tokens))
+    idf = {}
+    for qt in unique_qtokens:
+        df = sum(1 for tf in doc_tf if qt in tf)
+        idf[qt] = _math.log((doc_count - df + 0.5) / (df + 0.5) + 1)
+    # 计算每个文档的 BM25 分数
+    scores = {}
+    for i, row in enumerate(rows):
+        dl = doc_len[i]
+        if dl == 0:
+            continue
+        score = 0.0
+        for qt in unique_qtokens:
+            tf = doc_tf[i].get(qt, 0)
+            if tf == 0:
+                continue
+            tf_norm = (tf * (_BM25_K1 + 1)) / (tf + _BM25_K1 * (1 - _BM25_B + _BM25_B * dl / avg_dl))
+            score += idf[qt] * tf_norm
+        if score > 0:
+            scores[row.get("id")] = score
+    # 归一化到 0-1
+    max_score = max(scores.values()) if scores else 0.0
+    if max_score > 0:
+        scores = {k: v / max_score for k, v in scores.items()}
+    return scores
 
 
 def _memory_palace_cosine(a, b) -> float:
@@ -1219,6 +1290,7 @@ def _memory_palace_score_rows(rows, query: str, query_embedding=None, discount: 
     scored = []
     query = (query or "").strip()
     vector_scores = vector_scores or {}
+    bm25_scores = _memory_palace_bm25_scores(query, rows) if query else {}
     for row in rows:
         content = row["content"] or ""
         tags = row["tags"] or ""
@@ -1232,7 +1304,7 @@ def _memory_palace_score_rows(rows, query: str, query_embedding=None, discount: 
                     vector_score = _memory_palace_cosine(query_embedding, json.loads(row["embedding_json"]))
                 except Exception:
                     vector_score = 0.0
-        keyword_score = _memory_palace_keyword_score(query, content, tags) if query else 0.0
+        keyword_score = bm25_scores.get(row["id"], 0.0)
         if query_embedding:
             similarity = _MEMORY_PALACE_VECTOR_WEIGHT * vector_score + _MEMORY_PALACE_BM25_WEIGHT * keyword_score
         elif query:

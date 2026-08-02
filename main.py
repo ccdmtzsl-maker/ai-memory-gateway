@@ -9200,10 +9200,10 @@ async def build_memory_palace_extraction_prompt(messages_text: str, pinned_refs:
         search_lines = []
         for i, r in enumerate(related_refs):
             line = f"O{i}. [{r.get('room', 'living_room')}] {r.get('content', '')}"
-            if (r.get("source") or "recall") == "search":
-                search_lines.append(line)
-            else:
+            if (r.get("source") or "recall") == "recall":
                 recall_lines.append(line)
+            else:
+                search_lines.append(line)
         segments = []
         if recall_lines:
             if search_lines:

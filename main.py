@@ -2154,15 +2154,26 @@ async def retrieve_memory_palace_rows_for_prompt(query: str = "", limit: int = 5
     spikes, context_query, fallback_query = _memory_palace_split_last_turn_queries(recent_messages or [])
     if not spikes and query:
         spikes = [{"label": "q", "text": query.strip()}]
+    # 所有路的查询文本一次性向量化。以前每路各发一次请求，3-4 路就是 3-4 个
+    # 网络来回；现在一个来回拿齐。批量失败会自动退回逐条，不影响可用性。
     if spikes:
-        for spike in spikes:
-            results = await search_memory_palace_for_prompt(spike["text"], limit=30, room=room, character_id=character_id, rows=rows, bm25_index=bm25_index)
+        batch_texts = [s["text"] for s in spikes] + ([context_query] if context_query else [])
+    else:
+        batch_texts = [fallback_query or query]
+    try:
+        batch_embeds = await compute_memory_palace_embeddings(batch_texts)
+    except Exception as e:
+        print(f"⚠️ Memory Palace 批量向量化失败，改为逐条: {e}")
+        batch_embeds = [None] * len(batch_texts)
+    if spikes:
+        for pos, spike in enumerate(spikes):
+            results = await search_memory_palace_for_prompt(spike["text"], limit=30, room=room, character_id=character_id, rows=rows, bm25_index=bm25_index, query_embedding=batch_embeds[pos] or None)
             for item in results:
                 old = merged.get(item["id"])
                 if old is None or item["score"] > old["score"]:
                     merged[item["id"]] = item
         if context_query:
-            ctx_results = await search_memory_palace_for_prompt(context_query, limit=30, room=room, character_id=character_id, rows=rows, bm25_index=bm25_index)
+            ctx_results = await search_memory_palace_for_prompt(context_query, limit=30, room=room, character_id=character_id, rows=rows, bm25_index=bm25_index, query_embedding=batch_embeds[len(spikes)] or None)
             for item in ctx_results:
                 item = dict(item)
                 item["score"] *= 0.5
@@ -2171,7 +2182,7 @@ async def retrieve_memory_palace_rows_for_prompt(query: str = "", limit: int = 5
                     merged[item["id"]] = item
     else:
         fallback = fallback_query or query
-        for item in await search_memory_palace_for_prompt(fallback, limit=30, room=room, character_id=character_id, rows=rows, bm25_index=bm25_index):
+        for item in await search_memory_palace_for_prompt(fallback, limit=30, room=room, character_id=character_id, rows=rows, bm25_index=bm25_index, query_embedding=batch_embeds[0] or None):
             merged[item["id"]] = item
     date_query = "\n".join([query or "", context_query or "", fallback_query or ""] + [s["text"] for s in spikes])
     date_ranges = _memory_palace_resolve_fuzzy_date_references(date_query)

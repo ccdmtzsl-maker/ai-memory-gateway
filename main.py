@@ -10806,6 +10806,33 @@ async def api_memory_palace_vector_stats():
         return {"error": str(e)}
 
 
+@app.post("/api/memory-palace/vectors/self-test")
+async def api_memory_palace_vector_self_test():
+    """向量接口自检：直接问服务商要一条向量，把它的回话原样带回来。
+
+    不写库、不改配置。日志里那种 400 用这个按钮就能看清是哪个字段不合胃口。
+    """
+    if not MEMORY_ENABLED:
+        return {"error": "记忆系统未启用"}
+    try:
+        result = await diagnose_memory_palace_embedding()
+        if result.get("ok"):
+            add_dashboard_log(
+                "success",
+                f"🔬 向量接口自检通过：{result.get('working_label')}，返回 {result.get('returned_dim')} 维",
+                category="mp-vector",
+            )
+        else:
+            add_dashboard_log(
+                "error",
+                f"🔬 向量接口自检失败：{result.get('error') or '所有请求格式都被拒绝'}",
+                category="mp-vector",
+            )
+        return {"status": "ok", "result": result}
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
+
 @app.post("/api/memory-palace/vectors/clear-archived")
 async def api_memory_palace_clear_archived_vectors():
     """清除已归档记忆节点对应的向量，不删除记忆本体。"""

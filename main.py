@@ -9777,6 +9777,148 @@ def _mp_embedding_config() -> dict:
     }
 
 
+# 一次给服务商传多段文字，它按顺序回多条向量。
+# 顺序可靠性是实测确认的（SiliconFlow + Pro/BAAI/bge-m3）：返回体里 index
+# 依次为 0/1/2，且每条与单独求的向量相似度 1.0，没有错位。
+# 批次别开太大：一段最长 4000 字，乘以批量条数就是请求体大小，太大容易超时。
+_MP_EMBEDDING_BATCH_SIZE = 16
+# 多批之间并行发。这里是真的在等网络，并行有效；但要限流，别一次轰一堆。
+_MP_EMBEDDING_BATCH_CONCURRENCY = 3
+# 批量请求带不带 dimensions：None 还没试过，True/False 是已确认的结论。
+# 和单条那份缓存分开记，因为批量的请求体形状不同，结论不能互相套用。
+_MP_EMBEDDING_BATCH_DIM_CACHE = {}
+
+
+def _mp_embedding_extract_batch(data: dict, expected: int) -> list:
+    """从响应里取出向量列表，按服务商标的 index 排好。
+
+    多数兼容端会给每条带 index 字段。优先信它，缺了才按返回顺序兜底。
+    数量对不上直接判失败——宁可退回逐条求，也不能把 A 的向量配给 B。
+    """
+    items = data.get("data") or []
+    if len(items) != expected:
+        return []
+    indexed = []
+    for pos, item in enumerate(items):
+        if not isinstance(item, dict):
+            return []
+        idx = item.get("index")
+        indexed.append((idx if isinstance(idx, int) else pos, item.get("embedding")))
+    indexed.sort(key=lambda x: x[0])
+    embeds = [emb for _i, emb in indexed]
+    if any(not emb for emb in embeds):
+        return []
+    return embeds
+
+
+async def compute_memory_palace_embeddings(texts: list) -> list:
+    """一次求多段文字的向量。返回列表与输入严格一一对应。
+
+    为什么要有它：一轮检索会把用户这句话拆成好几段分别去搜（整句 + 拆出的
+    词组 + 上下文），每段都要先变成向量。逐段发请求就是逐段等网络，3-4 段
+    就是 3-4 个来回。合成一次发，等一个来回。
+
+    空字符串对应位置返回 []，不发给服务商、也不占批次名额。
+    整批失败时退回逐条求：慢一点总比没有好。
+    """
+    raw = list(texts or [])
+    out = [[] for _ in raw]
+    pending = []  # [(原始下标, 清理后的文本)]
+    for i, t in enumerate(raw):
+        s = str(t or "").strip()
+        if not s:
+            continue
+        pending.append((i, s[:4000]))
+    if not pending:
+        return out
+    if len(pending) == 1:
+        out[pending[0][0]] = await compute_memory_palace_embedding(pending[0][1])
+        return out
+
+    cfg = _mp_embedding_config()
+    if not cfg["ready"]:
+        _mp_embedding_warn_once(
+            "unconfigured",
+            "[mp-embedding] EMBEDDING_API_KEY / EMBEDDING_BASE_URL / EMBEDDING_MODEL 未完整配置",
+        )
+        return out
+    endpoint, model, dim = cfg["endpoint"], cfg["model"], cfg["dim"]
+    headers = {"Authorization": f"Bearer {cfg['api_key']}", "Content-Type": "application/json"}
+    cache_key = (endpoint, model, dim)
+    size = max(1, int(_MP_EMBEDDING_BATCH_SIZE or 16))
+    batches = [pending[i:i + size] for i in range(0, len(pending), size)]
+    sem = asyncio.Semaphore(max(1, int(_MP_EMBEDDING_BATCH_CONCURRENCY or 3)))
+
+    async def run_batch(client, batch):
+        """返回 True 表示这批拿到了向量，已写进 out。"""
+        payload_texts = [t for _i, t in batch]
+        known = _MP_EMBEDDING_BATCH_DIM_CACHE.get(cache_key)
+        bodies = []
+        if dim > 0 and known is not False:
+            bodies.append((True, {"model": model, "input": payload_texts, "dimensions": dim}))
+        if known is not True:
+            bodies.append((False, {"model": model, "input": payload_texts}))
+        async with sem:
+            for with_dim, body in bodies:
+                try:
+                    resp = await client.post(endpoint, headers=headers, json=body, timeout=60.0)
+                except Exception as e:
+                    print(f"[mp-embedding] 批量请求异常: {type(e).__name__}: {e}")
+                    continue
+                if resp.status_code >= 400:
+                    _mp_embedding_warn_once(
+                        f"batch:{cache_key}:{with_dim}:{resp.status_code}",
+                        f"[mp-embedding] 批量 HTTP {resp.status_code}"
+                        f"（{'带' if with_dim else '不带'} dimensions）: {resp.text[:300]}",
+                    )
+                    continue
+                try:
+                    embeds = _mp_embedding_extract_batch(resp.json(), len(batch))
+                except Exception as e:
+                    print(f"[mp-embedding] 批量响应解析失败: {type(e).__name__}: {e}")
+                    continue
+                if not embeds:
+                    _mp_embedding_warn_once(
+                        f"batchshape:{cache_key}:{with_dim}",
+                        f"[mp-embedding] 批量返回条数或内容异常，期望 {len(batch)} 条",
+                    )
+                    continue
+                if _MP_EMBEDDING_BATCH_DIM_CACHE.get(cache_key) != with_dim:
+                    _MP_EMBEDDING_BATCH_DIM_CACHE[cache_key] = with_dim
+                    print(f"[mp-embedding] 批量可用（{'带' if with_dim else '不带'} dimensions，"
+                          f"{len(embeds[0])} 维），后续直接用这种格式")
+                for (orig_i, _t), emb in zip(batch, embeds):
+                    out[orig_i] = emb
+                return True
+        return False
+
+    try:
+        async with httpx.AsyncClient() as client:
+            results = await asyncio.gather(
+                *[run_batch(client, b) for b in batches], return_exceptions=True
+            )
+    except Exception as e:
+        print(f"[mp-embedding] 批量客户端异常: {type(e).__name__}: {e}")
+        results = [False] * len(batches)
+
+    # 哪批没成，就把那批里的文本逐条补齐。不让整轮检索因为批量失败而失去向量。
+    missing = []
+    for batch, ok in zip(batches, results):
+        if ok is True:
+            continue
+        missing.extend(batch)
+    if missing:
+        _mp_embedding_warn_once(
+            f"batchfallback:{cache_key}",
+            f"[mp-embedding] 批量不可用，退回逐条求向量（本轮 {len(missing)} 段）",
+        )
+        for orig_i, text in missing:
+            if out[orig_i]:
+                continue
+            out[orig_i] = await compute_memory_palace_embedding(text)
+    return out
+
+
 async def compute_memory_palace_embedding(text: str) -> list:
     """记忆宫殿专用 embedding 调用：兼容常见 OpenAI/SiliconFlow embeddings 参数差异。
 

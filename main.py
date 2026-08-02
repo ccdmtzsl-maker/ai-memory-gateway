@@ -8830,38 +8830,34 @@ def split_memory_palace_extraction_snippets(messages_text: str = "", source_mess
 
 
 async def get_memory_palace_related_refs(character_id: str = "default", limit: int = 20, query_text: str = "", source_messages: list = None) -> list:
-    """给提取模型的旧记忆引用：以「当时真实召回过什么」为唯一主力来源。
+    """给提取模型的旧记忆引用。始终凑满 limit 条（默认 20），按三层顺序取：
 
-    设计取舍（2024 重构）：
-      * 主力 = recall receipts。聊天时注入哪些记忆是有账可查的事实，提取时
-        直接复现，不再用另一套检索逻辑重新猜。
-      * 语义检索降级为应急预案，只在 receipts 几乎为空时启动（历史数据、
-        注入未开启、记忆已归档等）。不为凑满名额启动——少量干净材料胜过
-        大量混着系统猜测的材料。
-      * 删掉了原来按 last_accessed_at 排序的兜底。那一层会把「最近几轮聊天
-        刚检索到的记忆」塞进旧对话的提取材料，等于用未来的记忆理解过去的
-        对话，是参考材料被污染的根源。
-      * 不为特定房间留配额。阁楼（未解决矛盾）recency 权重为 0、不衰减，
-        日常闲聊里本就很少被召回；它没进 receipts 是「当时真的没想起」，
-        硬塞进来会让模型以为这条矛盾在对话里是活跃的。要让阁楼多露面属于
-        注入端的旋钮，与提取端无关。
+      1. 真实召回（recall receipts）：当时实际注入过哪些记忆，有账可查。
+      2. 语义检索：按待提取内容找相关旧记忆。
+      3. 最近/高重要：仍不足时按创建时间与重要性补齐。
+
+    三层都取不满才会少于 limit（比如宫殿里的记忆总数就不够）。
     """
     max_total = max(0, min(int(limit or 20), 50))
     if max_total <= 0:
         return []
+
     refs = await get_memory_palace_receipt_refs(source_messages, character_id=character_id, limit=max_total) if source_messages else []
-    if len(refs) >= _MEMORY_PALACE_RECALL_MIN_REFS:
-        return _memory_palace_strip_ref_internals(refs)
-    # ---- 以下为应急兜底：receipts 不足，退回语义检索 ----
+    recall_count = len(refs)
     seen_ids = {r["id"] for r in refs}
+    if recall_count >= max_total:
+        return _memory_palace_strip_ref_internals(refs[:max_total])
+
     rows = await _memory_palace_fetch_rows(room=None, character_id=character_id)
+
+    # 第二层：语义检索
     snippets = split_memory_palace_extraction_snippets(query_text, source_messages, max_snippets=25)
     fallback_by_id = {}
     for snippet in snippets:
         try:
             hits = await search_memory_palace_for_prompt(snippet, limit=3, character_id=character_id, rows=rows)
         except Exception as e:
-            print(f"⚠️ 记忆宫殿 related refs 兜底检索失败: {e}")
+            print(f"⚠️ 记忆宫殿 related refs 检索失败: {e}")
             continue
         for hit in hits:
             if hit["id"] in seen_ids:
@@ -8880,10 +8876,39 @@ async def get_memory_palace_related_refs(character_id: str = "default", limit: i
                         "_score": sim,
                         "_source": "search",
                     }
-    extra = sorted(fallback_by_id.values(), key=lambda r: r.get("_score", 0.0), reverse=True)
-    refs = list(refs) + extra[:max(0, max_total - len(refs))]
-    print(f"🏰 记忆宫殿参考兜底：真实召回不足（{len(seen_ids)} 条），语义检索补 {len(refs) - len(seen_ids)} 条")
-    return _memory_palace_strip_ref_internals(refs)
+    search_extra = sorted(fallback_by_id.values(), key=lambda r: r.get("_score", 0.0), reverse=True)
+    search_extra = search_extra[:max(0, max_total - len(refs))]
+    refs = list(refs) + search_extra
+    seen_ids.update(r["id"] for r in search_extra)
+    search_count = len(search_extra)
+
+    # 第三层：仍不足就按重要性 + 新近程度补齐。
+    # 不用 last_accessed_at 排序：那会把最近几轮聊天刚召回的记忆排到前面，
+    # 等于用后来的记忆理解早先的对话。
+    filler_count = 0
+    if len(refs) < max_total:
+        def _filler_key(row):
+            return (int(row.get("importance") or 5), str(row.get("created_at") or ""))
+        for row in sorted(rows, key=_filler_key, reverse=True):
+            if len(refs) >= max_total:
+                break
+            if row["id"] in seen_ids:
+                continue
+            content = re.sub(r"\s+", " ", str(row.get("content") or "")).strip()
+            if not content:
+                continue
+            refs.append({
+                "id": row["id"],
+                "room": row.get("room") or "living_room",
+                "content": content,
+                "_source": "recent",
+            })
+            seen_ids.add(row["id"])
+            filler_count += 1
+
+    if search_count or filler_count:
+        print(f"🏰 记忆宫殿提取参考：真实召回 {recall_count} 条 + 语义检索 {search_count} 条 + 补齐 {filler_count} 条 = {len(refs)}/{max_total}")
+    return _memory_palace_strip_ref_internals(refs[:max_total])
 
 
 def _memory_palace_strip_ref_internals(refs: list) -> list:

@@ -4540,12 +4540,17 @@ async def build_partitioned_messages(
             break
     
     _sparse_ts = await get_runtime_sparse_timestamp_enabled()
-    cleaned_a = _prepend_timestamp_to_user_messages(cleaned_a, sparse=_sparse_ts)
+    # A 区和 B 区连着打戳：B 区是更靠后的历史，之前它固定走密集模式，
+    # 所以「距上次对话约 N 小时」这行永远出不来——而长间隔基本都落在这一段。
+    # 用 _ts_state 把 A 区末尾的时间接到 B 区开头，间隔才算得出来。
+    cleaned_a, _ts_state = _prepend_timestamp_to_user_messages(
+        cleaned_a, sparse=_sparse_ts, return_state=True)
     for m in cleaned_a:
         result.append(m)
     
     # B区：先构建去掉created_at的副本，再从末尾往前打BP
-    b_cleaned = _prepend_timestamp_to_user_messages(b_msgs)
+    b_cleaned, _ts_state = _prepend_timestamp_to_user_messages(
+        b_msgs, sparse=_sparse_ts, state=_ts_state, return_state=True)
     
     for j in range(len(b_cleaned) - 1, -1, -1):
         if b_cleaned[j].get('role') != 'tool' and _apply_breakpoint(b_cleaned[j]):
@@ -4561,7 +4566,8 @@ async def build_partitioned_messages(
             shorten_time=True,
         )
         if _sparse_ts:
-            _prev_dt = _last_message_dt(a_msgs, b_msgs)
+            # 优先用打戳过程记下的最后一条时间；它和历史打戳同源，不会错位。
+            _prev_dt = (_ts_state or {}).get("prev_dt") or _last_message_dt(a_msgs, b_msgs)
             _cur_prefix = build_current_message_timestamp_prefix(_prev_dt, current_content)
             if _cur_prefix:
                 current_content = _prepend_text_to_content(current_content, _cur_prefix)

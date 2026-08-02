@@ -1944,6 +1944,7 @@ async def _memory_palace_spread_activation(selected, rows, character_id: str = "
 
 
 async def _memory_palace_strengthen_coactivated(node_ids, character_id: str = "default"):
+    """共激活强化：检查已有关联，有则加强已有的那条（任意类型），没有才新建时间关联。"""
     node_ids = list(dict.fromkeys(node_ids))[:5]
     if len(node_ids) < 2:
         return
@@ -1952,12 +1953,23 @@ async def _memory_palace_strengthen_coactivated(node_ids, character_id: str = "d
         for i in range(len(node_ids)):
             for j in range(i + 1, len(node_ids)):
                 source_id, target_id = node_ids[i], node_ids[j]
-                await conn.execute("""
-                    INSERT INTO memory_palace_links (id, character_id, source_id, target_id, link_type, strength, created_at, updated_at)
-                    VALUES ($1, $2, $3, $4, 'temporal', $5, NOW(), NOW())
-                    ON CONFLICT (source_id, target_id, link_type) DO UPDATE
-                    SET strength = LEAST(1.0, memory_palace_links.strength + $5), updated_at = NOW()
-                """, f"ml_{int(datetime.now(timezone.utc).timestamp() * 1000)}_{uuid.uuid4().hex[:6]}", character_id, source_id, target_id, _MEMORY_PALACE_CO_ACTIVATION_INCREMENT)
+                existing = await conn.fetchrow("""
+                    SELECT id, link_type, strength FROM memory_palace_links
+                    WHERE character_id = $1
+                      AND ((source_id = $2 AND target_id = $3) OR (source_id = $3 AND target_id = $2))
+                    LIMIT 1
+                """, character_id, source_id, target_id)
+                if existing:
+                    await conn.execute("""
+                        UPDATE memory_palace_links
+                        SET strength = LEAST(1.0, strength + $2), updated_at = NOW()
+                        WHERE id = $3
+                    """, _MEMORY_PALACE_CO_ACTIVATION_INCREMENT, existing['id'])
+                else:
+                    await conn.execute("""
+                        INSERT INTO memory_palace_links (id, character_id, source_id, target_id, link_type, strength, created_at, updated_at)
+                        VALUES ($1, $2, $3, $4, 'temporal', $5, NOW(), NOW())
+                    """, f"ml_{int(datetime.now(timezone.utc).timestamp() * 1000)}_{uuid.uuid4().hex[:6]}", character_id, source_id, target_id, _MEMORY_PALACE_CO_ACTIVATION_INCREMENT)
 
 
 

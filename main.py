@@ -958,55 +958,86 @@ def _memory_palace_bm25_tokenize(text: str) -> list:
     return tokens
 
 
-def _memory_palace_bm25_scores(query: str, rows: list) -> dict:
+def _memory_palace_build_bm25_index(rows: list) -> dict:
+    """把一批记忆节点切词、数词频，做成可反复使用的索引。
+
+    这一步跟「查什么」完全无关，只跟记忆本身有关，所以一批 rows 只需要
+    做一次。以前每一路搜索都从头切一遍：255 条记忆里，切词占单路耗时的
+    七成半，4 路搜索就白切 3 遍。
+
+    顺带把 df（每个词出现在几篇文档里）也先数出来。原来每个查询词都要
+    扫一遍全部文档去数，现在直接查表。
+    """
+    doc_tf = []
+    doc_len = []
+    ids = []
+    df = {}
+    for row in rows or []:
+        content = row.get("content") or ""
+        tags = row.get("tags") or ""
+        toks = _memory_palace_bm25_tokenize((content + " " + tags).lower())
+        tf = {}
+        for t in toks:
+            tf[t] = tf.get(t, 0) + 1
+        for t in tf:
+            df[t] = df.get(t, 0) + 1
+        doc_tf.append(tf)
+        doc_len.append(len(toks))
+        ids.append(row.get("id"))
+    doc_count = len(doc_tf)
+    return {
+        "ids": ids,
+        "doc_tf": doc_tf,
+        "doc_len": doc_len,
+        "df": df,
+        "doc_count": doc_count,
+        "avg_dl": (sum(doc_len) / doc_count) if doc_count else 0.0,
+    }
+
+
+def _memory_palace_bm25_scores(query: str, rows: list, index: dict = None) -> dict:
     """对候选记忆节点计算 BM25 分数，返回 {memory_id: score} 字典。
     分数归一化到 0-1 范围（除以最大分）。
+
+    index 是 _memory_palace_build_bm25_index 的产物。多路搜索共用同一批
+    rows 时传进来，避免重复切词。没传就现场建一个，行为和以前一致。
     """
     if not rows or not query:
         return {}
     query_tokens = _memory_palace_bm25_tokenize(query)
     if not query_tokens:
         return {}
-    # 预处理：为每个文档建立 token 频率表
-    doc_tokens = []
-    doc_tf = []
-    doc_len = []
-    for row in rows:
-        content = row.get("content") or ""
-        tags = row.get("tags") or ""
-        text = (content + " " + tags).lower()
-        toks = _memory_palace_bm25_tokenize(text)
-        tf = {}
-        for t in toks:
-            tf[t] = tf.get(t, 0) + 1
-        doc_tokens.append(toks)
-        doc_tf.append(tf)
-        doc_len.append(len(toks))
-    doc_count = len(rows)
-    avg_dl = sum(doc_len) / doc_count if doc_count > 0 else 0.0
+    # 索引和 rows 必须是同一批数据，长度对不上就宁可重建，不能错位打分
+    if not index or index.get("doc_count") != len(rows):
+        index = _memory_palace_build_bm25_index(rows)
+    doc_tf = index["doc_tf"]
+    doc_len = index["doc_len"]
+    ids = index["ids"]
+    df_map = index["df"]
+    doc_count = index["doc_count"]
+    avg_dl = index["avg_dl"]
     if avg_dl == 0:
         return {}
-    # 计算 IDF
     unique_qtokens = list(set(query_tokens))
     idf = {}
     for qt in unique_qtokens:
-        df = sum(1 for tf in doc_tf if qt in tf)
+        df = df_map.get(qt, 0)
         idf[qt] = _math.log((doc_count - df + 0.5) / (df + 0.5) + 1)
-    # 计算每个文档的 BM25 分数
     scores = {}
-    for i, row in enumerate(rows):
+    for i in range(doc_count):
         dl = doc_len[i]
         if dl == 0:
             continue
         score = 0.0
+        tf_map = doc_tf[i]
         for qt in unique_qtokens:
-            tf = doc_tf[i].get(qt, 0)
+            tf = tf_map.get(qt, 0)
             if tf == 0:
                 continue
             tf_norm = (tf * (_BM25_K1 + 1)) / (tf + _BM25_K1 * (1 - _BM25_B + _BM25_B * dl / avg_dl))
             score += idf[qt] * tf_norm
         if score > 0:
-            scores[row.get("id")] = score
+            scores[ids[i]] = score
     # 归一化到 0-1
     max_score = max(scores.values()) if scores else 0.0
     if max_score > 0:

@@ -7412,6 +7412,8 @@ def build_user_impression_generation_prompt(materials: dict) -> str:
     material_text = materials.get("material_text_full")
     if not material_text:
         raise RuntimeError("用户画像完整材料 material_text_full 缺失")
+    # 必须和材料里实际的段落名一致，否则 prompt 指向一个不存在的段落。
+    memory_section_label = _user_impression_memory_section_label(mode)
 
     tag_pool = """
 【标签池】从以下标签中挑选有材料证据支持的标签。没有证据就不挑，宁缺毋滥。
@@ -7459,7 +7461,7 @@ D组·生活与关注
 这份画像不是客观心理报告，而是你基于长期相处形成的私人理解。
 
 【核心指令：数据层级与权重分配】
-1. 【角色人设】、【记忆宫殿长期材料】、【近日印象】是最重要的分析基础，包含你的人设、长期记忆、近日印象和关系脉络。你对TA的核心判断必须主要基于这些跨越完整时间线的宏观数据。
+1. 【角色人设】、【{memory_section_label}】、【近日印象】是最重要的分析基础，包含你的人设、长期记忆、近日印象和关系脉络。你对TA的核心判断必须主要基于这些跨越完整时间线的宏观数据。
 2. 【近期聊天】只代表TA当下的状态切片，主要用于更新 current_state 和近期变化，不要因为几句临时闲聊就改写TA的本质。
 3. 早期记忆和近期记忆都要参考，但你要判断哪些内容仍然稳定成立，哪些已经过时或只是阶段性状态。
 4. 除非发生重大事件（价值观冲突、人生转折、关系状态重大改变），否则不要因为最近几次聊天的情绪波动就改变对TA本质的判断。

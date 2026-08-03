@@ -8839,6 +8839,7 @@ async def api_memory_palace_debug_retrieve(request: Request):
         character_id=character_id,
         recent_messages=recent_messages,
         touch_access=False,
+        explain=True,
     )
     markdown = await format_memory_palace_for_prompt(
         limit=limit,
@@ -8849,7 +8850,7 @@ async def api_memory_palace_debug_retrieve(request: Request):
         touch_access=False,
     )
     nodes = []
-    for row in rows:
+    for idx, row in enumerate(rows):
         item = dict(row)
         for key in ("date", "created_at", "last_accessed_at", "pinned_until"):
             if item.get(key):
@@ -8858,6 +8859,15 @@ async def api_memory_palace_debug_retrieve(request: Request):
                 except Exception:
                     item[key] = str(item[key])
         item.pop("embedding_json", None)
+        item.pop("_event_box", None)
+        item.pop("_event_box_nodes", None)
+        # 来源标注：便利贴 / 扩散激活 / 哪一路查询命中 / 日期命中
+        if idx < int(pinned_count or 0):
+            item["source"] = "pinned"
+        elif item.get("activation"):
+            item["source"] = "activation"
+        else:
+            item["source"] = item.get("_hit_path") or "search"
         nodes.append(item)
     return {
         "status": "ok",
@@ -8868,6 +8878,16 @@ async def api_memory_palace_debug_retrieve(request: Request):
         "count": len(nodes),
         "nodes": nodes,
         "markdown": markdown,
+        "scoring": {
+            "vector_weight": _MEMORY_PALACE_VECTOR_WEIGHT,
+            "bm25_weight": _MEMORY_PALACE_BM25_WEIGHT,
+            "vector_min_sim": _MEMORY_PALACE_VECTOR_MIN_SIM,
+            "candidate_pool": _MEMORY_PALACE_CANDIDATE_POOL,
+            "activation_decay": _MEMORY_PALACE_ACTIVATION_DECAY,
+            "recency_decay": _MEMORY_PALACE_RECENCY_DECAY,
+            "room_weights": _MEMORY_PALACE_ROOM_WEIGHTS,
+            "link_type_weights": _MEMORY_PALACE_PERSONALITY_WEIGHTS,
+        },
     }
 
 

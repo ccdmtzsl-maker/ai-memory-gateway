@@ -2247,7 +2247,7 @@ def format_memory_palace_event_box_item(row: dict) -> str:
         lines.append(f"  （另有 {omitted} 条同盒片段未展示）")
     return "\n".join(lines)
 
-async def retrieve_memory_palace_rows_for_prompt(query: str = "", limit: int = 5, room: str = None, character_id: str = "default", recent_messages=None, touch_access: bool = True):
+async def retrieve_memory_palace_rows_for_prompt(query: str = "", limit: int = 5, room: str = None, character_id: str = "default", recent_messages=None, touch_access: bool = True, explain: bool = False):
     limit = max(1, min(int(limit or 5), 30))
     await clear_expired_memory_palace_pins(character_id)
     rows = await _memory_palace_fetch_rows(room=room, character_id=character_id)
@@ -2280,24 +2280,37 @@ async def retrieve_memory_palace_rows_for_prompt(query: str = "", limit: int = 5
         except Exception as e:
             print(f"ℹ️ pgvector 批量检索失败，逐路回退: {str(e)[:120]}")
             batch_scores = [None] * len(batch_texts)
+    pool_limit = _MEMORY_PALACE_CANDIDATE_POOL
     if spikes:
         for pos, spike in enumerate(spikes):
-            results = await search_memory_palace_for_prompt(spike["text"], limit=30, room=room, character_id=character_id, rows=rows, bm25_index=bm25_index, query_embedding=batch_embeds[pos] or None, vector_scores=batch_scores[pos])
+            results = await search_memory_palace_for_prompt(spike["text"], limit=pool_limit, room=room, character_id=character_id, rows=rows, bm25_index=bm25_index, query_embedding=batch_embeds[pos] or None, vector_scores=batch_scores[pos], explain=explain)
             for item in results:
-                old = merged.get(item["id"])
-                if old is None or item["score"] > old["score"]:
+                if explain:
+                    item = dict(item)
+                    item["_hit_path"] = spike.get("label") or f"spike{pos}"
+                    item["_hit_query"] = spike["text"]
+                prev = merged.get(item["id"])
+                if prev is None or item["score"] > prev["score"]:
                     merged[item["id"]] = item
         if context_query:
-            ctx_results = await search_memory_palace_for_prompt(context_query, limit=30, room=room, character_id=character_id, rows=rows, bm25_index=bm25_index, query_embedding=batch_embeds[len(spikes)] or None, vector_scores=batch_scores[len(spikes)])
+            ctx_results = await search_memory_palace_for_prompt(context_query, limit=pool_limit, room=room, character_id=character_id, rows=rows, bm25_index=bm25_index, query_embedding=batch_embeds[len(spikes)] or None, vector_scores=batch_scores[len(spikes)], explain=explain)
             for item in ctx_results:
                 item = dict(item)
                 item["score"] *= 0.5
-                old = merged.get(item["id"])
-                if old is None or item["score"] > old["score"]:
+                if explain:
+                    item["_hit_path"] = "context"
+                    item["_hit_query"] = context_query
+                    item["_context_discount"] = 0.5
+                prev = merged.get(item["id"])
+                if prev is None or item["score"] > prev["score"]:
                     merged[item["id"]] = item
     else:
         fallback = fallback_query or query
-        for item in await search_memory_palace_for_prompt(fallback, limit=30, room=room, character_id=character_id, rows=rows, bm25_index=bm25_index, query_embedding=batch_embeds[0] or None, vector_scores=batch_scores[0]):
+        for item in await search_memory_palace_for_prompt(fallback, limit=pool_limit, room=room, character_id=character_id, rows=rows, bm25_index=bm25_index, query_embedding=batch_embeds[0] or None, vector_scores=batch_scores[0], explain=explain):
+            if explain:
+                item = dict(item)
+                item["_hit_path"] = "fallback"
+                item["_hit_query"] = fallback
             merged[item["id"]] = item
     date_query = "\n".join([query or "", context_query or "", fallback_query or ""] + [s["text"] for s in spikes])
     date_ranges = _memory_palace_resolve_fuzzy_date_references(date_query)
@@ -2312,14 +2325,19 @@ async def retrieve_memory_palace_rows_for_prompt(query: str = "", limit: int = 5
                     existing = merged.get(item["id"])
                     if existing:
                         existing["score"] = max(existing["score"], existing["score"] + 0.3)
+                        if explain:
+                            existing["_date_boost"] = 0.3
                     else:
                         item["score"] = 0.8
                         item["similarity_score"] = 0.0
+                        if explain:
+                            item["_hit_path"] = "date"
+                            item["_date_only"] = True
                         merged[item["id"]] = item
                     break
     selected = sorted(merged.values(), key=lambda x: x["score"], reverse=True)[:limit]
     try:
-        selected = await _memory_palace_spread_activation(selected, rows, character_id=character_id, max_expand=3)
+        selected = await _memory_palace_spread_activation(selected, rows, character_id=character_id, max_expand=3, explain=explain)
     except Exception as e:
         print(f"⚠️ Memory Palace spread activation failed: {e}")
     now = datetime.now(timezone.utc)
@@ -2329,6 +2347,8 @@ async def retrieve_memory_palace_rows_for_prompt(query: str = "", limit: int = 5
         if pu and pu > now:
             item = dict(row)
             item["score"] = 999.0
+            if explain:
+                item["_hit_path"] = "pinned"
             pinned.append(item)
     pinned.sort(key=lambda x: x["pinned_until"] or now)
     pinned_ids = {x["id"] for x in pinned}

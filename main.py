@@ -7279,6 +7279,17 @@ def _format_impression_recent_messages(items: list, user_nickname: str, characte
     return "\n".join(msg_lines).rstrip()
 
 
+def _user_impression_memory_section_label(mode: str) -> str:
+    """画像材料里记忆区的标题。
+
+    initial 是全量重建，材料确实横跨完整时间线，叫「长期材料」没问题。
+    update 只取上次消费之后的新增记忆，是增量，叫「新材料」才对得上——
+    生成 prompt 里引用这个标题的地方也必须跟着变，否则模型会去找一个
+    材料里并不存在的段落名。
+    """
+    return "记忆宫殿新材料" if (mode or "") == "update" else "记忆宫殿长期材料"
+
+
 async def build_user_impression_materials_preview(character_id: str = "default", mode: str = "initial", session_id: str = None) -> dict:
     """用户画像阶段 2：材料预览。只收集材料，不调用 LLM，不保存画像。"""
     character_id = character_id or "default"
@@ -7296,15 +7307,18 @@ async def build_user_impression_materials_preview(character_id: str = "default",
     sections = []
     sections.append(f"【角色人设】\n{system_prompt if system_prompt else '（空）'}")
     sections.append(f"【用户昵称】\n{user_nickname}")
+    # update 模式只收 last_consumed_node_id 之后的新增记忆，叫「长期材料」会让模型
+    # 误以为这是跨越完整时间线的全量回顾，从而对增量内容给出过重的权重。
+    memory_section_label = _user_impression_memory_section_label(mode)
     if memory_material["items"]:
         lines = []
         for i, item in enumerate(memory_material["items"], 1):
             date = item.get("date") or ""
             tags = f" tags={item.get('tags')}" if item.get("tags") else ""
             lines.append(f"{i}. [{item.get('room_label')}] importance={item.get('importance')} {date}{tags}: {item.get('content')}")
-        sections.append("【记忆宫殿长期材料】\n" + "\n".join(lines))
+        sections.append(f"【{memory_section_label}】\n" + "\n".join(lines))
     else:
-        sections.append("【记忆宫殿长期材料】\n（暂无）")
+        sections.append(f"【{memory_section_label}】\n（暂无）")
     if daily_impressions_text:
         sections.append(daily_impressions_text)
 

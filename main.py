@@ -2265,6 +2265,11 @@ def format_memory_palace_event_box_item(row: dict) -> str:
         lines.append(f"  （另有 {omitted} 条同盒片段未展示）")
     return "\n".join(lines)
 
+# 召回调试用的临时暂存：explain 模式下把本轮全语料向量分留下来给接口读。
+# 只在调试接口的同一次请求内使用，不参与正常聊天链路。
+_memory_palace_last_explain_corpus = {}
+
+
 async def retrieve_memory_palace_rows_for_prompt(query: str = "", limit: int = 5, room: str = None, character_id: str = "default", recent_messages=None, touch_access: bool = True, explain: bool = False):
     limit = max(1, min(int(limit or 5), 30))
     await clear_expired_memory_palace_pins(character_id)
@@ -2372,6 +2377,16 @@ async def retrieve_memory_palace_rows_for_prompt(query: str = "", limit: int = 5
     pinned_ids = {x["id"] for x in pinned}
     selected = [x for x in selected if x.get("id") not in pinned_ids]
     final_rows = pinned + selected
+    if explain:
+        # 全语料向量分（各路取最高）。调试面板要用它算分布和百分位：只看返回的
+        # 那几条会严重低估极差——它们本来就是分数最高的一撮。
+        corpus_vec = {}
+        for sc in (batch_scores or []):
+            for mid, val in (sc or {}).items():
+                v = float(val)
+                if v > corpus_vec.get(mid, -1.0):
+                    corpus_vec[mid] = v
+        _memory_palace_last_explain_corpus["vector_scores"] = corpus_vec
     if touch_access and final_rows:
         try:
             pool = await get_pool()
@@ -8923,6 +8938,7 @@ async def api_memory_palace_debug_retrieve(request: Request):
         recent_messages=recent_messages,
         touch_access=False,
     )
+    corpus_vec = _memory_palace_last_explain_corpus.pop("vector_scores", {}) or {}
     nodes = []
     for idx, row in enumerate(rows):
         item = dict(row)
@@ -8942,6 +8958,9 @@ async def api_memory_palace_debug_retrieve(request: Request):
             item["source"] = "activation"
         else:
             item["source"] = item.get("_hit_path") or "search"
+        ex = item.get("score_explain")
+        if ex and corpus_vec:
+            ex["vector_percentile"] = _memory_palace_vector_percentile(corpus_vec, ex.get("vector"))
         nodes.append(item)
     return {
         "status": "ok",
@@ -8953,7 +8972,7 @@ async def api_memory_palace_debug_retrieve(request: Request):
         "activation_count": sum(1 for n in nodes if n.get("source") == "activation"),
         "nodes": nodes,
         "markdown": markdown,
-        "vector_distribution": _memory_palace_debug_vector_distribution(nodes),
+        "vector_distribution": _memory_palace_vector_score_distribution(corpus_vec),
         "scoring": {
             "vector_weight": _MEMORY_PALACE_VECTOR_WEIGHT,
             "bm25_weight": _MEMORY_PALACE_BM25_WEIGHT,

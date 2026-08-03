@@ -7002,7 +7002,10 @@ def _user_impression_select_stage_mmr(stage_items: list, quota: int) -> list:
 
 
 async def _collect_user_impression_memory_material(character_id: str = "default", mode: str = "initial", last_consumed_node_id: str = None) -> dict:
-    """收集用户画像生成用的记忆宫殿长期材料。只读，不修改任何记忆。
+    """收集用户画像生成用的记忆宫殿材料。只读，不修改任何记忆。
+
+    initial 收全量（长期材料），update 只收上次消费之后的新增（新材料），
+    所以这里不写死"长期"；对外的段落标题由 _user_impression_memory_section_label 决定。
 
     候选策略：
 - initial 模式：每个画像房间独立处理，按 date/created_at 建完整时间轴，阶段均衡分配名额。

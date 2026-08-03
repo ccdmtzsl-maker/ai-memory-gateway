@@ -1412,11 +1412,13 @@ def _memory_palace_score_rows(rows, query: str, query_embedding=None, discount: 
         room_id = row["room"] or "living_room"
         weights = dict(_MEMORY_PALACE_ROOM_WEIGHTS.get(room_id, _MEMORY_PALACE_ROOM_WEIGHTS["living_room"]))
         recency = _memory_palace_recency_score(row["last_accessed_at"] or row["created_at"])
+        recency_redistributed = False
         if recency < 0.1 and weights["recency"] > 0:
             shift = weights["recency"] / 2
             weights["similarity"] += shift
             weights["importance"] += shift
             weights["recency"] = 0.0
+            recency_redistributed = True
         importance = max(0.0, min(1.0, _memory_palace_effective_importance(row) / 10.0))
         familiarity = _memory_palace_familiarity_bonus(row["access_count"])
         final_score = (
@@ -1448,7 +1450,7 @@ def _memory_palace_score_rows(rows, query: str, query_embedding=None, discount: 
                     "importance": round(weights["importance"] * importance, 4),
                     "familiarity": round(familiarity, 4),
                 },
-                "recency_redistributed": bool(recency < 0.1 and (row.get("_recency_shifted") or True) and weights["recency"] == 0.0),
+                "recency_redistributed": recency_redistributed,
                 "discount": round(discount, 4),
                 "final": round(final_score, 4),
             }

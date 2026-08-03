@@ -1154,8 +1154,11 @@ function mpDebugScoreBreakdownHtml(node) {
         mpDebugMetricRow('熟悉度', null, null, p.familiarity, '#9333ea',
             Number(p.familiarity) >= 0.049 ? '访问次数加成已封顶' : '')
     ].join('');
+    const pctText = ex.vector_percentile == null ? '' :
+        '　（向量分击败了全库 ' + ex.vector_percentile + '% 的记忆）';
     const simDetail = '<div style="margin-top:6px;padding:8px 10px;background:#f8fafc;border-radius:8px;font-size:12px;color:var(--text-muted);font-family:ui-monospace,monospace;">' +
         '相似度 = 向量 ' + Number(ex.vector).toFixed(3) + ' × 0.85 + 关键词 ' + Number(ex.bm25).toFixed(3) + ' × 0.15' +
+        (pctText ? '<br>' + mpEsc(pctText) : '') +
     '</div>';
     const extras = [];
     if (node._context_discount) extras.push('上下文路折扣 ×' + node._context_discount);
@@ -1215,16 +1218,31 @@ function mpDebugNodeCardHtml(node, idx, data) {
 
 function mpDebugVectorDistHtml(dist) {
     if (!dist || !dist.count) return '';
-    const spread = Number(dist.spread || 0);
-    // 相关和不相关差不到 0.1 时，向量分基本没有区分力，绝对阈值也就没意义。
-    const narrow = spread < 0.1;
-    const color = narrow ? '#b45309' : '#059669';
-    return '<div style="margin-bottom:8px;padding:10px;border:1px solid ' + (narrow ? '#fed7aa' : '#bbf7d0') + ';border-radius:8px;background:' + (narrow ? '#fffbeb' : '#f0fdf4') + ';font-size:12px;">' +
-        '<div style="font-weight:700;color:' + color + ';margin-bottom:4px;">本轮向量分分布（' + dist.count + ' 条）</div>' +
-        '<div style="color:var(--text-muted);font-family:ui-monospace,monospace;">' +
-            '最低 ' + dist.min + ' · 中位 ' + dist.median + ' · 最高 ' + dist.max + ' · 极差 ' + dist.spread +
+    const topGap = Number(dist.top_gap || 0);
+    // 判断向量分有没有区分力：看最高分比中位数高多少。差不到 0.05 说明模型
+    // 对这批数据基本一视同仁，绝对阈值就没有意义。
+    const weak = topGap < 0.05;
+    const color = weak ? '#b45309' : '#059669';
+    const bars = (dist.buckets || []).map(b => {
+        const maxCount = Math.max.apply(null, (dist.buckets || []).map(x => x.count)) || 1;
+        const h = Math.max(2, Math.round((b.count / maxCount) * 44));
+        return '<div title="' + b.from + ' ~ ' + b.to + '：' + b.count + ' 条" style="flex:1;display:flex;flex-direction:column;justify-content:flex-end;align-items:center;gap:2px;">' +
+            '<div style="width:100%;height:' + h + 'px;background:' + color + '99;border-radius:2px 2px 0 0;"></div>' +
+            '<div style="font-size:9px;color:var(--text-muted);">' + b.count + '</div>' +
+        '</div>';
+    }).join('');
+    return '<div style="margin-bottom:8px;padding:10px;border:1px solid ' + (weak ? '#fed7aa' : '#bbf7d0') + ';border-radius:8px;background:' + (weak ? '#fffbeb' : '#f0fdf4') + ';font-size:12px;">' +
+        '<div style="font-weight:700;color:' + color + ';margin-bottom:6px;">全部候选向量分分布（' + dist.count + ' 条）</div>' +
+        '<div style="color:var(--text-muted);font-family:ui-monospace,monospace;line-height:1.7;">' +
+            '最低 ' + dist.min + ' · 中位 ' + dist.p50 + ' · p90 ' + dist.p90 + ' · p99 ' + dist.p99 + ' · 最高 ' + dist.max + '<br>' +
+            '全域极差 ' + dist.spread + ' · 最高分超出中位 <b style="color:' + color + ';">' + dist.top_gap + '</b>' +
         '</div>' +
-        (narrow ? '<div style="margin-top:4px;color:#b45309;">极差不到 0.1：相关和不相关几乎分不开，向量分在这批数据上区分力很弱。</div>' : '') +
+        (bars ? '<div style="display:flex;gap:2px;align-items:flex-end;margin-top:8px;height:58px;">' + bars + '</div>' +
+            '<div style="display:flex;justify-content:space-between;font-size:10px;color:var(--text-muted);">' +
+            '<span>' + dist.min + '</span><span>' + dist.max + '</span></div>' : '') +
+        (weak
+            ? '<div style="margin-top:6px;color:#b45309;">最高分只比中位高 ' + dist.top_gap + '：向量分在这批数据上区分力很弱，绝对阈值挡不住不相关的记忆。</div>'
+            : '<div style="margin-top:6px;color:#047857;">最高分明显高于中位，向量分有区分力。</div>') +
     '</div>';
 }
 

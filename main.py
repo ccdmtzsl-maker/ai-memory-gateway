@@ -898,36 +898,16 @@ _MEMORY_PALACE_FAMILIARITY_WEIGHT = 0.05
 _MEMORY_PALACE_VECTOR_WEIGHT = 0.85
 _MEMORY_PALACE_BM25_WEIGHT = 0.15
 _MEMORY_PALACE_ACTIVATION_DECAY = 0.3
-
-# 向量分校准：把本轮的原始余弦相似度按本轮分布拉伸到 [0, 1]。
+# 向量相似度闸门：低于这个值的记忆不进候选池。
 #
-# 为什么必须校准：embedding 模型给中文的余弦相似度有个很高的基线。实测这个库
-# 266 条记忆对同一个查询，原始分落在 0.3343 ~ 0.5685 之间，中位 0.4347。也就是
-# 说「毫不相关」和「完全命中」只差 0.23，进到公式里乘上 0.60 权重后只能造成
-# 0.12 的分差；而重要性和新近度各自能造成 0.30 的分差。相关性结构性地打不过
-# 身份和时间——不是权重配小了，是权重乘在一个几乎不动的数上。
-#
-# 校准后：中位及以下 → 0，本轮最高 → 1，中间线性插值。相似度这一项终于能用满
-# 它的 0.60 权重，和重要性、新近度公平竞争。
-#
-# 顺带解决了绝对阈值不可移植的问题：闸门值现在表达的是「本轮相对位置」，换
-# embedding 模型不用重调。
-_MEMORY_PALACE_VECTOR_CALIBRATE = True
-# 样本少于这个数就不校准：几条记忆算不出有意义的分布，强行拉伸只会放大噪声。
-_MEMORY_PALACE_VECTOR_CALIBRATE_MIN_N = 8
-# 最高分超出中位不足这个值 → 本轮谁都不突出，判定为「分不开」，向量分全部归零，
-# 把判断权交给 BM25。宁可承认检索不出来，也不要把「最不相关的那条」拉伸成 1.0。
-_MEMORY_PALACE_VECTOR_FLAT_GAP = 0.02
-# 差距达到这个值才给满置信度。介于 FLAT_GAP 和它之间时按比例缩放校准结果，
-# 避免分布略微有形状就当成强信号。
-_MEMORY_PALACE_VECTOR_REF_GAP = 0.10
-# 向量相似度闸门：作用在**校准后**的分数上（0 = 本轮中位，1 = 本轮最高）。
-#
-# 校准之前这里是绝对余弦值，跨模型完全不可移植：这个 embedding 模型给中文的
-# 基线是 0.43 左右，设 0.3 一条都挡不住。现在阈值表达的是「本轮相对位置」，
-# 0.0 意味着只要排在中位以上就放进候选池，换模型不用重调。
-#
-# 想收紧就往上调，比如 0.3 表示「至少要达到本轮最高分和中位数之间 30% 的位置」。
+# 没有闸门时全部记忆都是候选，只靠最终分排序竞争。而最终分里 recency 取的是
+# last_accessed_at（召回一次就刷新成满分）、importance 有房间地板托底（study/
+# bedroom 永远保留原始值的 90%），于是一条高重要性旧记忆哪怕语义完全不相关，
+# 也能凭 imp + recency 反超真正相关的新记忆；而且它一旦进来就刷新 recency，
+# 下一轮更容易再进来，形成自我强化的「常驻」。闸门是唯一能切断这个循环的地方——
+# 语义不相关就直接出局，不参与后面的分数竞争。
+# 暂时关掉：这个 embedding 模型对中文的余弦相似度基线本来就在 0.45-0.55，
+# 绝对阈值 0.3 一条都挡不住（不相关的记忆照样 0.50+），先设 0.0 观察真实分布。
 _MEMORY_PALACE_VECTOR_MIN_SIM = 0.0
 # 每条搜索路的候选池上限。闸门筛掉不相关的之后，向量路和 BM25 路各取前 N 条。
 _MEMORY_PALACE_CANDIDATE_POOL = 30
@@ -1356,51 +1336,6 @@ async def _memory_palace_fetch_rows(room: str = None, character_id: str = "defau
         """, character_id, include_archived)
 
 
-def _memory_palace_calibrate_vector_scores(raw_by_id: dict):
-    """把一轮里的原始向量分按本轮分布拉伸到 [0, 1]。
-
-    以中位数为零点、本轮最高分为满分。中位数而不是最低分做零点，是因为高基线
-    模型下「比一半记忆更相关」才勉强算沾边，低于中位的当 0 处理不会丢信息——
-    它们本来也排不进前几条，而且还能从 BM25 那一路进候选池。
-
-    返回 (校准后的字典, 诊断信息)。诊断信息会带到召回调试面板上。
-    """
-    vals = sorted(float(v) for v in (raw_by_id or {}).values())
-    n = len(vals)
-    if not n:
-        return {}, {"applied": False, "reason": "empty"}
-    if not _MEMORY_PALACE_VECTOR_CALIBRATE:
-        return dict(raw_by_id), {"applied": False, "reason": "disabled"}
-    if n < _MEMORY_PALACE_VECTOR_CALIBRATE_MIN_N:
-        return dict(raw_by_id), {"applied": False, "reason": "too_few", "count": n}
-
-    mid = n // 2
-    median = vals[mid] if n % 2 else (vals[mid - 1] + vals[mid]) / 2
-    top = vals[-1]
-    gap = top - median
-    info = {
-        "applied": True,
-        "count": n,
-        "median": round(median, 4),
-        "max": round(top, 4),
-        "gap": round(gap, 4),
-    }
-    if gap < _MEMORY_PALACE_VECTOR_FLAT_GAP:
-        # 本轮没有任何记忆真正突出。全部归零，让 BM25 决定，而不是硬选一个冠军。
-        info["flat"] = True
-        info["confidence"] = 0.0
-        return {k: 0.0 for k in raw_by_id}, info
-
-    confidence = min(1.0, gap / _MEMORY_PALACE_VECTOR_REF_GAP)
-    info["flat"] = False
-    info["confidence"] = round(confidence, 4)
-    out = {}
-    for k, v in raw_by_id.items():
-        pos = (float(v) - median) / gap
-        out[k] = max(0.0, min(1.0, pos)) * confidence
-    return out, info
-
-
 def _memory_palace_score_rows(rows, query: str, query_embedding=None, discount: float = 1.0,
                               vector_scores=None, bm25_index=None, explain: bool = False,
                               apply_gate: bool = True):
@@ -1419,23 +1354,6 @@ def _memory_palace_score_rows(rows, query: str, query_embedding=None, discount: 
     vector_scores = vector_scores or {}
     bm25_scores = _memory_palace_bm25_scores(query, rows, index=bm25_index) if query else {}
 
-    # 原始向量分先补齐（数据库没算到的走 Python 回退），再整体校准。
-    # 必须先补齐再校准：分布是拿全部候选算的，缺一批就算歪了。
-    raw_vector = {}
-    calib_info = {"applied": False, "reason": "no_embedding"}
-    calibrated = {}
-    if query_embedding:
-        for row in rows:
-            vs = vector_scores.get(row["id"])
-            if vs is None and row["embedding_json"]:
-                try:
-                    vs = _memory_palace_cosine(query_embedding, json.loads(row["embedding_json"]))
-                except Exception:
-                    vs = None
-            if vs is not None:
-                raw_vector[row["id"]] = float(vs)
-        calibrated, calib_info = _memory_palace_calibrate_vector_scores(raw_vector)
-
     # 候选池闸门：两条路各自筛一遍，取并集。
     #
     # 向量路：相似度 >= 闸门值，按相似度取前 N。
@@ -1450,12 +1368,16 @@ def _memory_palace_score_rows(rows, query: str, query_embedding=None, discount: 
     if apply_gate and query:
         gate_ids = set()
         if query_embedding:
-            # 闸门走校准分：>= 阈值且严格大于 0。校准后 0 分意味着「本轮排在中位
-            # 以下」或「本轮分布太平」，这两种都不该靠向量路进候选池。
-            vec_pairs = [
-                (mid, sc) for mid, sc in calibrated.items()
-                if sc > 0 and sc >= _MEMORY_PALACE_VECTOR_MIN_SIM
-            ]
+            vec_pairs = []
+            for row in rows:
+                vs = vector_scores.get(row["id"])
+                if vs is None and row["embedding_json"]:
+                    try:
+                        vs = _memory_palace_cosine(query_embedding, json.loads(row["embedding_json"]))
+                    except Exception:
+                        vs = None
+                if vs is not None and float(vs) >= _MEMORY_PALACE_VECTOR_MIN_SIM:
+                    vec_pairs.append((row["id"], float(vs)))
             vec_pairs.sort(key=lambda x: x[1], reverse=True)
             gate_ids.update(i for i, _v in vec_pairs[:_MEMORY_PALACE_CANDIDATE_POOL])
         bm_pairs = sorted(
@@ -1472,8 +1394,16 @@ def _memory_palace_score_rows(rows, query: str, query_embedding=None, discount: 
             continue
         content = row["content"] or ""
         tags = row["tags"] or ""
-        vector_raw = raw_vector.get(row["id"], 0.0)
-        vector_score = calibrated.get(row["id"], 0.0) if query_embedding else 0.0
+        vector_score = 0.0
+        if query_embedding:
+            db_score = vector_scores.get(row["id"])
+            if db_score is not None:
+                vector_score = float(db_score)
+            elif row["embedding_json"]:
+                try:
+                    vector_score = _memory_palace_cosine(query_embedding, json.loads(row["embedding_json"]))
+                except Exception:
+                    vector_score = 0.0
         keyword_score = bm25_scores.get(row["id"], 0.0)
         if query_embedding:
             similarity = _MEMORY_PALACE_VECTOR_WEIGHT * vector_score + _MEMORY_PALACE_BM25_WEIGHT * keyword_score
@@ -1506,8 +1436,6 @@ def _memory_palace_score_rows(rows, query: str, query_embedding=None, discount: 
             # 分数拆解，只给召回调试用。不带这个开关时不算，免得每轮检索白攒字典。
             item["score_explain"] = {
                 "vector": round(vector_score, 4),
-                "vector_raw": round(vector_raw, 4),
-                "vector_calibrated": bool(calib_info.get("applied")),
                 "bm25": round(keyword_score, 4),
                 "similarity": round(similarity, 4),
                 "recency": round(recency, 4),
@@ -2459,7 +2387,6 @@ async def retrieve_memory_palace_rows_for_prompt(query: str = "", limit: int = 5
                 if v > corpus_vec.get(mid, -1.0):
                     corpus_vec[mid] = v
         _memory_palace_last_explain_corpus["vector_scores"] = corpus_vec
-        _memory_palace_last_explain_corpus["calibration"] = _memory_palace_calibrate_vector_scores(corpus_vec)[1]
     if touch_access and final_rows:
         try:
             pool = await get_pool()
@@ -9012,7 +8939,6 @@ async def api_memory_palace_debug_retrieve(request: Request):
         touch_access=False,
     )
     corpus_vec = _memory_palace_last_explain_corpus.pop("vector_scores", {}) or {}
-    calib_summary = _memory_palace_last_explain_corpus.pop("calibration", None)
     nodes = []
     for idx, row in enumerate(rows):
         item = dict(row)
@@ -9034,10 +8960,7 @@ async def api_memory_palace_debug_retrieve(request: Request):
             item["source"] = item.get("_hit_path") or "search"
         ex = item.get("score_explain")
         if ex and corpus_vec:
-            # 百分位必须用原始分：corpus_vec 是原始余弦分布，拿校准分去比口径不一致。
-            ex["vector_percentile"] = _memory_palace_vector_percentile(
-                corpus_vec, ex.get("vector_raw", ex.get("vector"))
-            )
+            ex["vector_percentile"] = _memory_palace_vector_percentile(corpus_vec, ex.get("vector"))
         nodes.append(item)
     return {
         "status": "ok",
@@ -9050,7 +8973,6 @@ async def api_memory_palace_debug_retrieve(request: Request):
         "nodes": nodes,
         "markdown": markdown,
         "vector_distribution": _memory_palace_vector_score_distribution(corpus_vec),
-        "vector_calibration": calib_summary,
         "scoring": {
             "vector_weight": _MEMORY_PALACE_VECTOR_WEIGHT,
             "bm25_weight": _MEMORY_PALACE_BM25_WEIGHT,

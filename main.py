@@ -906,7 +906,9 @@ _MEMORY_PALACE_ACTIVATION_DECAY = 0.3
 # 也能凭 imp + recency 反超真正相关的新记忆；而且它一旦进来就刷新 recency，
 # 下一轮更容易再进来，形成自我强化的「常驻」。闸门是唯一能切断这个循环的地方——
 # 语义不相关就直接出局，不参与后面的分数竞争。
-_MEMORY_PALACE_VECTOR_MIN_SIM = 0.3
+# 暂时关掉：这个 embedding 模型对中文的余弦相似度基线本来就在 0.45-0.55，
+# 绝对阈值 0.3 一条都挡不住（不相关的记忆照样 0.50+），先设 0.0 观察真实分布。
+_MEMORY_PALACE_VECTOR_MIN_SIM = 0.0
 # 每条搜索路的候选池上限。闸门筛掉不相关的之后，向量路和 BM25 路各取前 N 条。
 _MEMORY_PALACE_CANDIDATE_POOL = 30
 _MEMORY_PALACE_EMOTIONAL_LINK_DIST = 0.35
@@ -8820,6 +8822,35 @@ async def api_memory_palace_get_node(node_id: str):
     return {"node": node}
 
 
+def _memory_palace_debug_vector_distribution(nodes: list) -> dict:
+    """本轮召回里向量分的分布。
+
+    看「相关」和「不相关」到底差多少：如果最高分和中位数只差 0.05，说明这个
+    embedding 模型对中文的区分度被压在一个很窄的带里，绝对阈值就没有意义。
+    """
+    vals = []
+    for n in nodes or []:
+        ex = n.get("score_explain") or {}
+        v = ex.get("vector")
+        if v is not None:
+            try:
+                vals.append(float(v))
+            except Exception:
+                continue
+    if not vals:
+        return {"count": 0}
+    vals.sort()
+    mid = len(vals) // 2
+    median = vals[mid] if len(vals) % 2 else (vals[mid - 1] + vals[mid]) / 2
+    return {
+        "count": len(vals),
+        "min": round(vals[0], 4),
+        "median": round(median, 4),
+        "max": round(vals[-1], 4),
+        "spread": round(vals[-1] - vals[0], 4),
+    }
+
+
 @app.post("/api/memory-palace/debug-retrieve")
 async def api_memory_palace_debug_retrieve(request: Request):
     if not MEMORY_ENABLED:
@@ -8886,6 +8917,7 @@ async def api_memory_palace_debug_retrieve(request: Request):
         "activation_count": sum(1 for n in nodes if n.get("source") == "activation"),
         "nodes": nodes,
         "markdown": markdown,
+        "vector_distribution": _memory_palace_debug_vector_distribution(nodes),
         "scoring": {
             "vector_weight": _MEMORY_PALACE_VECTOR_WEIGHT,
             "bm25_weight": _MEMORY_PALACE_BM25_WEIGHT,

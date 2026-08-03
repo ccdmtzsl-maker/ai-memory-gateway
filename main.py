@@ -1025,24 +1025,36 @@ def _memory_palace_bm25_scores(query: str, rows: list, index: dict = None) -> di
             df_cache[qt] = df
         idf[qt] = _math.log((doc_count - df + 0.5) / (df + 0.5) + 1)
     scores = {}
+    coverage = {}
+    qt_total = len(unique_qtokens)
     for i in range(doc_count):
         dl = doc_len[i]
         if dl == 0:
             continue
         score = 0.0
+        matched = 0
         tf_map = doc_tf[i]
         for qt in unique_qtokens:
             tf = tf_map.get(qt, 0)
             if tf == 0:
                 continue
+            matched += 1
             tf_norm = (tf * (_BM25_K1 + 1)) / (tf + _BM25_K1 * (1 - _BM25_B + _BM25_B * dl / avg_dl))
             score += idf[qt] * tf_norm
         if score > 0:
             scores[ids[i]] = score
-    # 归一化到 0-1
+            coverage[ids[i]] = (matched / qt_total) if qt_total else 0.0
+    # 归一化到 0-1，再乘查询词覆盖率。
+    #
+    # 只除以本轮最高分是相对分：只要有任何一条记忆匹配上任何一个词，最高的那条
+    # 就必然拿满分 1.0——哪怕它命中的只是「今天」这种废词。BM25 权重 0.15，等于
+    # 白送 0.15，足够让一条毫不相关的高重要性旧记忆反超真正相关的新记忆。
+    #
+    # 覆盖率 = 命中的查询词数 / 查询词总数。5 个词里只中 1 个，上限就是 0.2。
+    # 这样「相对排序」由 BM25 负责，「匹配到底有多充分」由覆盖率兜住。
     max_score = max(scores.values()) if scores else 0.0
     if max_score > 0:
-        scores = {k: v / max_score for k, v in scores.items()}
+        scores = {k: (v / max_score) * coverage.get(k, 0.0) for k, v in scores.items()}
     return scores
 
 

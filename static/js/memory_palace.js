@@ -1213,6 +1213,21 @@ function mpDebugNodeCardHtml(node, idx, data) {
     '</div>';
 }
 
+function mpDebugVectorDistHtml(dist) {
+    if (!dist || !dist.count) return '';
+    const spread = Number(dist.spread || 0);
+    // 相关和不相关差不到 0.1 时，向量分基本没有区分力，绝对阈值也就没意义。
+    const narrow = spread < 0.1;
+    const color = narrow ? '#b45309' : '#059669';
+    return '<div style="margin-bottom:8px;padding:10px;border:1px solid ' + (narrow ? '#fed7aa' : '#bbf7d0') + ';border-radius:8px;background:' + (narrow ? '#fffbeb' : '#f0fdf4') + ';font-size:12px;">' +
+        '<div style="font-weight:700;color:' + color + ';margin-bottom:4px;">本轮向量分分布（' + dist.count + ' 条）</div>' +
+        '<div style="color:var(--text-muted);font-family:ui-monospace,monospace;">' +
+            '最低 ' + dist.min + ' · 中位 ' + dist.median + ' · 最高 ' + dist.max + ' · 极差 ' + dist.spread +
+        '</div>' +
+        (narrow ? '<div style="margin-top:4px;color:#b45309;">极差不到 0.1：相关和不相关几乎分不开，向量分在这批数据上区分力很弱。</div>' : '') +
+    '</div>';
+}
+
 function mpDebugSummaryHtml(data) {
     const s = data.scoring || {};
     const total = Number(data.count || 0);
@@ -1227,10 +1242,11 @@ function mpDebugSummaryHtml(data) {
             (act ? chip('扩散激活 ' + act, '#7c3aed') : '') +
             (pinned ? chip('便利贴 ' + pinned, '#b45309') : '') +
         '</div>' +
+        mpDebugVectorDistHtml(data.vector_distribution) +
         '<details><summary style="cursor:pointer;font-size:12px;color:var(--primary-color);">当前打分参数</summary>' +
         '<div style="margin-top:6px;padding:10px;background:#f8fafc;border-radius:8px;font-size:12px;color:var(--text-muted);font-family:ui-monospace,monospace;line-height:1.8;">' +
             '向量权重 ' + s.vector_weight + ' / 关键词权重 ' + s.bm25_weight + '<br>' +
-            '相似度闸门 ' + s.vector_min_sim + '（低于此值不进候选池）<br>' +
+            '相似度闸门 ' + (Number(s.vector_min_sim) > 0 ? s.vector_min_sim + '（低于此值不进候选池）' : '已关闭') + '<br>' +
             '候选池上限 ' + s.candidate_pool + ' 条/路<br>' +
             '扩散衰减 ' + s.activation_decay + ' / 新近度每小时 ×' + s.recency_decay +
         '</div></details>' +

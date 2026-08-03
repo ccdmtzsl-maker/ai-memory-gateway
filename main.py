@@ -898,6 +898,17 @@ _MEMORY_PALACE_FAMILIARITY_WEIGHT = 0.05
 _MEMORY_PALACE_VECTOR_WEIGHT = 0.85
 _MEMORY_PALACE_BM25_WEIGHT = 0.15
 _MEMORY_PALACE_ACTIVATION_DECAY = 0.3
+# 向量相似度闸门：低于这个值的记忆不进候选池。
+#
+# 没有闸门时全部记忆都是候选，只靠最终分排序竞争。而最终分里 recency 取的是
+# last_accessed_at（召回一次就刷新成满分）、importance 有房间地板托底（study/
+# bedroom 永远保留原始值的 90%），于是一条高重要性旧记忆哪怕语义完全不相关，
+# 也能凭 imp + recency 反超真正相关的新记忆；而且它一旦进来就刷新 recency，
+# 下一轮更容易再进来，形成自我强化的「常驻」。闸门是唯一能切断这个循环的地方——
+# 语义不相关就直接出局，不参与后面的分数竞争。
+_MEMORY_PALACE_VECTOR_MIN_SIM = 0.3
+# 每条搜索路的候选池上限。闸门筛掉不相关的之后，向量路和 BM25 路各取前 N 条。
+_MEMORY_PALACE_CANDIDATE_POOL = 30
 _MEMORY_PALACE_EMOTIONAL_LINK_DIST = 0.35
 _MEMORY_PALACE_EMOTIONAL_MIN_MAGNITUDE = 0.2
 _MEMORY_PALACE_CO_ACTIVATION_INCREMENT = 0.05
@@ -1324,7 +1335,8 @@ async def _memory_palace_fetch_rows(room: str = None, character_id: str = "defau
 
 
 def _memory_palace_score_rows(rows, query: str, query_embedding=None, discount: float = 1.0,
-                              vector_scores=None, bm25_index=None):
+                              vector_scores=None, bm25_index=None, explain: bool = False,
+                              apply_gate: bool = True):
     """给候选记忆打分排序。
 
     vector_scores 是数据库算好的 {memory_id: 余弦相似度}。有它就直接查表，
@@ -1339,7 +1351,45 @@ def _memory_palace_score_rows(rows, query: str, query_embedding=None, discount: 
     query = (query or "").strip()
     vector_scores = vector_scores or {}
     bm25_scores = _memory_palace_bm25_scores(query, rows, index=bm25_index) if query else {}
+
+    # 候选池闸门：两条路各自筛一遍，取并集。
+    #
+    # 向量路：相似度 >= 闸门值，按相似度取前 N。
+    # BM25 路：有关键词命中的，按 BM25 分取前 N。
+    #
+    # 两路取并集而不是交集：专有名词（人名、作品名）向量常常抓不住，但 BM25
+    # 能精确命中；反过来同义改写（过年/春节）BM25 抓不住而向量能抓住。任一路
+    # 认可就放进来，都不认可才出局。
+    #
+    # 无 query（纯浏览）或显式关闭时不设闸门：这时没有「相关」可言，全量参与排序。
+    gate_ids = None
+    if apply_gate and query:
+        gate_ids = set()
+        if query_embedding:
+            vec_pairs = []
+            for row in rows:
+                vs = vector_scores.get(row["id"])
+                if vs is None and row["embedding_json"]:
+                    try:
+                        vs = _memory_palace_cosine(query_embedding, json.loads(row["embedding_json"]))
+                    except Exception:
+                        vs = None
+                if vs is not None and float(vs) >= _MEMORY_PALACE_VECTOR_MIN_SIM:
+                    vec_pairs.append((row["id"], float(vs)))
+            vec_pairs.sort(key=lambda x: x[1], reverse=True)
+            gate_ids.update(i for i, _v in vec_pairs[:_MEMORY_PALACE_CANDIDATE_POOL])
+        bm_pairs = sorted(
+            ((k, v) for k, v in bm25_scores.items() if v > 0),
+            key=lambda x: x[1], reverse=True,
+        )
+        gate_ids.update(i for i, _v in bm_pairs[:_MEMORY_PALACE_CANDIDATE_POOL])
+        # 两路都空：这一路检索确实没有相关记忆，返回空比返回一堆不相关的更好。
+        if not gate_ids:
+            return []
+
     for row in rows:
+        if gate_ids is not None and row["id"] not in gate_ids:
+            continue
         content = row["content"] or ""
         tags = row["tags"] or ""
         vector_score = 0.0

@@ -921,16 +921,13 @@ _MEMORY_PALACE_VECTOR_FLAT_GAP = 0.02
 # 差距达到这个值才给满置信度。介于 FLAT_GAP 和它之间时按比例缩放校准结果，
 # 避免分布略微有形状就当成强信号。
 _MEMORY_PALACE_VECTOR_REF_GAP = 0.10
-# 向量相似度闸门：低于这个值的记忆不进候选池。
+# 向量相似度闸门：作用在**校准后**的分数上（0 = 本轮中位，1 = 本轮最高）。
 #
-# 没有闸门时全部记忆都是候选，只靠最终分排序竞争。而最终分里 recency 取的是
-# last_accessed_at（召回一次就刷新成满分）、importance 有房间地板托底（study/
-# bedroom 永远保留原始值的 90%），于是一条高重要性旧记忆哪怕语义完全不相关，
-# 也能凭 imp + recency 反超真正相关的新记忆；而且它一旦进来就刷新 recency，
-# 下一轮更容易再进来，形成自我强化的「常驻」。闸门是唯一能切断这个循环的地方——
-# 语义不相关就直接出局，不参与后面的分数竞争。
-# 暂时关掉：这个 embedding 模型对中文的余弦相似度基线本来就在 0.45-0.55，
-# 绝对阈值 0.3 一条都挡不住（不相关的记忆照样 0.50+），先设 0.0 观察真实分布。
+# 校准之前这里是绝对余弦值，跨模型完全不可移植：这个 embedding 模型给中文的
+# 基线是 0.43 左右，设 0.3 一条都挡不住。现在阈值表达的是「本轮相对位置」，
+# 0.0 意味着只要排在中位以上就放进候选池，换模型不用重调。
+#
+# 想收紧就往上调，比如 0.3 表示「至少要达到本轮最高分和中位数之间 30% 的位置」。
 _MEMORY_PALACE_VECTOR_MIN_SIM = 0.0
 # 每条搜索路的候选池上限。闸门筛掉不相关的之后，向量路和 BM25 路各取前 N 条。
 _MEMORY_PALACE_CANDIDATE_POOL = 30
@@ -2462,6 +2459,7 @@ async def retrieve_memory_palace_rows_for_prompt(query: str = "", limit: int = 5
                 if v > corpus_vec.get(mid, -1.0):
                     corpus_vec[mid] = v
         _memory_palace_last_explain_corpus["vector_scores"] = corpus_vec
+        _memory_palace_last_explain_corpus["calibration"] = _memory_palace_calibrate_vector_scores(corpus_vec)[1]
     if touch_access and final_rows:
         try:
             pool = await get_pool()
@@ -9014,6 +9012,7 @@ async def api_memory_palace_debug_retrieve(request: Request):
         touch_access=False,
     )
     corpus_vec = _memory_palace_last_explain_corpus.pop("vector_scores", {}) or {}
+    calib_summary = _memory_palace_last_explain_corpus.pop("calibration", None)
     nodes = []
     for idx, row in enumerate(rows):
         item = dict(row)
@@ -9035,7 +9034,10 @@ async def api_memory_palace_debug_retrieve(request: Request):
             item["source"] = item.get("_hit_path") or "search"
         ex = item.get("score_explain")
         if ex and corpus_vec:
-            ex["vector_percentile"] = _memory_palace_vector_percentile(corpus_vec, ex.get("vector"))
+            # 百分位必须用原始分：corpus_vec 是原始余弦分布，拿校准分去比口径不一致。
+            ex["vector_percentile"] = _memory_palace_vector_percentile(
+                corpus_vec, ex.get("vector_raw", ex.get("vector"))
+            )
         nodes.append(item)
     return {
         "status": "ok",
@@ -9048,6 +9050,7 @@ async def api_memory_palace_debug_retrieve(request: Request):
         "nodes": nodes,
         "markdown": markdown,
         "vector_distribution": _memory_palace_vector_score_distribution(corpus_vec),
+        "vector_calibration": calib_summary,
         "scoring": {
             "vector_weight": _MEMORY_PALACE_VECTOR_WEIGHT,
             "bm25_weight": _MEMORY_PALACE_BM25_WEIGHT,

@@ -898,6 +898,29 @@ _MEMORY_PALACE_FAMILIARITY_WEIGHT = 0.05
 _MEMORY_PALACE_VECTOR_WEIGHT = 0.85
 _MEMORY_PALACE_BM25_WEIGHT = 0.15
 _MEMORY_PALACE_ACTIVATION_DECAY = 0.3
+
+# 向量分校准：把本轮的原始余弦相似度按本轮分布拉伸到 [0, 1]。
+#
+# 为什么必须校准：embedding 模型给中文的余弦相似度有个很高的基线。实测这个库
+# 266 条记忆对同一个查询，原始分落在 0.3343 ~ 0.5685 之间，中位 0.4347。也就是
+# 说「毫不相关」和「完全命中」只差 0.23，进到公式里乘上 0.60 权重后只能造成
+# 0.12 的分差；而重要性和新近度各自能造成 0.30 的分差。相关性结构性地打不过
+# 身份和时间——不是权重配小了，是权重乘在一个几乎不动的数上。
+#
+# 校准后：中位及以下 → 0，本轮最高 → 1，中间线性插值。相似度这一项终于能用满
+# 它的 0.60 权重，和重要性、新近度公平竞争。
+#
+# 顺带解决了绝对阈值不可移植的问题：闸门值现在表达的是「本轮相对位置」，换
+# embedding 模型不用重调。
+_MEMORY_PALACE_VECTOR_CALIBRATE = True
+# 样本少于这个数就不校准：几条记忆算不出有意义的分布，强行拉伸只会放大噪声。
+_MEMORY_PALACE_VECTOR_CALIBRATE_MIN_N = 8
+# 最高分超出中位不足这个值 → 本轮谁都不突出，判定为「分不开」，向量分全部归零，
+# 把判断权交给 BM25。宁可承认检索不出来，也不要把「最不相关的那条」拉伸成 1.0。
+_MEMORY_PALACE_VECTOR_FLAT_GAP = 0.02
+# 差距达到这个值才给满置信度。介于 FLAT_GAP 和它之间时按比例缩放校准结果，
+# 避免分布略微有形状就当成强信号。
+_MEMORY_PALACE_VECTOR_REF_GAP = 0.10
 # 向量相似度闸门：低于这个值的记忆不进候选池。
 #
 # 没有闸门时全部记忆都是候选，只靠最终分排序竞争。而最终分里 recency 取的是
@@ -1334,6 +1357,51 @@ async def _memory_palace_fetch_rows(room: str = None, character_id: str = "defau
             LEFT JOIN memory_palace_vectors v ON v.memory_id = n.id
             WHERE n.character_id = $1 AND ($2::boolean OR n.archived = FALSE)
         """, character_id, include_archived)
+
+
+def _memory_palace_calibrate_vector_scores(raw_by_id: dict):
+    """把一轮里的原始向量分按本轮分布拉伸到 [0, 1]。
+
+    以中位数为零点、本轮最高分为满分。中位数而不是最低分做零点，是因为高基线
+    模型下「比一半记忆更相关」才勉强算沾边，低于中位的当 0 处理不会丢信息——
+    它们本来也排不进前几条，而且还能从 BM25 那一路进候选池。
+
+    返回 (校准后的字典, 诊断信息)。诊断信息会带到召回调试面板上。
+    """
+    vals = sorted(float(v) for v in (raw_by_id or {}).values())
+    n = len(vals)
+    if not n:
+        return {}, {"applied": False, "reason": "empty"}
+    if not _MEMORY_PALACE_VECTOR_CALIBRATE:
+        return dict(raw_by_id), {"applied": False, "reason": "disabled"}
+    if n < _MEMORY_PALACE_VECTOR_CALIBRATE_MIN_N:
+        return dict(raw_by_id), {"applied": False, "reason": "too_few", "count": n}
+
+    mid = n // 2
+    median = vals[mid] if n % 2 else (vals[mid - 1] + vals[mid]) / 2
+    top = vals[-1]
+    gap = top - median
+    info = {
+        "applied": True,
+        "count": n,
+        "median": round(median, 4),
+        "max": round(top, 4),
+        "gap": round(gap, 4),
+    }
+    if gap < _MEMORY_PALACE_VECTOR_FLAT_GAP:
+        # 本轮没有任何记忆真正突出。全部归零，让 BM25 决定，而不是硬选一个冠军。
+        info["flat"] = True
+        info["confidence"] = 0.0
+        return {k: 0.0 for k in raw_by_id}, info
+
+    confidence = min(1.0, gap / _MEMORY_PALACE_VECTOR_REF_GAP)
+    info["flat"] = False
+    info["confidence"] = round(confidence, 4)
+    out = {}
+    for k, v in raw_by_id.items():
+        pos = (float(v) - median) / gap
+        out[k] = max(0.0, min(1.0, pos)) * confidence
+    return out, info
 
 
 def _memory_palace_score_rows(rows, query: str, query_embedding=None, discount: float = 1.0,

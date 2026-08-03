@@ -1418,21 +1418,46 @@ def _memory_palace_score_rows(rows, query: str, query_embedding=None, discount: 
             weights["importance"] += shift
             weights["recency"] = 0.0
         importance = max(0.0, min(1.0, _memory_palace_effective_importance(row) / 10.0))
+        familiarity = _memory_palace_familiarity_bonus(row["access_count"])
         final_score = (
             weights["similarity"] * similarity +
             weights["recency"] * recency +
             weights["importance"] * importance +
-            _memory_palace_familiarity_bonus(row["access_count"])
+            familiarity
         ) * discount
         item = dict(row)
         item["score"] = final_score
         item["similarity_score"] = similarity
+        if explain:
+            # 分数拆解，只给召回调试用。不带这个开关时不算，免得每轮检索白攒字典。
+            item["score_explain"] = {
+                "vector": round(vector_score, 4),
+                "bm25": round(keyword_score, 4),
+                "similarity": round(similarity, 4),
+                "recency": round(recency, 4),
+                "importance": round(importance, 4),
+                "familiarity_bonus": round(familiarity, 4),
+                "weights": {
+                    "similarity": round(weights["similarity"], 4),
+                    "recency": round(weights["recency"], 4),
+                    "importance": round(weights["importance"], 4),
+                },
+                "parts": {
+                    "similarity": round(weights["similarity"] * similarity, 4),
+                    "recency": round(weights["recency"] * recency, 4),
+                    "importance": round(weights["importance"] * importance, 4),
+                    "familiarity": round(familiarity, 4),
+                },
+                "recency_redistributed": bool(recency < 0.1 and (row.get("_recency_shifted") or True) and weights["recency"] == 0.0),
+                "discount": round(discount, 4),
+                "final": round(final_score, 4),
+            }
         scored.append(item)
     scored.sort(key=lambda x: x["score"], reverse=True)
     return scored
 
 
-async def search_memory_palace_for_prompt(query: str = "", limit: int = 5, room: str = None, character_id: str = "default", rows=None, bm25_index=None, query_embedding=None, vector_scores=None):
+async def search_memory_palace_for_prompt(query: str = "", limit: int = 5, room: str = None, character_id: str = "default", rows=None, bm25_index=None, query_embedding=None, vector_scores=None, explain: bool = False):
     """单路检索。
 
     query_embedding 已经算好时直接用，不再自己发请求：一轮检索有好几路，
@@ -1465,7 +1490,7 @@ async def search_memory_palace_for_prompt(query: str = "", limit: int = 5, room:
 
     return _memory_palace_score_rows(
         rows, query=query, query_embedding=query_embedding,
-        vector_scores=vector_scores, bm25_index=bm25_index,
+        vector_scores=vector_scores, bm25_index=bm25_index, explain=explain,
     )[:limit]
 
 

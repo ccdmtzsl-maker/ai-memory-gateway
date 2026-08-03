@@ -1115,7 +1115,7 @@ async function debugRetrieveMemoryPalace() {
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({
                 query,
-                limit: Number(limitEl?.value || 5),
+                limit: (limitEl?.value || '').trim() ? Number(limitEl.value) : null,
                 room: roomEl?.value || '',
                 messages: [{role: 'user', content: query}]
             })
@@ -1123,23 +1123,9 @@ async function debugRetrieveMemoryPalace() {
         const data = await resp.json();
         if (data.error) throw new Error(data.error);
         const nodes = data.nodes || [];
-        const cards = nodes.map((node, idx) => {
-            const room = mpRoomMeta(node.room);
-            const score = node.score == null ? '' : Number(node.score).toFixed(3);
-            const flags = [];
-            if (idx < Number(data.pinned_count || 0)) flags.push('📌便利贴');
-            if (node.activation) flags.push('联想扩展');
-            return '<div style="border:1px solid var(--border-color);border-radius:10px;padding:10px;margin-top:8px;background:#fff;">' +
-                '<div style="display:flex;justify-content:space-between;gap:8px;font-size:12px;color:var(--text-muted);">' +
-                    '<span>#' + (idx + 1) + ' · ' + mpEsc(room.label || node.room) + ' · score ' + mpEsc(score) + (flags.length ? ' · ' + mpEsc(flags.join(' · ')) : '') + '</span>' +
-                    '<span>' + mpEsc(node.date || '') + '</span>' +
-                '</div>' +
-                '<div style="margin-top:6px;white-space:pre-wrap;line-height:1.55;">' + mpEsc(node.content || '') + '</div>' +
-                '<div style="margin-top:6px;font-size:12px;color:var(--text-muted);">importance ' + mpEsc(node.importance || 5) + ' · ' + mpEsc(node.mood || 'neutral') + '</div>' +
-            '</div>';
-        }).join('');
+        const cards = nodes.map((node, idx) => mpDebugNodeCardHtml(node, idx, data)).join('');
         if (resultEl) {
-            resultEl.innerHTML = '<div style="font-weight:700;margin-bottom:8px;">命中 ' + Number(data.count || 0) + ' 条（便利贴 ' + Number(data.pinned_count || 0) + ' 条）</div>' +
+            resultEl.innerHTML = mpDebugSummaryHtml(data) +
                 '<details style="margin-bottom:10px;"><summary style="cursor:pointer;color:var(--primary-color);">查看注入 Markdown</summary>' +
                 '<pre style="white-space:pre-wrap;background:#f8fafc;border:1px solid var(--border-color);border-radius:10px;padding:10px;margin-top:8px;max-height:260px;overflow:auto;">' + mpEsc(data.markdown || '') + '</pre></details>' +
                 (cards || '<div style="color:var(--text-muted);">没有命中记忆。</div>');

@@ -2034,7 +2034,7 @@ async def run_memory_palace_consolidation(character_id: str = "default") -> dict
     return {"promoted": len(promoted), "evicted": len(evicted), "promoted_ids": promoted, "evicted_ids": evicted}
 
 
-async def _memory_palace_spread_activation(selected, rows, character_id: str = "default", max_expand: int = 3):
+async def _memory_palace_spread_activation(selected, rows, character_id: str = "default", max_expand: int = 3, explain: bool = False):
     if not selected:
         return selected
     seed_ids = {item["id"] for item in selected}
@@ -2048,6 +2048,7 @@ async def _memory_palace_spread_activation(selected, rows, character_id: str = "
         """, character_id, list(seed_ids))
     seed_score = {item["id"]: float(item.get("score") or 0.0) for item in selected}
     activated = {}
+    activation_detail = {}
     for link in links:
         source_id = link["source_id"]
         target_id = link["target_id"]
@@ -2062,15 +2063,30 @@ async def _memory_palace_spread_activation(selected, rows, character_id: str = "
         if neighbor_id in seed_ids or neighbor_id not in row_map:
             continue
         type_weight = _MEMORY_PALACE_PERSONALITY_WEIGHTS.get(link["link_type"], 0.2)
-        score = seed_score.get(base_id, 0.0) * float(link["strength"] or 0.0) * type_weight * _MEMORY_PALACE_ACTIVATION_DECAY
+        strength = float(link["strength"] or 0.0)
+        base_score = seed_score.get(base_id, 0.0)
+        score = base_score * strength * type_weight * _MEMORY_PALACE_ACTIVATION_DECAY
         if score > activated.get(neighbor_id, 0.0):
             activated[neighbor_id] = score
+            if explain:
+                activation_detail[neighbor_id] = {
+                    "from_id": base_id,
+                    "link_type": link["link_type"],
+                    "link_strength": round(strength, 4),
+                    "type_weight": type_weight,
+                    "decay": _MEMORY_PALACE_ACTIVATION_DECAY,
+                    "seed_score": round(base_score, 4),
+                    "activation_score": round(score, 4),
+                }
     expanded = []
     for node_id, score in sorted(activated.items(), key=lambda x: x[1], reverse=True)[:max_expand]:
         item = dict(row_map[node_id])
         item["score"] = score
         item["similarity_score"] = 0.0
         item["activation"] = True
+        if explain:
+            item["_hit_path"] = "activation"
+            item["activation_explain"] = activation_detail.get(node_id)
         expanded.append(item)
     return selected + expanded
 

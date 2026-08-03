@@ -1095,6 +1095,148 @@ function initMemoryPalaceInteractions() {
     });
 }
 
+// ─── 召回调试：来源标注 + 打分拆解 ───────────────────────
+
+const MP_DEBUG_SOURCE_META = {
+    pinned:     {label: '📌 便利贴', color: '#b45309', desc: '置顶强制注入，不参与打分'},
+    activation: {label: '🔗 扩散激活', color: '#7c3aed', desc: '不是搜到的，是从种子记忆沿关联网络联想出来的'},
+    date:       {label: '📅 日期命中', color: '#0891b2', desc: '问句里的时间指代直接命中这条记忆的日期'},
+    context:    {label: '💬 上下文路', color: '#0d9488', desc: '由上文拼成的查询命中，分数已打五折'},
+    fallback:   {label: '🔍 兜底路', color: '#64748b', desc: '没能拆出查询片段时的整句检索'},
+    search:     {label: '🔍 检索命中', color: '#2563eb', desc: '向量或关键词检索命中'}
+};
+
+function mpDebugSourceMeta(node) {
+    const src = node.source || 'search';
+    if (MP_DEBUG_SOURCE_META[src]) return MP_DEBUG_SOURCE_META[src];
+    // spike0 / spike1 / q 这类是「用户消息拆出的第 N 路查询」
+    return {label: '🔍 查询路 ' + src, color: '#2563eb', desc: '用户消息拆出的这一路查询命中'};
+}
+
+function mpDebugBar(value, max, color) {
+    const pct = Math.max(0, Math.min(100, (Number(value) / (max || 1)) * 100));
+    return '<div style="height:6px;background:#f1f5f9;border-radius:999px;overflow:hidden;">' +
+        '<div style="height:100%;width:' + pct.toFixed(1) + '%;background:' + color + ';"></div>' +
+    '</div>';
+}
+
+function mpDebugMetricRow(label, raw, weight, contribution, color, note) {
+    const rawText = raw == null ? '—' : Number(raw).toFixed(3);
+    const wText = weight == null ? '' : ' × ' + Number(weight).toFixed(2);
+    const cText = contribution == null ? '—' : Number(contribution).toFixed(3);
+    return '<div style="display:grid;grid-template-columns:88px 1fr 130px;gap:8px;align-items:center;padding:4px 0;">' +
+        '<div style="font-size:12px;color:var(--text-muted);">' + mpEsc(label) + '</div>' +
+        '<div>' + mpDebugBar(contribution, 0.6, color) +
+            (note ? '<div style="font-size:11px;color:#b45309;margin-top:3px;">' + mpEsc(note) + '</div>' : '') +
+        '</div>' +
+        '<div style="font-size:12px;font-family:ui-monospace,monospace;text-align:right;">' +
+            mpEsc(rawText) + mpEsc(wText) + ' = <b>' + mpEsc(cText) + '</b>' +
+        '</div>' +
+    '</div>';
+}
+
+function mpDebugScoreBreakdownHtml(node) {
+    const ex = node.score_explain;
+    if (!ex) {
+        if (node.source === 'pinned') {
+            return '<div style="margin-top:8px;font-size:12px;color:var(--text-muted);">便利贴不参与打分，直接置顶注入。</div>';
+        }
+        return '';
+    }
+    const w = ex.weights || {};
+    const p = ex.parts || {};
+    const rows = [
+        mpDebugMetricRow('相似度', ex.similarity, w.similarity, p.similarity, '#2563eb',
+            ex.recency_redistributed ? '新近度已见底，它的权重转给了相似度和重要性' : ''),
+        mpDebugMetricRow('新近度', ex.recency, w.recency, p.recency, '#059669',
+            ex.recency_redistributed ? '权重已归零' : ''),
+        mpDebugMetricRow('重要性', ex.importance, w.importance, p.importance, '#d97706', ''),
+        mpDebugMetricRow('熟悉度', null, null, p.familiarity, '#9333ea',
+            Number(p.familiarity) >= 0.049 ? '访问次数加成已封顶' : '')
+    ].join('');
+    const simDetail = '<div style="margin-top:6px;padding:8px 10px;background:#f8fafc;border-radius:8px;font-size:12px;color:var(--text-muted);font-family:ui-monospace,monospace;">' +
+        '相似度 = 向量 ' + Number(ex.vector).toFixed(3) + ' × 0.85 + 关键词 ' + Number(ex.bm25).toFixed(3) + ' × 0.15' +
+    '</div>';
+    const extras = [];
+    if (node._context_discount) extras.push('上下文路折扣 ×' + node._context_discount);
+    if (node._date_boost) extras.push('日期加成 +' + node._date_boost);
+    return '<details style="margin-top:10px;">' +
+        '<summary style="cursor:pointer;font-size:12px;color:var(--primary-color);">打分拆解</summary>' +
+        '<div style="margin-top:8px;padding:10px;border:1px solid var(--border-color);border-radius:8px;background:#fff;">' +
+            rows + simDetail +
+            (extras.length ? '<div style="margin-top:8px;font-size:12px;color:#b45309;">' + mpEsc(extras.join(' · ')) + '</div>' : '') +
+        '</div>' +
+    '</details>';
+}
+
+function mpDebugActivationHtml(node) {
+    const a = node.activation_explain;
+    if (!a) return '';
+    const LINK_LABELS = {temporal: '时间关联', emotional: '情绪关联', person: '人物关联', causal: '因果关联', metaphor: '隐喻关联'};
+    return '<div style="margin-top:10px;padding:10px;border:1px solid #ddd6fe;border-radius:8px;background:#faf5ff;font-size:12px;">' +
+        '<div style="font-weight:700;color:#6d28d9;margin-bottom:6px;">联想来源</div>' +
+        '<div style="color:var(--text-muted);line-height:1.7;font-family:ui-monospace,monospace;">' +
+            '经由 ' + mpEsc(LINK_LABELS[a.link_type] || a.link_type) + '（强度 ' + Number(a.link_strength).toFixed(2) + '）<br>' +
+            '激活分 = 种子 ' + Number(a.seed_score).toFixed(3) +
+            ' × 强度 ' + Number(a.link_strength).toFixed(2) +
+            ' × 类型权重 ' + a.type_weight +
+            ' × 衰减 ' + a.decay +
+            ' = <b>' + Number(a.activation_score).toFixed(4) + '</b>' +
+        '</div>' +
+        '<div style="margin-top:6px;color:var(--text-muted);">种子记忆 ID: ' + mpEsc(a.from_id || '') + '</div>' +
+    '</div>';
+}
+
+function mpDebugNodeCardHtml(node, idx, data) {
+    const room = mpRoomMeta(node.room);
+    const meta = mpDebugSourceMeta(node);
+    const score = node.score == null ? '' : Number(node.score).toFixed(3);
+    const scoreText = node.source === 'pinned' ? '置顶' : score;
+    const accessText = node.access_count ? '访问 ' + node.access_count + ' 次' : '未访问';
+    const lastAccess = String(node.last_accessed_at || '').slice(0, 16).replace('T', ' ');
+    return '<div style="border:1px solid var(--border-color);border-left:4px solid ' + meta.color + ';border-radius:10px;padding:12px;margin-top:8px;background:#fff;">' +
+        '<div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;font-size:12px;color:var(--text-muted);">' +
+            '<span>#' + (idx + 1) + ' · ' + mpEsc(room.label || node.room) +
+                ' · <b style="color:' + meta.color + ';">' + meta.label + '</b>' +
+                ' · 最终分 <b style="font-family:ui-monospace,monospace;">' + mpEsc(scoreText) + '</b></span>' +
+            '<span>' + mpEsc(node.date || '') + '</span>' +
+        '</div>' +
+        '<div style="font-size:11px;color:var(--text-muted);margin-top:4px;">' + mpEsc(meta.desc) + '</div>' +
+        (node._hit_query ? '<div style="font-size:11px;color:var(--text-muted);margin-top:4px;">命中查询：' + mpEsc(String(node._hit_query).slice(0, 60)) + '</div>' : '') +
+        '<div style="margin-top:8px;white-space:pre-wrap;line-height:1.55;">' + mpEsc(node.content || '') + '</div>' +
+        '<div style="margin-top:8px;font-size:12px;color:var(--text-muted);">' +
+            'importance ' + mpEsc(node.importance || 5) + ' · ' + mpEsc(node.mood || 'neutral') +
+            ' · ' + mpEsc(accessText) + (lastAccess ? ' · 上次召回 ' + mpEsc(lastAccess) : '') +
+        '</div>' +
+        mpDebugActivationHtml(node) +
+        mpDebugScoreBreakdownHtml(node) +
+    '</div>';
+}
+
+function mpDebugSummaryHtml(data) {
+    const s = data.scoring || {};
+    const total = Number(data.count || 0);
+    const pinned = Number(data.pinned_count || 0);
+    const act = Number(data.activation_count || 0);
+    const searched = Math.max(0, total - pinned - act);
+    const chip = (text, color) => '<span style="display:inline-block;padding:3px 9px;border-radius:999px;background:' + color + '18;color:' + color + ';font-size:12px;font-weight:700;margin-right:6px;">' + mpEsc(text) + '</span>';
+    return '<div style="margin-bottom:10px;">' +
+        '<div style="font-weight:700;margin-bottom:8px;">实际注入 ' + total + ' 条</div>' +
+        '<div style="margin-bottom:8px;">' +
+            chip('检索命中 ' + searched, '#2563eb') +
+            (act ? chip('扩散激活 ' + act, '#7c3aed') : '') +
+            (pinned ? chip('便利贴 ' + pinned, '#b45309') : '') +
+        '</div>' +
+        '<details><summary style="cursor:pointer;font-size:12px;color:var(--primary-color);">当前打分参数</summary>' +
+        '<div style="margin-top:6px;padding:10px;background:#f8fafc;border-radius:8px;font-size:12px;color:var(--text-muted);font-family:ui-monospace,monospace;line-height:1.8;">' +
+            '向量权重 ' + s.vector_weight + ' / 关键词权重 ' + s.bm25_weight + '<br>' +
+            '相似度闸门 ' + s.vector_min_sim + '（低于此值不进候选池）<br>' +
+            '候选池上限 ' + s.candidate_pool + ' 条/路<br>' +
+            '扩散衰减 ' + s.activation_decay + ' / 新近度每小时 ×' + s.recency_decay +
+        '</div></details>' +
+    '</div>';
+}
+
 async function debugRetrieveMemoryPalace() {
     const queryEl = document.getElementById('mpDebugQuery');
     const limitEl = document.getElementById('mpDebugLimit');

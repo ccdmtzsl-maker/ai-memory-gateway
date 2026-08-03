@@ -1155,9 +1155,10 @@ function mpDebugScoreBreakdownHtml(node) {
             Number(p.familiarity) >= 0.049 ? '访问次数加成已封顶' : '')
     ].join('');
     const pctText = ex.vector_percentile == null ? '' :
-        '　（向量分击败了全库 ' + ex.vector_percentile + '% 的记忆）';
-    const simDetail = '<div style="margin-top:6px;padding:8px 10px;background:#f8fafc;border-radius:8px;font-size:12px;color:var(--text-muted);font-family:ui-monospace,monospace;">' +
+        '原始余弦 ' + Number(ex.vector_raw).toFixed(3) + '，击败全库 ' + ex.vector_percentile + '% 的记忆';
+    const simDetail = '<div style="margin-top:6px;padding:8px 10px;background:#f8fafc;border-radius:8px;font-size:12px;color:var(--text-muted);font-family:ui-monospace,monospace;line-height:1.7;">' +
         '相似度 = 向量 ' + Number(ex.vector).toFixed(3) + ' × 0.85 + 关键词 ' + Number(ex.bm25).toFixed(3) + ' × 0.15' +
+        (ex.vector_calibrated ? '<br><span style="color:#7c3aed;">向量分已按本轮分布校准（中位→0，最高→1）</span>' : '') +
         (pctText ? '<br>' + mpEsc(pctText) : '') +
     '</div>';
     const extras = [];
@@ -1216,7 +1217,7 @@ function mpDebugNodeCardHtml(node, idx, data) {
     '</div>';
 }
 
-function mpDebugVectorDistHtml(dist) {
+function mpDebugVectorDistHtml(dist, calib) {
     if (!dist || !dist.count) return '';
     const topGap = Number(dist.top_gap || 0);
     // 判断向量分有没有区分力：看最高分比中位数高多少。差不到 0.05 说明模型
@@ -1241,9 +1242,26 @@ function mpDebugVectorDistHtml(dist) {
             '<div style="display:flex;justify-content:space-between;font-size:10px;color:var(--text-muted);">' +
             '<span>' + dist.min + '</span><span>' + dist.max + '</span></div>' : '') +
         (weak
-            ? '<div style="margin-top:6px;color:#b45309;">最高分只比中位高 ' + dist.top_gap + '：向量分在这批数据上区分力很弱，绝对阈值挡不住不相关的记忆。</div>'
+            ? '<div style="margin-top:6px;color:#b45309;">最高分只比中位高 ' + dist.top_gap + '：向量分在这批数据上区分力很弱。</div>'
             : '<div style="margin-top:6px;color:#047857;">最高分明显高于中位，向量分有区分力。</div>') +
+        mpDebugCalibHtml(calib) +
     '</div>';
+}
+
+function mpDebugCalibHtml(calib) {
+    if (!calib) return '';
+    if (!calib.applied) {
+        const why = { empty: '本轮没有向量分', disabled: '校准已关闭',
+            too_few: '候选只有 ' + (calib.count || 0) + ' 条，样本太少不校准',
+            no_embedding: '本轮没有查询向量' }[calib.reason] || calib.reason;
+        return '<div style="margin-top:6px;padding:6px 8px;background:#f1f5f9;border-radius:6px;color:var(--text-muted);">未校准：' + mpEsc(String(why)) + '</div>';
+    }
+    if (calib.flat) {
+        return '<div style="margin-top:6px;padding:6px 8px;background:#fef2f2;border-radius:6px;color:#b91c1c;">' +
+            '分布过平（最高仅超中位 ' + calib.gap + '）：向量分全部归零，本轮完全由关键词决定。</div>';
+    }
+    return '<div style="margin-top:6px;padding:6px 8px;background:#f5f3ff;border-radius:6px;color:#6d28d9;">' +
+        '已校准：中位 ' + calib.median + ' → 0，最高 ' + calib.max + ' → 1，置信度 ' + calib.confidence + '</div>';
 }
 
 function mpDebugSummaryHtml(data) {
@@ -1260,7 +1278,7 @@ function mpDebugSummaryHtml(data) {
             (act ? chip('扩散激活 ' + act, '#7c3aed') : '') +
             (pinned ? chip('便利贴 ' + pinned, '#b45309') : '') +
         '</div>' +
-        mpDebugVectorDistHtml(data.vector_distribution) +
+        mpDebugVectorDistHtml(data.vector_distribution, data.vector_calibration) +
         '<details><summary style="cursor:pointer;font-size:12px;color:var(--primary-color);">当前打分参数</summary>' +
         '<div style="margin-top:6px;padding:10px;background:#f8fafc;border-radius:8px;font-size:12px;color:var(--text-muted);font-family:ui-monospace,monospace;line-height:1.8;">' +
             '向量权重 ' + s.vector_weight + ' / 关键词权重 ' + s.bm25_weight + '<br>' +

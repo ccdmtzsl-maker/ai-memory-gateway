@@ -1422,6 +1422,23 @@ def _memory_palace_score_rows(rows, query: str, query_embedding=None, discount: 
     vector_scores = vector_scores or {}
     bm25_scores = _memory_palace_bm25_scores(query, rows, index=bm25_index) if query else {}
 
+    # 原始向量分先补齐（数据库没算到的走 Python 回退），再整体校准。
+    # 必须先补齐再校准：分布是拿全部候选算的，缺一批就算歪了。
+    raw_vector = {}
+    calib_info = {"applied": False, "reason": "no_embedding"}
+    calibrated = {}
+    if query_embedding:
+        for row in rows:
+            vs = vector_scores.get(row["id"])
+            if vs is None and row["embedding_json"]:
+                try:
+                    vs = _memory_palace_cosine(query_embedding, json.loads(row["embedding_json"]))
+                except Exception:
+                    vs = None
+            if vs is not None:
+                raw_vector[row["id"]] = float(vs)
+        calibrated, calib_info = _memory_palace_calibrate_vector_scores(raw_vector)
+
     # 候选池闸门：两条路各自筛一遍，取并集。
     #
     # 向量路：相似度 >= 闸门值，按相似度取前 N。
@@ -1436,16 +1453,12 @@ def _memory_palace_score_rows(rows, query: str, query_embedding=None, discount: 
     if apply_gate and query:
         gate_ids = set()
         if query_embedding:
-            vec_pairs = []
-            for row in rows:
-                vs = vector_scores.get(row["id"])
-                if vs is None and row["embedding_json"]:
-                    try:
-                        vs = _memory_palace_cosine(query_embedding, json.loads(row["embedding_json"]))
-                    except Exception:
-                        vs = None
-                if vs is not None and float(vs) >= _MEMORY_PALACE_VECTOR_MIN_SIM:
-                    vec_pairs.append((row["id"], float(vs)))
+            # 闸门走校准分：>= 阈值且严格大于 0。校准后 0 分意味着「本轮排在中位
+            # 以下」或「本轮分布太平」，这两种都不该靠向量路进候选池。
+            vec_pairs = [
+                (mid, sc) for mid, sc in calibrated.items()
+                if sc > 0 and sc >= _MEMORY_PALACE_VECTOR_MIN_SIM
+            ]
             vec_pairs.sort(key=lambda x: x[1], reverse=True)
             gate_ids.update(i for i, _v in vec_pairs[:_MEMORY_PALACE_CANDIDATE_POOL])
         bm_pairs = sorted(
@@ -1462,16 +1475,8 @@ def _memory_palace_score_rows(rows, query: str, query_embedding=None, discount: 
             continue
         content = row["content"] or ""
         tags = row["tags"] or ""
-        vector_score = 0.0
-        if query_embedding:
-            db_score = vector_scores.get(row["id"])
-            if db_score is not None:
-                vector_score = float(db_score)
-            elif row["embedding_json"]:
-                try:
-                    vector_score = _memory_palace_cosine(query_embedding, json.loads(row["embedding_json"]))
-                except Exception:
-                    vector_score = 0.0
+        vector_raw = raw_vector.get(row["id"], 0.0)
+        vector_score = calibrated.get(row["id"], 0.0) if query_embedding else 0.0
         keyword_score = bm25_scores.get(row["id"], 0.0)
         if query_embedding:
             similarity = _MEMORY_PALACE_VECTOR_WEIGHT * vector_score + _MEMORY_PALACE_BM25_WEIGHT * keyword_score
@@ -1504,6 +1509,8 @@ def _memory_palace_score_rows(rows, query: str, query_embedding=None, discount: 
             # 分数拆解，只给召回调试用。不带这个开关时不算，免得每轮检索白攒字典。
             item["score_explain"] = {
                 "vector": round(vector_score, 4),
+                "vector_raw": round(vector_raw, 4),
+                "vector_calibrated": bool(calib_info.get("applied")),
                 "bm25": round(keyword_score, 4),
                 "similarity": round(similarity, 4),
                 "recency": round(recency, 4),

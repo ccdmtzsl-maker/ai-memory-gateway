@@ -8826,7 +8826,14 @@ async def api_memory_palace_debug_retrieve(request: Request):
         return {"error": "记忆系统未启用"}
     data = await request.json()
     query = (data.get("query") or "").strip()
-    limit = max(1, min(int(data.get("limit") or 5), 30))
+    # 不传 limit 时用运行时真实注入条数，让调试结果和实际聊天时一致。
+    raw_limit = data.get("limit")
+    if raw_limit in (None, "", 0):
+        try:
+            raw_limit = await get_runtime_memory_palace_default_limit()
+        except Exception:
+            raw_limit = 5
+    limit = max(1, min(int(raw_limit or 5), 30))
     room = data.get("room") or None
     character_id = data.get("character_id") or "default"
     recent_messages = data.get("messages")
@@ -8876,6 +8883,7 @@ async def api_memory_palace_debug_retrieve(request: Request):
         "room": room,
         "pinned_count": pinned_count,
         "count": len(nodes),
+        "activation_count": sum(1 for n in nodes if n.get("source") == "activation"),
         "nodes": nodes,
         "markdown": markdown,
         "scoring": {

@@ -8822,33 +8822,69 @@ async def api_memory_palace_get_node(node_id: str):
     return {"node": node}
 
 
-def _memory_palace_debug_vector_distribution(nodes: list) -> dict:
-    """本轮召回里向量分的分布。
+def _memory_palace_vector_score_distribution(vector_scores: dict) -> dict:
+    """全部候选记忆的向量分分布。
 
-    看「相关」和「不相关」到底差多少：如果最高分和中位数只差 0.05，说明这个
-    embedding 模型对中文的区分度被压在一个很窄的带里，绝对阈值就没有意义。
+    这里必须用全语料，不能只统计最终返回的那几条——返回的是按最终分排序
+    赢出来的，它们的向量分天然扎堆，拿它们算极差等于在问「冠军之间差多少」，
+    看不出「冠军和落选者差多少」。要判断向量分有没有区分力，得看整个分布的
+    形状：如果 p50 和 p99 差不多，才说明模型对这批数据真的分不开。
     """
-    vals = []
-    for n in nodes or []:
-        ex = n.get("score_explain") or {}
-        v = ex.get("vector")
-        if v is not None:
-            try:
-                vals.append(float(v))
-            except Exception:
-                continue
-    if not vals:
+    vals = sorted(float(v) for v in (vector_scores or {}).values())
+    n = len(vals)
+    if not n:
         return {"count": 0}
-    vals.sort()
-    mid = len(vals) // 2
-    median = vals[mid] if len(vals) % 2 else (vals[mid - 1] + vals[mid]) / 2
+
+    def pct(p):
+        if n == 1:
+            return vals[0]
+        idx = min(n - 1, max(0, int(round((p / 100.0) * (n - 1)))))
+        return vals[idx]
+
+    # 直方图：看分布是单峰扎堆还是有长尾
+    lo, hi = vals[0], vals[-1]
+    buckets = []
+    if hi > lo:
+        bin_count = 10
+        width = (hi - lo) / bin_count
+        counts = [0] * bin_count
+        for v in vals:
+            bi = min(bin_count - 1, int((v - lo) / width))
+            counts[bi] += 1
+        buckets = [
+            {"from": round(lo + i * width, 4), "to": round(lo + (i + 1) * width, 4), "count": c}
+            for i, c in enumerate(counts)
+        ]
     return {
-        "count": len(vals),
+        "count": n,
         "min": round(vals[0], 4),
-        "median": round(median, 4),
+        "p50": round(pct(50), 4),
+        "p90": round(pct(90), 4),
+        "p99": round(pct(99), 4),
         "max": round(vals[-1], 4),
         "spread": round(vals[-1] - vals[0], 4),
+        "top_gap": round(vals[-1] - pct(50), 4),
+        "buckets": buckets,
     }
+
+
+def _memory_palace_vector_percentile(vector_scores: dict, value) -> float:
+    """这个向量分在全语料里排在百分之多少。
+
+    绝对分在不同 embedding 模型下不可比（有的模型基线 0.1，有的 0.5），但
+    「击败了多少条记忆」是可比的。真正相关的记忆应该排在很靠前的百分位。
+    """
+    if value is None:
+        return None
+    vals = list((vector_scores or {}).values())
+    if not vals:
+        return None
+    try:
+        v = float(value)
+    except Exception:
+        return None
+    below = sum(1 for x in vals if float(x) < v)
+    return round(100.0 * below / len(vals), 1)
 
 
 @app.post("/api/memory-palace/debug-retrieve")

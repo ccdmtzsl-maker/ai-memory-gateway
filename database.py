@@ -248,20 +248,32 @@ async def search_memory_palace_vector_scores(
     # asyncpg 没有 vector 类型的编解码器，用文本字面量再显式转型。
     vector_literal = "[" + ",".join(repr(float(x)) for x in query_embedding) + "]"
 
+    # 精确搜索：先把所有候选的距离算进 MATERIALIZED CTE，再按 dist 排序。
+    # 不直接写 `ORDER BY v.embedding <=> query LIMIT ...`，否则 PostgreSQL 会走
+    # pgvector 的 HNSW/IVFFlat 近似索引。记忆宫殿当前量级很小，近似索引反而会在
+    # 局部更新向量后造成前排偏置；全表精确算更稳。
     sql = """
-        SELECT v.memory_id,
-               GREATEST(0.0, LEAST(1.0, 1.0 - (v.embedding <=> $1::vector))) AS similarity
-        FROM memory_palace_vectors v
-        JOIN memory_palace_nodes n ON n.id = v.memory_id
-        WHERE v.embedding IS NOT NULL
-          AND n.character_id = $2
-          AND ($3::boolean OR n.archived = FALSE)
+        WITH scored AS MATERIALIZED (
+            SELECT v.memory_id,
+                   (v.embedding <=> $1::vector) AS dist
+            FROM memory_palace_vectors v
+            JOIN memory_palace_nodes n ON n.id = v.memory_id
+            WHERE v.embedding IS NOT NULL
+              AND n.character_id = $2
+              AND ($3::boolean OR n.archived = FALSE)
     """
     params = [vector_literal, character_id, include_archived]
     if room:
         sql += " AND n.room = $4"
         params.append(room)
-    sql += f" ORDER BY v.embedding <=> $1::vector LIMIT {cap}"
+    sql += f"""
+        )
+        SELECT memory_id,
+               GREATEST(0.0, LEAST(1.0, 1.0 - dist)) AS similarity
+        FROM scored
+        ORDER BY dist
+        LIMIT {cap}
+    """
 
     pool = await get_pool()
     async with pool.acquire() as conn:
@@ -304,16 +316,17 @@ async def search_memory_palace_vector_scores_multi(
     # asyncpg 没有 vector 类型的编解码器，用文本字面量再显式转型。
     literals = ["[" + ",".join(repr(float(x)) for x in emb) + "]" for _i, emb in usable]
 
+    # 同样强制精确搜索。MATERIALIZED scored 先枚举并计算所有 query×memory
+    # 距离，外层窗口函数再排序取每路 topK，避免 pgvector 近似索引介入。
     sql = """
         WITH q AS (
             SELECT ord, lit::vector AS vec
             FROM unnest($1::text[]) WITH ORDINALITY AS t(lit, ord)
         ),
-        scored AS (
+        scored AS MATERIALIZED (
             SELECT q.ord,
                    v.memory_id,
-                   GREATEST(0.0, LEAST(1.0, 1.0 - (v.embedding <=> q.vec))) AS similarity,
-                   ROW_NUMBER() OVER (PARTITION BY q.ord ORDER BY v.embedding <=> q.vec) AS rn
+                   (v.embedding <=> q.vec) AS dist
             FROM q
             CROSS JOIN memory_palace_vectors v
             JOIN memory_palace_nodes n ON n.id = v.memory_id
@@ -325,9 +338,16 @@ async def search_memory_palace_vector_scores_multi(
     if room:
         sql += " AND n.room = $5"
     sql += """
+        ),
+        ranked AS (
+            SELECT ord,
+                   memory_id,
+                   GREATEST(0.0, LEAST(1.0, 1.0 - dist)) AS similarity,
+                   ROW_NUMBER() OVER (PARTITION BY ord ORDER BY dist) AS rn
+            FROM scored
         )
         SELECT ord, memory_id, similarity
-        FROM scored
+        FROM ranked
         WHERE rn <= $4
     """
     params.append(cap)

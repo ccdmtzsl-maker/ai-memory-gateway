@@ -895,6 +895,12 @@ _MEMORY_PALACE_IMPORTANCE_FLOOR = {
 _MEMORY_PALACE_ROOM_ORDER = ["bedroom", "living_room", "study", "user_room", "self_room", "attic", "windowsill"]
 _MEMORY_PALACE_RECENCY_DECAY = 0.999
 _MEMORY_PALACE_FAMILIARITY_WEIGHT = 0.05
+
+# 首曝加成：从未被检索过的新记忆额外加分，给它们展示机会。
+# 加成在 access_count >= 1 时立即消失（被检索过了）。
+# 衰减：刚建立 +0.05，72h 后约 +0.02，7 天后 ≈ 0。
+_MEMORY_PALACE_FIRST_EXPOSURE_BONUS = 0.05
+_MEMORY_PALACE_FIRST_EXPOSURE_DECAY = 0.987  # 每小时 ×0.987
 _MEMORY_PALACE_VECTOR_WEIGHT = 0.85
 _MEMORY_PALACE_BM25_WEIGHT = 0.15
 _MEMORY_PALACE_ACTIVATION_DECAY = 0.3
@@ -1128,6 +1134,25 @@ def _memory_palace_familiarity_bonus(access_count: int) -> float:
     try:
         familiarity = min(1.0, (max(0, int(access_count or 0) - 1) ** 0.3) / 4)
         return _MEMORY_PALACE_FAMILIARITY_WEIGHT * familiarity
+    except Exception:
+        return 0.0
+
+
+def _memory_palace_first_exposure_bonus(row) -> float:
+    """首曝加成：access_count == 0 的记忆按建立时间衰减加分。
+
+    目的：新记忆从未被召回过，在公式里对比老记忆有结构性劣势
+    （老记忆有 familiarity 加成、有 recency 因为被召回过而刷新）。
+    首曝加成让新记忆回到同一起跑线。被检索过一次后加成消失。
+    """
+    try:
+        if int(row.get("access_count") or 0) >= 1:
+            return 0.0
+        dt = _memory_palace_aware_dt(row.get("created_at"))
+        if not dt:
+            return _MEMORY_PALACE_FIRST_EXPOSURE_BONUS
+        hours = max(0.0, (datetime.now(timezone.utc) - dt).total_seconds() / 3600)
+        return _MEMORY_PALACE_FIRST_EXPOSURE_BONUS * (_MEMORY_PALACE_FIRST_EXPOSURE_DECAY ** hours)
     except Exception:
         return 0.0
 
@@ -1423,11 +1448,13 @@ def _memory_palace_score_rows(rows, query: str, query_embedding=None, discount: 
             recency_redistributed = True
         importance = max(0.0, min(1.0, _memory_palace_effective_importance(row) / 10.0))
         familiarity = _memory_palace_familiarity_bonus(row["access_count"])
+        first_exposure = _memory_palace_first_exposure_bonus(row)
         final_score = (
             weights["similarity"] * similarity +
             weights["recency"] * recency +
             weights["importance"] * importance +
-            familiarity
+            familiarity +
+            first_exposure
         ) * discount
         item = dict(row)
         item["score"] = final_score
@@ -1441,6 +1468,7 @@ def _memory_palace_score_rows(rows, query: str, query_embedding=None, discount: 
                 "recency": round(recency, 4),
                 "importance": round(importance, 4),
                 "familiarity_bonus": round(familiarity, 4),
+                "first_exposure_bonus": round(first_exposure, 4),
                 "weights": {
                     "similarity": round(weights["similarity"], 4),
                     "recency": round(weights["recency"], 4),
@@ -1451,6 +1479,7 @@ def _memory_palace_score_rows(rows, query: str, query_embedding=None, discount: 
                     "recency": round(weights["recency"] * recency, 4),
                     "importance": round(weights["importance"] * importance, 4),
                     "familiarity": round(familiarity, 4),
+                    "first_exposure": round(first_exposure, 4),
                 },
                 "recency_redistributed": recency_redistributed,
                 "discount": round(discount, 4),

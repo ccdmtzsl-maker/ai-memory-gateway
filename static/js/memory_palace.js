@@ -1152,7 +1152,11 @@ function mpDebugScoreBreakdownHtml(node) {
             ex.recency_redistributed ? '权重已归零' : ''),
         mpDebugMetricRow('重要性', ex.importance, w.importance, p.importance, '#d97706', ''),
         mpDebugMetricRow('熟悉度', null, null, p.familiarity, '#9333ea',
-            Number(p.familiarity) >= 0.049 ? '访问次数加成已封顶' : '')
+            Number(p.familiarity) >= 0.049 ? '访问次数加成已封顶' : ''),
+        (ex.first_exposure_bonus > 0
+            ? mpDebugMetricRow('首曝加成', null, null, ex.first_exposure_bonus, '#0891b2',
+                '从未被检索过的新记忆，随时间衰减')
+            : '')
     ].join('');
     const pctText = ex.vector_percentile == null ? '' :
         '　（向量分击败了全库 ' + ex.vector_percentile + '% 的记忆）';

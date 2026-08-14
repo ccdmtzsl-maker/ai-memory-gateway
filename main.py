@@ -8147,16 +8147,23 @@ def _serialize_event_box_node(row: dict) -> dict:
 
 
 @app.get("/api/memory-palace/event-boxes")
-async def api_memory_palace_event_boxes(character_id: str = "default", limit: int = 100, offset: int = 0):
+async def api_memory_palace_event_boxes(character_id: str = "default", limit: int = 100, offset: int = 0, refresh: int = 0):
     if not MEMORY_ENABLED:
         return {"error": "记忆系统未启用"}
     character_id = character_id or "default"
     limit = max(1, min(int(limit or 100), 300))
     offset = max(0, int(offset or 0))
     cache_key = f"mp:{character_id}:event_boxes:{limit}:{offset}"
-    cached = _cache_get(cache_key)
-    if cached is not None:
-        return cached
+    # refresh=1 时先清掉本角色的记忆宫殿缓存再重新查库。
+    # 事件盒列表缓存 15 分钟，删除事件盒 / 移出最后一条记忆导致空盒被删之后，
+    # 列表接口仍会命中旧缓存，左侧就会继续显示已经不存在的事件盒（点进去报
+    # 「事件盒不存在」）。「刷新事件盒」按钮走这条路径，用户能自己纠正。
+    if int(refresh or 0):
+        invalidate_memory_palace_cache(character_id)
+    else:
+        cached = _cache_get(cache_key)
+        if cached is not None:
+            return cached
     try:
         pool = await get_pool()
         async with pool.acquire() as conn:

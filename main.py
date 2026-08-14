@@ -9454,6 +9454,21 @@ def _memory_palace_strip_ref_internals(refs: list) -> list:
     return cleaned
 
 
+def _memory_palace_item_related_ref_ids(item: dict, fallback_refs: list) -> list:
+    """取这一条记忆当初看到的 O 编号表（O0 = 返回列表的第 0 项）。
+
+    预览链路里每个 item 都带着自己那一组的 related_ref_ids（有序全量）。
+    必须优先用它，不能用调用方合并出来的那份：一次预览可以同时勾选多个对话线，
+    每个对话线有各自独立的 O0..On 编号，合并去重之后靠后那组的编号会整体错位，
+    relatedTo 就会指向别的记忆。没带这个字段的（自动提取 / 文本提取）
+    模型输出和 related_refs 本来就是同一次调用里的，直接用 fallback。
+    """
+    ids = item.get("related_ref_ids") if isinstance(item, dict) else None
+    if isinstance(ids, list) and ids:
+        return [str(x).strip() for x in ids if str(x or "").strip()]
+    return [str((r or {}).get("id") or "").strip() for r in (fallback_refs or [])]
+
+
 def parse_memory_palace_event_links(raw_items: list, created_nodes: list, related_refs: list) -> tuple:
     """解析 relatedTo/sameAs/eventName/eventTags，返回 (links, hints)。
 
@@ -9496,6 +9511,8 @@ def parse_memory_palace_event_links(raw_items: list, created_nodes: list, relate
     # 第二步：解析关联。
     for own_idx, item, new_id in pairs:
         has_link = False
+        # O 编号按「这一条当初看到的那份列表」翻译，不用跨组合并后的列表。
+        ref_ids = _memory_palace_item_related_ref_ids(item, related_refs)
         rels = item.get("relatedTo")
         if isinstance(rels, str):
             rels = [rels]
@@ -9504,9 +9521,11 @@ def parse_memory_palace_event_links(raw_items: list, created_nodes: list, relate
                 m = re.match(r"^\s*O(\d+)\s*$", str(ref), flags=re.I)
                 if m:
                     idx = int(m.group(1))
-                    if 0 <= idx < len(related_refs):
-                        links.append({"newMemoryId": new_id, "existingMemoryId": related_refs[idx]["id"]})
-                        has_link = True
+                    if 0 <= idx < len(ref_ids):
+                        target_id = ref_ids[idx]
+                        if target_id and target_id != new_id:
+                            links.append({"newMemoryId": new_id, "existingMemoryId": target_id})
+                            has_link = True
         same = item.get("sameAs")
         if isinstance(same, str):
             same = [same]

@@ -680,12 +680,15 @@ function mpTagsHtml(tags, color) {
         '</div>';
 }
 
-async function loadMemoryPalaceEventBoxes() {
+async function loadMemoryPalaceEventBoxes(forceRefresh) {
     const listEl = document.getElementById('mpEventBoxList');
     if (!listEl) return;
     listEl.innerHTML = '<div style="color:var(--text-muted);padding:12px;">加载中...</div>';
     try {
-        const resp = await fetch('/api/memory-palace/event-boxes?limit=100');
+        // 列表接口有 15 分钟缓存。删除事件盒 / 移出最后一条记忆之后缓存不会自动失效，
+        // 左侧可能继续显示已经不存在的盒子。「刷新事件盒」按钮传 refresh=1 强制重查。
+        const url = '/api/memory-palace/event-boxes?limit=100' + (forceRefresh ? '&refresh=1' : '');
+        const resp = await fetch(url);
         const data = await resp.json();
         if (data.error || data.status === 'error') throw new Error(data.error || '加载失败');
         _mpEventBoxes = data.boxes || [];

@@ -9455,18 +9455,46 @@ def _memory_palace_strip_ref_internals(refs: list) -> list:
 
 
 def parse_memory_palace_event_links(raw_items: list, created_nodes: list, related_refs: list) -> tuple:
-    """解析 relatedTo/sameAs/eventName/eventTags，返回 (links, hints)。"""
+    """解析 relatedTo/sameAs/eventName/eventTags，返回 (links, hints)。
+
+    sameAs 写的是「模型本次输出里的第几条」。预览导入允许用户取消勾选，
+    剩下的条目位置会整体前移，再按位置去认这个编号，就会把事件盒关联
+    绑到别的记忆上（从被取消那条开始全部错位一格）。所以只要条目带了
+    raw_index（预览链路会带上模型原始序号），就按 raw_index 认；
+    没带的（自动/文本提取，模型输出和创建节点一一对应）仍按顺序认。
+    """
     links = []
     hints = {}
     if not raw_items or not created_nodes:
         return links, hints
-    mem_idx = 0
+
+    # 第一步：把「模型输出序号 -> 实际创建的节点」定下来。
+    # 位置仍用来找对应的节点（created_nodes 按同一顺序生成），
+    # 但 sameAs 解析只认序号，不认位置。
+    pairs = []
+    node_by_raw_index = {}
+    position = 0
     for item in raw_items:
         if not isinstance(item, dict) or not item.get("content") or not item.get("room"):
             continue
-        if mem_idx >= len(created_nodes):
+        if position >= len(created_nodes):
             break
-        new_id = created_nodes[mem_idx]["id"]
+        raw_index = item.get("raw_index")
+        if raw_index is None:
+            own_idx = position
+        else:
+            try:
+                own_idx = int(raw_index)
+            except Exception:
+                position += 1
+                continue
+        new_id = created_nodes[position]["id"]
+        pairs.append((own_idx, item, new_id))
+        node_by_raw_index[own_idx] = new_id
+        position += 1
+
+    # 第二步：解析关联。
+    for own_idx, item, new_id in pairs:
         has_link = False
         rels = item.get("relatedTo")
         if isinstance(rels, str):
@@ -9485,11 +9513,19 @@ def parse_memory_palace_event_links(raw_items: list, created_nodes: list, relate
         if isinstance(same, list):
             for ref in same:
                 m = re.match(r"^\s*N?(\d+)\s*$", str(ref), flags=re.I)
-                if m:
-                    idx = int(m.group(1))
-                    if 0 <= idx < mem_idx and idx < len(created_nodes):
-                        links.append({"newMemoryId": new_id, "existingMemoryId": created_nodes[idx]["id"]})
-                        has_link = True
+                if not m:
+                    continue
+                idx = int(m.group(1))
+                # 只认指向前面条目的编号，避免自指和向后指。
+                if idx < 0 or idx >= own_idx:
+                    continue
+                target_id = node_by_raw_index.get(idx)
+                # 取不到说明它指的那条这次没导入（被取消勾选），
+                # 这条就不该因此单独开一个盒。
+                if not target_id or target_id == new_id:
+                    continue
+                links.append({"newMemoryId": new_id, "existingMemoryId": target_id})
+                has_link = True
         if has_link:
             tags = item.get("eventTags") or []
             if isinstance(tags, str):
@@ -9498,7 +9534,6 @@ def parse_memory_palace_event_links(raw_items: list, created_nodes: list, relate
                 "eventName": str(item.get("eventName") or "").strip(),
                 "eventTags": [str(t).strip() for t in tags if str(t).strip()][:8],
             }
-        mem_idx += 1
     return links, hints
 
 
@@ -10672,7 +10707,7 @@ def collect_memory_palace_source_message_ids(items: list) -> dict:
     return {sid: list(dict.fromkeys(vals)) for sid, vals in by_session.items() if vals}
 
 
-def _serialize_memory_palace_preview_item(item: dict, session_id: str = None, group_index: int = None, source_message_ids: list = None, related_ref_ids: list = None) -> dict:
+def _serialize_memory_palace_preview_item(item: dict, session_id: str = None, group_index: int = None, source_message_ids: list = None, related_ref_ids: list = None, raw_index: int = None) -> dict:
     out = dict(item or {})
     pu = out.get("pinned_until")
     if pu is not None:
@@ -10689,6 +10724,11 @@ def _serialize_memory_palace_preview_item(item: dict, session_id: str = None, gr
         out["source_message_ids"] = [int(x) for x in source_message_ids if str(x).isdigit()]
     if related_ref_ids is not None:
         out["related_ref_ids"] = [str(x) for x in related_ref_ids if str(x or "").strip()]
+    if raw_index is not None:
+        # sameAs 是模型给的「本次输出内第几条」。用户在预览里取消勾选某条之后，
+        # 剩下的项位置会整体前移，按位置去认这个编号就会把关联绑到别的记忆上。
+        # 带上原始序号，导入时按它认，取消勾选的那条直接判定为「没导入」。
+        out["raw_index"] = int(raw_index)
     return out
 
 
@@ -10730,7 +10770,7 @@ async def preview_memory_palace_extraction_for_session(session_id: str, characte
     normalized = [_normalize_memory_palace_item(x) for x in raw_items]
     normalized = [x for x in normalized if x]
     related_ref_ids = [str(r.get("id")) for r in (related_refs or []) if r.get("id")]
-    items = [_serialize_memory_palace_preview_item(item, session_id=session_id, source_message_ids=source_message_ids, related_ref_ids=related_ref_ids) for item in normalized]
+    items = [_serialize_memory_palace_preview_item(item, session_id=session_id, source_message_ids=source_message_ids, related_ref_ids=related_ref_ids, raw_index=i) for i, item in enumerate(normalized)]
     items.extend(serialize_memory_palace_correction_previews(corrections, related_refs, session_id=session_id, source_message_ids=source_message_ids))
     for unpin_id in unpin_ids:
         items.append(_serialize_memory_palace_unpin_preview(unpin_id, pinned_refs, session_id=session_id, source_message_ids=source_message_ids))

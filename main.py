@@ -4131,6 +4131,25 @@ async def _extract_memory_palace_from_partition_messages_locked(messages: list, 
             except Exception as e:
                 log_memory_palace_auto_extract("error", f"⚠️ 分区自动提取 embedding 失败 {node_id}: {e}", session_id=session_id)
             created.append(node)
+        # 事件盒影子运行：只解析 relatedTo / sameAs 并记账，不真的建盒。
+        # 自动提取一直没接 bind_memory_palace_event_boxes，先攒几天日志看模型的
+        # 实际输出频率和质量（relatedTo 占比、盒名合不合理），再决定要不要开。
+        # 失败不影响已保存的记忆。
+        shadow_links = 0
+        try:
+            event_links, event_hints = parse_memory_palace_event_links(raw_items, created, related_refs)
+            shadow_links = len(event_links)
+            if event_links:
+                for line in _memory_palace_event_link_shadow_report(event_links, event_hints, created, related_refs):
+                    log_memory_palace_auto_extract("info", line, session_id=session_id)
+            else:
+                log_memory_palace_auto_extract(
+                    "info",
+                    f"📦 [影子] 事件盒关联解析：模型没标任何 relatedTo / sameAs（参考旧记忆 {len(related_refs or [])} 条，新记忆 {len(created)} 条）",
+                    session_id=session_id,
+                )
+        except Exception as e:
+            log_memory_palace_auto_extract("error", f"⚠️ 分区自动提取事件盒影子解析失败: {e}", session_id=session_id)
         unpinned_count = 0
         if unpin_ids:
             try:
@@ -4143,7 +4162,7 @@ async def _extract_memory_palace_from_partition_messages_locked(messages: list, 
             marked_count = await mark_memory_palace_messages_extracted(message_ids, session_id, character_id=character_id, source="partition_auto")
             await save_memory_palace_extraction_cursor(session_id, max_message_id, character_id=character_id, last_source="partition_auto")
         log_memory_palace_auto_extract("success", f"🧠 分区自动提取完成：session={session_id}, 消息{len(rows)}条, 记忆{len(created)}条, unpin={unpinned_count}, 标记{marked_count}条, cursor->{max_message_id}", session_id=session_id)
-        return {"status": "ok", "processed_messages": len(rows), "extracted": len(raw_items), "created": len(created), "embedded": embedded_count, "unpinned": unpinned_count, "marked": marked_count, "cursor": max_message_id}
+        return {"status": "ok", "processed_messages": len(rows), "extracted": len(raw_items), "created": len(created), "embedded": embedded_count, "unpinned": unpinned_count, "marked": marked_count, "cursor": max_message_id, "shadow_event_links": shadow_links}
     except Exception as e:
         log_memory_palace_auto_extract("error", f"⚠️ 分区自动提取失败：session={session_id}, error={e}", session_id=session_id)
         return {"status": "error", "error": str(e), "created": 0, "marked": 0}
@@ -9660,6 +9679,83 @@ def _merge_text_tags(*values) -> str:
             if p and p not in seen:
                 seen.append(p)
     return "、".join(seen[:12])
+
+
+def _memory_palace_event_link_shadow_report(
+    event_links: list,
+    event_hints: dict,
+    created_nodes: list,
+    related_refs: list,
+) -> list:
+    """把解析出的事件盒关联渲染成人能读的日志行（影子运行，不建盒）。
+
+    自动提取目前不调 bind_memory_palace_event_boxes，先只记录「如果建盒会怎样」：
+    看清楚模型 relatedTo / sameAs 的实际输出频率和质量，再决定要不要真的开。
+    返回若干行文本，调用方逐行写日志。
+    """
+    if not event_links:
+        return []
+
+    def _brief(text, size=24):
+        t = re.sub(r"\s+", " ", str(text or "")).strip()
+        return (t[:size] + "…") if len(t) > size else t
+
+    new_by_id = {}
+    for idx, node in enumerate(created_nodes or []):
+        nid = str((node or {}).get("id") or "")
+        if nid:
+            new_by_id[nid] = {"pos": idx, "content": (node or {}).get("content") or ""}
+    old_by_id = {}
+    for idx, ref in enumerate(related_refs or []):
+        rid = str((ref or {}).get("id") or "")
+        if rid:
+            old_by_id[rid] = {"pos": idx, "content": (ref or {}).get("content") or ""}
+
+    # 按新记忆分组，一条新记忆一行，和 bind 的分组口径一致。
+    grouped = {}
+    order = []
+    for link in event_links:
+        new_id = str((link or {}).get("newMemoryId") or "")
+        existing_id = str((link or {}).get("existingMemoryId") or "")
+        if not new_id or not existing_id:
+            continue
+        if new_id not in grouped:
+            grouped[new_id] = []
+            order.append(new_id)
+        if existing_id not in grouped[new_id]:
+            grouped[new_id].append(existing_id)
+
+    lines = []
+    to_old = 0
+    to_new = 0
+    for new_id in order:
+        targets = []
+        for existing_id in grouped[new_id]:
+            if existing_id in old_by_id:
+                to_old += 1
+                info = old_by_id[existing_id]
+                targets.append(f"relatedTo O{info['pos']}「{_brief(info['content'])}」")
+            elif existing_id in new_by_id:
+                to_new += 1
+                info = new_by_id[existing_id]
+                targets.append(f"sameAs #{info['pos']}「{_brief(info['content'])}」")
+            else:
+                targets.append(f"未知目标 {existing_id}")
+        hint = event_hints.get(new_id) or {}
+        name = str(hint.get("eventName") or "").strip() or "（模型没给盒名）"
+        tags = "、".join(str(t) for t in (hint.get("eventTags") or []))
+        self_brief = _brief((new_by_id.get(new_id) or {}).get("content"))
+        lines.append(
+            f"   · 新记忆「{self_brief}」→ " + " + ".join(targets)
+            + f"｜盒名「{name}」" + (f"｜标签 {tags}" if tags else "")
+        )
+
+    header = (
+        f"📦 [影子] 事件盒关联解析：{len(event_links)} 条关联"
+        f"（relatedTo→旧记忆 {to_old} / sameAs→本批新记忆 {to_new}）"
+        f"，涉及 {len(order)} 条新记忆，带盒名 {len(event_hints or {})} 条。当前不建盒。"
+    )
+    return [header] + lines
 
 
 async def bind_memory_palace_event_boxes(event_links: list, event_hints: dict, character_id: str = "default") -> int:

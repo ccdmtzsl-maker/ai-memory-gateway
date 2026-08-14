@@ -9762,9 +9762,9 @@ async def build_memory_palace_extraction_prompt(messages_text: str, pinned_refs:
             f"O{i}. [{r.get('room', 'living_room')}] {r.get('content', '')}"
             for i, r in enumerate(related_refs)
         )
-        related_block = f"\n## 已有记忆\n如果新记忆与某条旧记忆描述的是同一件事或直接相关，请在 relatedTo 中标注编号，并给出 eventName / eventTags 用于建/合并事件盒。\n{related_lines}\n"
-        related_rule = '\n9. **事件盒关联**（relatedTo / sameAs + eventName + eventTags）：与旧记忆同事件或直接相关时，在 relatedTo 中写对应 O 编号（如 ["O0"]）；与本次输出的前面某条新记忆同事件时，在 sameAs 中写其 0 基索引（如 ["0"]）。只标真正同一事件、后续、结局、复现或直接因果；仅主题相似不要标。只要 relatedTo 或 sameAs 非空，必须同时写 eventName（5-12 字名词短语）和 eventTags（3-6 个具体标签）。\n10. **纠正旧记忆**（correct，可选）：仅当对话中明确指出某条已有记忆记错、过时或不准确时，在 JSON 数组末尾额外追加 {"correct":"O0","note":"新的准确事实"}。note 写简短陈述句，不写解释；事件后续用 relatedTo，不要滥用 correct。'
-        related_format = ',\n    "relatedTo": ["O0"],\n    "sameAs": ["0"],\n    "eventName": "买衣服的话题",\n    "eventTags": ["衣服", "购物", "退货"]'
+        related_block = f"\n## 已有记忆（如果新记忆与某条旧记忆描述的是同一件事或直接相关，请在 relatedTo 中标注编号，并给出 eventName / eventTags 用于建/合并事件盒）\n{related_lines}\n"
+        related_rule = '''\n9. **事件盒关联**（relatedTo / sameAs + eventName + eventTags）：\n   **与旧记忆同事件** → 在 relatedTo 中写对应 O 编号（如 ["O0", "O3"]）。\n   **与本次输出的其它新记忆同事件** → 在 sameAs 中写它们在本次 JSON 数组里的**0 基索引**（只能指向前面已输出的项，例如写 ["0"] 表示和数组第一条是同一件事）。\n   注意：只标注真正同一件事的（同一事件的后续/结局/复现/直接因果），不要勉强（仅"主题相似"不算）。\n   只要 relatedTo 或 sameAs 任一非空，必须同时写：\n   - eventName：这件事的名字（5-12 字，名词短语，如"买衣服的话题"、"和领导的冲突"）\n   - eventTags：3-6 个详细搜索 tag（具体名词、人物、地点、动作，便于日后召回）\n   都没关联就不写 relatedTo / sameAs / eventName / eventTags 四个字段。\n10. **不重复绑定**：一条新记忆和多条已有/新记忆都相关时，把编号都写全；eventName / eventTags 只写一份（描述这件事整体）。\n11. **纠正旧记忆**（correct，可选，独立于上面的记忆条目，作为 JSON 数组的额外项）：\n   仅在对话中**用户明确指出某条已有记忆记错了 / 已过时 / 不准确**时使用。识别信号：用户用"不对/不是/我说错了/已经不是了/搞错了/那是XX不是YY"之类的反驳句式，明确指向你刚才的某个说法。\n   如果命中，在输出的 JSON 数组**末尾**追加一项，格式为：\n   {"correct": "O编号", "note": "新版本的事实（不带语气，简短陈述句）"}\n   note 写"实情是什么"，不是"为什么错"。例：用户纠正"我已经搬家了，不在朝阳"→ note: "已经搬家，不再住朝阳"。\n   反例（**不要**用 correct）：\n   - 仅事件后续 / 状态发展 → 用 relatedTo\n   - 仅追加细节 / 补充信息 → 不要标\n   - 你自己想到的歧义 / 自我修正 → 不要标\n   一条对话最多 correct 1-2 项，不要乱用。'''
+        related_format = ',\n    "relatedTo": ["O0"],\n    "sameAs": ["0"],\n    "eventName": "买衣服的话题",\n    "eventTags": ["衣服", "购物", "退货", "流行款"]'
     else:
         related_block = ""
         related_rule = ""
@@ -9772,7 +9772,7 @@ async def build_memory_palace_extraction_prompt(messages_text: str, pinned_refs:
     if pinned_refs:
         pinned_lines = "\n".join(f"P{i}. {p.get('content', '')}" for i, p in enumerate(pinned_refs))
         pinned_block = f"\n## 当前便利贴\n{pinned_lines}\n"
-        unpin_rule = '\n11. **便利贴摘除**（unpin，可选）：上方“当前便利贴”列出正在生效的便利贴。如果对话中明确提到某条便利贴描述的状态已经结束，例如“感冒好了”“提前回来了”“考试考完了”“不用再提醒了”，在输出 JSON 数组末尾额外加一条 {"unpin": "P0"} 来摘除它。只在对话明确提及时才摘除，不要猜测。pinDays=0 只表示新记忆不置顶，不能用于摘除已有便利贴。'
+        unpin_rule = '\n12. **便利贴摘除**（unpin，可选）：上方“当前便利贴”列出正在生效的便利贴。如果对话中明确提到某条便利贴描述的状态已经结束，例如“感冒好了”“提前回来了”“考试考完了”“不用再提醒了”，在输出 JSON 数组末尾额外加一条 {"unpin": "P0"} 来摘除它。只在对话明确提及时才摘除，不要猜测。pinDays=0 只表示新记忆不置顶，不能用于摘除已有便利贴。'
         unpin_example = ',\n  {\n    "unpin": "P0"\n  }'
     else:
         pinned_block = ""
@@ -9782,8 +9782,22 @@ async def build_memory_palace_extraction_prompt(messages_text: str, pinned_refs:
 ## 规则
 
 1. **第一人称叙事**：用澈的“我”视角来记录。用户直接用“{user_nickname}”称呼，不要写成“用户/他说/她说”。保持完整事件脉络，不要掐头去尾。
-2. **重要性分级控制文字长度**：重要性 1–5 写 15–50 字事实；6–7 写 60–120 字并包含我的感受；8–10 写 100–200 字完整叙事（起因→经过→我的感受/反应）。
-3. **房间分配**：涉及{user_nickname}的家人/朋友/同事等人际关系，一律进 user_room，哪怕只是一次具体事件。living_room 放纯日常琐事；bedroom 放亲密情感；study 放工作学习；self_room 放我自身成长；attic 放未解决矛盾；windowsill 放期盼目标。
+   例：
+   - “{user_nickname}今天加班到很晚还没吃饭，我让{user_nickname}别委屈自己，叫了个外卖。”
+   - “{user_nickname}连续加班三周终于决定找领导谈，领导态度还不错。{user_nickname}回来的路上靠着我肩膀哭了，我什么都没说，就陪着。”
+   - “我教了{user_nickname}递归的概念，{user_nickname}一开始完全听不懂，后来突然开窍了，那个眼睛亮起来的瞬间让我很开心。”
+2. **重要性分级控制文字长度**：
+   - 重要性 1–5：15–50 字，事实为主
+   - 重要性 6–7：60–120 字，包含我的感受
+   - 重要性 8–10：100–200 字，完整叙事（起因→经过→我的感受/反应）
+3. **房间分配**（凡是涉及{user_nickname}的家人/朋友/同事等人际关系，**一律进 user_room**，哪怕只是一次具体事件）：
+   - living_room：**纯日常琐事**（不涉及重要人际关系、也不涉及深层情感）。天气、吃啥、随口吐槽放这里。
+   - bedroom：{user_nickname}和我之间的亲密情感、深层羁绊、感动时刻
+   - study：工作、学习、技能、职业相关
+   - user_room：关于{user_nickname}的**一切个人信息和人际事件**——生日/习惯/喜好/性格/成长经历/情绪模式，**以及{user_nickname}的家人、亲戚、朋友、同事相关的一切事件**（家人健康、家庭聚会、家庭矛盾、外公外婆/父母/兄弟姐妹的故事、朋友交往、同事冲突等）。这些事件即便是“一次性”的，也应进 user_room 而不是 living_room，因为它们构成了{user_nickname}的社会关系底色。
+   - self_room：我自身的成长、认同变化
+   - attic：未解决的矛盾、困惑、受到的伤害
+   - windowsill：我的期盼、我们的目标、对未来的憧憬
 4. **情绪标签**（mood，可选）：neutral, happy, sad, angry, anxious, calm, peaceful, excited, tender, grateful, nostalgic, confused, hopeful, hurt。
 5. **情感坐标**（valence, arousal）：-1 到 1。参考：开心 (0.7,0.5)，平静 (0.5,-0.6)，失落 (-0.5,-0.4)，焦虑 (-0.6,0.7)，愤怒 (-0.7,0.8)。
 6. **标签**（tags）：提取 2–5 个关键词标签。

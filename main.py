@@ -1099,9 +1099,27 @@ def _memory_palace_cosine(a, b) -> float:
 
 
 def _memory_palace_aware_dt(value):
+    """把各种形态的时间统一成带时区的 datetime。
+
+    必须接受字符串。预览导入链路上 pinned_until 会先被序列化成 ISO 字符串
+    发给前端，再原样传回来；只处理 datetime/date 的话这里会走
+    value.replace(tzinfo=...) 分支，而 str.replace 不接受关键字参数，
+    抛出的 TypeError 被 except 吞掉返回 None——手动提取的便利贴就这么丢了。
+    """
     if not value:
         return None
     try:
+        if isinstance(value, str):
+            text = value.strip()
+            if not text:
+                return None
+            try:
+                value = datetime.fromisoformat(text.replace("Z", "+00:00"))
+            except Exception:
+                try:
+                    value = datetime.strptime(text[:10], "%Y-%m-%d")
+                except Exception:
+                    return None
         if hasattr(value, "year") and not hasattr(value, "hour"):
             value = datetime(value.year, value.month, value.day, 12, 0, 0, tzinfo=timezone.utc)
         elif getattr(value, "tzinfo", None) is None:

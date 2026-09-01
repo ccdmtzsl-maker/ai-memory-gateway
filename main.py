@@ -248,6 +248,13 @@ DEFAULT_CONTEXT_TEMPLATE = (
 )
 MEMORY_PALACE_EVENT_BOX_COMPRESS_THRESHOLD = int(os.getenv("MEMORY_PALACE_EVENT_BOX_COMPRESS_THRESHOLD", "4"))
 MEMORY_PALACE_EVENT_BOX_LIVE_HARD_CAP = int(os.getenv("MEMORY_PALACE_EVENT_BOX_LIVE_HARD_CAP", "16"))
+# 自动提取的事件盒建盒模式：
+#   related = 只采纳 relatedTo（往既有记忆上挂），默认
+#   all     = relatedTo + sameAs 都建（和手动导入一致）
+#   off     = 只解析并记日志，不建盒
+# 默认 related：sameAs 是批内两条新记忆互相配对，一次提取就能凭空开新盒，
+# 而压缩阈值只有 4 条活节点，盒子涨太快会频繁触发 LLM 压缩。
+MEMORY_PALACE_AUTO_EVENT_BOX_MODE = str(os.getenv("MEMORY_PALACE_AUTO_EVENT_BOX_MODE", "related") or "related").strip().lower()
 MEMORY_PALACE_EVENT_BOX_SEAL_THRESHOLD = int(os.getenv("MEMORY_PALACE_EVENT_BOX_SEAL_THRESHOLD", "6"))
 
 # 记忆模型专用 API 地址。留空时不会自动回退到主 API_BASE_URL，由调用方决定是否跳过。
@@ -4131,25 +4138,60 @@ async def _extract_memory_palace_from_partition_messages_locked(messages: list, 
             except Exception as e:
                 log_memory_palace_auto_extract("error", f"⚠️ 分区自动提取 embedding 失败 {node_id}: {e}", session_id=session_id)
             created.append(node)
-        # 事件盒影子运行：只解析 relatedTo / sameAs 并记账，不真的建盒。
-        # 自动提取一直没接 bind_memory_palace_event_boxes，先攒几天日志看模型的
-        # 实际输出频率和质量（relatedTo 占比、盒名合不合理），再决定要不要开。
-        # 失败不影响已保存的记忆。
-        shadow_links = 0
+        # 事件盒绑定。默认只采纳 relatedTo（往既有记忆上挂），不采纳 sameAs：
+        # sameAs 是批内两条新记忆互相配对，一次提取就能凭空开新盒，而压缩阈值
+        # 只有 4 条活节点，盒子涨太快会频繁触发 LLM 压缩。想全开把
+        # MEMORY_PALACE_AUTO_EVENT_BOX_MODE 设成 all，只想看日志设成 off。
+        # 整段失败不影响已保存的记忆和游标推进。
+        event_box_count = 0
+        event_link_count = 0
         try:
             event_links, event_hints = parse_memory_palace_event_links(raw_items, created, related_refs)
-            shadow_links = len(event_links)
-            if event_links:
-                for line in _memory_palace_event_link_shadow_report(event_links, event_hints, created, related_refs):
-                    log_memory_palace_auto_extract("info", line, session_id=session_id)
+            to_existing, to_new_batch = _memory_palace_split_event_links_by_target(event_links, created)
+            event_link_count = len(event_links)
+            mode = MEMORY_PALACE_AUTO_EVENT_BOX_MODE
+            if mode == "all":
+                bind_links = list(event_links)
+            elif mode == "off":
+                bind_links = []
             else:
+                bind_links = list(to_existing)
+            for line in _memory_palace_event_link_shadow_report(event_links, event_hints, created, related_refs):
+                log_memory_palace_auto_extract("info", line, session_id=session_id)
+            if not event_links:
                 log_memory_palace_auto_extract(
                     "info",
-                    f"📦 [影子] 事件盒关联解析：模型没标任何 relatedTo / sameAs（参考旧记忆 {len(related_refs or [])} 条，新记忆 {len(created)} 条）",
+                    f"\U0001F4E6 事件盒：模型没标任何 relatedTo / sameAs（参考旧记忆 {len(related_refs or [])} 条，新记忆 {len(created)} 条）",
+                    session_id=session_id,
+                )
+            if bind_links:
+                event_box_count = await bind_memory_palace_event_boxes(bind_links, event_hints, character_id=character_id)
+                skipped = len(event_links) - len(bind_links)
+                skip_text = f"，跳过 sameAs {skipped} 条" if skipped > 0 else ""
+                log_memory_palace_auto_extract(
+                    "info",
+                    f"\U0001F4E6 事件盒绑定完成（mode={mode}）：采纳 {len(bind_links)} 条关联{skip_text}，涉及 {event_box_count} 个盒",
+                    session_id=session_id,
+                )
+                try:
+                    compressed = await maybe_compress_memory_palace_event_boxes(character_id=character_id)
+                    if compressed:
+                        log_memory_palace_auto_extract("info", f"\U0001F4E6 事件盒压缩：{compressed} 个", session_id=session_id)
+                except Exception as e:
+                    log_memory_palace_auto_extract("error", f"\u26A0\uFE0F 分区自动提取事件盒压缩失败: {e}", session_id=session_id)
+                # 建过盒就清缓存，否则仪表盘左侧要等 15 分钟 TTL 才看得到新盒。
+                try:
+                    invalidate_memory_palace_cache(character_id)
+                except Exception:
+                    pass
+            elif event_links:
+                log_memory_palace_auto_extract(
+                    "info",
+                    f"\U0001F4E6 事件盒未绑定（mode={mode}）：{len(event_links)} 条关联按当前模式全部跳过",
                     session_id=session_id,
                 )
         except Exception as e:
-            log_memory_palace_auto_extract("error", f"⚠️ 分区自动提取事件盒影子解析失败: {e}", session_id=session_id)
+            log_memory_palace_auto_extract("error", f"\u26A0\uFE0F 分区自动提取事件盒绑定失败: {e}", session_id=session_id)
         unpinned_count = 0
         if unpin_ids:
             try:
@@ -4162,7 +4204,7 @@ async def _extract_memory_palace_from_partition_messages_locked(messages: list, 
             marked_count = await mark_memory_palace_messages_extracted(message_ids, session_id, character_id=character_id, source="partition_auto")
             await save_memory_palace_extraction_cursor(session_id, max_message_id, character_id=character_id, last_source="partition_auto")
         log_memory_palace_auto_extract("success", f"🧠 分区自动提取完成：session={session_id}, 消息{len(rows)}条, 记忆{len(created)}条, unpin={unpinned_count}, 标记{marked_count}条, cursor->{max_message_id}", session_id=session_id)
-        return {"status": "ok", "processed_messages": len(rows), "extracted": len(raw_items), "created": len(created), "embedded": embedded_count, "unpinned": unpinned_count, "marked": marked_count, "cursor": max_message_id, "shadow_event_links": shadow_links}
+        return {"status": "ok", "processed_messages": len(rows), "extracted": len(raw_items), "created": len(created), "embedded": embedded_count, "unpinned": unpinned_count, "marked": marked_count, "cursor": max_message_id, "event_links": event_link_count, "event_boxes": event_box_count}
     except Exception as e:
         log_memory_palace_auto_extract("error", f"⚠️ 分区自动提取失败：session={session_id}, error={e}", session_id=session_id)
         return {"status": "error", "error": str(e), "created": 0, "marked": 0}
@@ -9681,16 +9723,42 @@ def _merge_text_tags(*values) -> str:
     return "、".join(seen[:12])
 
 
+def _memory_palace_split_event_links_by_target(event_links: list, created_nodes: list) -> tuple:
+    """按目标把 link 分成「指向旧记忆」和「指向本批新记忆」两组。
+
+    parse_memory_palace_event_links 把 relatedTo 和 sameAs 解析成同一种
+    {newMemoryId, existingMemoryId} 结构，区别只在 existingMemoryId 是不是
+    本批刚创建的节点：是就来自 sameAs，不是就来自 relatedTo。
+
+    自动提取只采纳 relatedTo：它是往既有记忆上挂，盒子数量受历史记忆约束；
+    sameAs 是批内两条新记忆互相配对，一次提取就能凭空开新盒，涨得太快，
+    压缩（活节点 >= 4 就调一次 LLM）会跟着频繁触发。
+
+    返回 (to_existing, to_new_batch)。
+    """
+    new_ids = {str((n or {}).get("id") or "") for n in (created_nodes or [])}
+    new_ids.discard("")
+    to_existing = []
+    to_new_batch = []
+    for link in event_links or []:
+        target = str((link or {}).get("existingMemoryId") or "").strip()
+        if not target:
+            continue
+        (to_new_batch if target in new_ids else to_existing).append(link)
+    return to_existing, to_new_batch
+
+
 def _memory_palace_event_link_shadow_report(
     event_links: list,
     event_hints: dict,
     created_nodes: list,
     related_refs: list,
 ) -> list:
-    """把解析出的事件盒关联渲染成人能读的日志行（影子运行，不建盒）。
+    """把解析出的事件盒关联渲染成人能读的日志行。
 
-    自动提取目前不调 bind_memory_palace_event_boxes，先只记录「如果建盒会怎样」：
-    看清楚模型 relatedTo / sameAs 的实际输出频率和质量，再决定要不要真的开。
+    列出每条新记忆挂到了哪里、盒名是什么，便于事后核对模型判断的质量。
+    渲染的是「解析结果」而不是「绑定结果」：调用方可能只采纳其中一部分
+    （自动提取默认只采纳 relatedTo），跳过的条数由调用方另行记录。
     返回若干行文本，调用方逐行写日志。
     """
     if not event_links:
@@ -9751,9 +9819,9 @@ def _memory_palace_event_link_shadow_report(
         )
 
     header = (
-        f"📦 [影子] 事件盒关联解析：{len(event_links)} 条关联"
+        f"📦 事件盒关联解析：{len(event_links)} 条关联"
         f"（relatedTo→旧记忆 {to_old} / sameAs→本批新记忆 {to_new}）"
-        f"，涉及 {len(order)} 条新记忆，带盒名 {len(event_hints or {})} 条。当前不建盒。"
+        f"，涉及 {len(order)} 条新记忆，带盒名 {len(event_hints or {})} 条。"
     )
     return [header] + lines
 

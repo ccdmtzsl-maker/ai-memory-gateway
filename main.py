@@ -9971,7 +9971,7 @@ async def build_memory_palace_extraction_prompt(pinned_refs: list = None, relate
 2. **重要性分级控制文字长度和字段数量**：
    - 重要性 1–4：15–50 字，事实为主。**只需要 content / room / importance / date 四个字段**，mood / valence / arousal / tags 全部省略。
    - 重要性 5–7：60–120 字，包含我的感受。加上 mood / tags。
-   - 重要性 8–10：100–200 字，完整叙事（起因→经过→我的感受/反应）。加上 valence / arousal。
+   - 重要性 8–10：150 字以上，完整叙事（起因→经过→我的感受/反应）。加上 valence / arousal。**写不到 150 字说明这件事没那么重要，降到 5–7 档去写，不要靠补细节凑长度。**
    零碎小事就老老实实用 1–4 档写短的、字段少的，**不要为了少写几条就把几件不相干的事塞进同一条记忆里**。
 3. **房间分配**（凡是涉及{user_nickname}的家人/朋友/同事等人际关系，**一律进 user_room**，哪怕只是一次具体事件）：
    - living_room：**纯日常琐事**（不涉及重要人际关系、也不涉及深层情感）。天气、吃啥、随口吐槽放这里。

@@ -36,7 +36,7 @@ from fastapi.templating import Jinja2Templates
 from fastapi.middleware.gzip import GZipMiddleware
 
 from database import init_tables, close_pool, save_message, get_pool, get_gateway_config, set_gateway_config, set_gateway_config_many, get_all_gateway_config, get_conversation_messages, get_session_cache_state, save_session_cache_state, delete_session_cache_state, save_token_usage, ensure_token_usage_table, get_conversations_paginated, get_conversation_messages_after_id, delete_conversation, batch_delete_conversations, merge_sessions_to_target, list_all_session_cache_states, export_all_conversations, import_conversations, get_last_user_content, update_last_assistant_message, update_last_assistant_if_same_user, db_row_to_message, search_conversations, update_message_content, rename_session_id, get_conversation_messages_by_date, upsert_daily_impression, get_daily_impression, list_daily_impressions, search_memory_palace_vector_scores, search_memory_palace_vector_scores_multi, memory_palace_vector_ready
-from database import list_memory_palace_rooms, list_memory_palace_nodes, get_memory_palace_node, create_memory_palace_node, update_memory_palace_node, delete_memory_palace_node, clear_expired_memory_palace_pins, get_user_impression, upsert_user_impression, delete_user_impression, normalize_user_impression
+from database import list_memory_palace_rooms, list_memory_palace_nodes, get_memory_palace_node, create_memory_palace_node, update_memory_palace_node, delete_memory_palace_node, clear_expired_memory_palace_pins, get_user_impression, upsert_user_impression, delete_user_impression, normalize_user_impression, get_user_activity_meta, upsert_user_activity_meta, delete_user_activity_meta
 import database as _db_module  # 用于 /api/settings 热更新 database.py 全局变量
 from memory_extractor import get_extraction_prompt, set_extraction_prompt, _DEFAULT_EXTRACTION_PROMPT
 
@@ -7967,6 +7967,14 @@ async def collect_user_activity_meta(character_id: str = "default", force: bool 
         cached = _cache_get(cache_key)
         if cached is not None:
             return cached
+        # 进程重启后缓存是空的，但库里可能还有上次的快照。
+        try:
+            stored = await get_user_activity_meta(character_id=character_id)
+        except Exception as e:
+            print(f"⚠️ 读取用户活跃元数据失败: {e}")
+            stored = None
+        if stored:
+            return _cache_set(cache_key, stored, ttl=900)
 
     tz_hours = int(TIMEZONE_HOURS or 0)
     local_tz = timezone(timedelta(hours=tz_hours))
@@ -8140,6 +8148,12 @@ async def collect_user_activity_meta(character_id: str = "default", force: bool 
             "top_tags": top_tags,
         },
     }
+    # 落库：手动统计的快照要能跨重启存活，缓存只是加速层。
+    try:
+        await upsert_user_activity_meta(character_id=character_id, payload=result)
+    except Exception as e:
+        print(f"⚠️ 保存用户活跃元数据失败: {e}")
+
     return _cache_set(cache_key, result, ttl=900)
 
 
@@ -8187,7 +8201,14 @@ async def format_user_activity_meta_for_prompt(character_id: str = "default") ->
     cached = _cache_get(cache_key)
     if cached is not None:
         return cached
-    meta = await collect_user_activity_meta(character_id=character_id, force=False)
+    # 变量注入不主动重算统计：优先用已保存的快照，没有才现算一次。
+    meta = None
+    try:
+        meta = await get_user_activity_meta(character_id=character_id)
+    except Exception as e:
+        print(f"⚠️ 读取用户活跃元数据失败: {e}")
+    if not meta:
+        meta = await collect_user_activity_meta(character_id=character_id, force=False)
     result = format_user_activity_meta_for_prompt_data(meta)
     return _cache_set(cache_key, result, ttl=900)
 
@@ -8219,6 +8240,20 @@ async def api_user_activity_meta_refresh(request: Request):
         return JSONResponse({"status": "error", "error": str(e)}, status_code=500)
 
 
+@app.delete("/api/user-activity-meta")
+async def api_delete_user_activity_meta(character_id: str = "default"):
+    if not MEMORY_ENABLED:
+        return {"error": "记忆系统未启用"}
+    try:
+        character_id = character_id or "default"
+        result = await delete_user_activity_meta(character_id=character_id)
+        _cache_delete_prefix(f"user_activity_meta:{character_id}")
+        _cache_delete_prefix(f"prompt_var:user_activity_meta:{character_id}")
+        return {"status": "ok", "character_id": character_id, "deleted": result}
+    except Exception as e:
+        return JSONResponse({"status": "error", "error": str(e)}, status_code=500)
+
+
 @app.get("/api/user-activity-meta")
 async def api_get_user_activity_meta(character_id: str = "default"):
     if not MEMORY_ENABLED:
@@ -8226,9 +8261,13 @@ async def api_get_user_activity_meta(character_id: str = "default"):
     try:
         character_id = character_id or "default"
         cached = _cache_get(f"user_activity_meta:{character_id}")
-        if cached is None:
+        if cached is not None:
+            return cached
+        # 缓存空了不代表没统计过，先看库里有没有历史快照。
+        stored = await get_user_activity_meta(character_id=character_id)
+        if not stored:
             return {"status": "not_found", "character_id": character_id}
-        return cached
+        return _cache_set(f"user_activity_meta:{character_id}", stored, ttl=900)
     except Exception as e:
         return JSONResponse({"status": "error", "error": str(e)}, status_code=500)
 

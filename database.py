@@ -770,6 +770,23 @@ async def init_tables():
             ALTER TABLE user_impressions
             ADD COLUMN IF NOT EXISTS last_consumed_node_id TEXT DEFAULT NULL;
         """)
+
+        # 用户活跃元数据：每个角色一份最新统计快照。
+        # 手动统计的结果要能跨重启存活，所以落库而不是只放进程内缓存。
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS user_activity_meta (
+                id BIGSERIAL PRIMARY KEY,
+                character_id TEXT NOT NULL DEFAULT 'default',
+                payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+                generated_at TIMESTAMPTZ DEFAULT NOW(),
+                updated_at TIMESTAMPTZ DEFAULT NOW(),
+                UNIQUE(character_id)
+            );
+        """)
+        await conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_user_activity_meta_updated
+            ON user_activity_meta (updated_at DESC);
+        """)
     print("✅ 数据库表结构已就绪")
 
 
@@ -1445,6 +1462,62 @@ async def get_user_impression(character_id: str = "default"):
     if result:
         result["pending_memory_count"] = pending_count
     return result
+
+
+# ============================================================
+# 用户活跃元数据（User Activity Meta）：快照存取
+# ============================================================
+
+async def get_user_activity_meta(character_id: str = "default"):
+    """读取最近一次手动统计的活跃元数据快照。没有就返回 None。"""
+    character_id = character_id or "default"
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow("""
+            SELECT payload, generated_at, updated_at
+            FROM user_activity_meta
+            WHERE character_id = $1
+        """, character_id)
+    if not row:
+        return None
+    payload = row.get("payload")
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except Exception:
+            payload = {}
+    if not isinstance(payload, dict) or not payload:
+        return None
+    return payload
+
+
+async def upsert_user_activity_meta(character_id: str, payload: dict):
+    """保存活跃元数据快照。每个角色只留最新一份。"""
+    character_id = character_id or "default"
+    if not isinstance(payload, dict) or not payload:
+        raise ValueError("活跃元数据内容为空")
+    data = json.dumps(payload, ensure_ascii=False)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute("""
+            INSERT INTO user_activity_meta (character_id, payload, generated_at, updated_at)
+            VALUES ($1, $2::jsonb, NOW(), NOW())
+            ON CONFLICT (character_id) DO UPDATE SET
+                payload = EXCLUDED.payload,
+                generated_at = EXCLUDED.generated_at,
+                updated_at = NOW()
+        """, character_id, data)
+    return True
+
+
+async def delete_user_activity_meta(character_id: str = "default"):
+    character_id = character_id or "default"
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        result = await conn.execute(
+            "DELETE FROM user_activity_meta WHERE character_id = $1", character_id
+        )
+    return str(result or "")
 
 
 async def upsert_user_impression(character_id: str, impression: dict, source_mode: str = "initial", source_message_count: int = 0, last_consumed_node_id: str = None):

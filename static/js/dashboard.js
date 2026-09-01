@@ -1197,6 +1197,32 @@ async function batchMergeSessions() {
 let _convMemoryPalacePreviewItems = [];
 let _convMemoryPalacePreviewRunning = false;
 function convMpPanel(){let p=document.getElementById('conv-memory-preview-panel');if(!p){const c=document.getElementById('conv-list-container');p=document.createElement('div');p.id='conv-memory-preview-panel';p.className='card';p.style.marginTop='12px';p.style.display='none';c.parentNode.insertBefore(p,c);}return p;}
+// 预览面板顶部的提示条。加载中、出错都只替换这一条，不动面板里已有的
+// 预览结果——并发提取被拒时如果直接清空面板，用户会以为上一次也失败了。
+function convMpNotice(text, kind) {
+    const p = convMpPanel();
+    p.style.display = '';
+    let n = document.getElementById('conv-mp-notice');
+    if (!n) {
+        n = document.createElement('div');
+        n.id = 'conv-mp-notice';
+        p.insertBefore(n, p.firstChild);
+    } else if (n.parentNode !== p) {
+        p.insertBefore(n, p.firstChild);
+    }
+    const color = kind === 'error' ? 'var(--error)' : 'var(--text-muted)';
+    const bg = kind === 'error' ? 'rgba(239,68,68,0.08)' : 'rgba(148,163,184,0.10)';
+    n.style.cssText = 'padding:10px 12px;margin-bottom:10px;border-radius:8px;line-height:1.7;' +
+        'color:' + color + ';background:' + bg + ';font-size:13px;';
+    n.textContent = text || '';
+    return n;
+}
+
+function convMpClearNotice() {
+    const n = document.getElementById('conv-mp-notice');
+    if (n && n.parentNode) n.parentNode.removeChild(n);
+}
+
 async function previewMemoryPalaceFromSelectedConversations() {
     if (_convMemoryPalacePreviewRunning) return;
     const checked = document.querySelectorAll('.conv-checkbox:checked');
@@ -1206,13 +1232,9 @@ async function previewMemoryPalaceFromSelectedConversations() {
     const oldText = btn ? btn.textContent : '';
     if (btn) { btn.disabled = true; btn.textContent = '🧠 提取中...'; }
     const sessionIds = Array.from(checked).map(cb => cb.value);
+    // 只挂提示条，不清空面板：上一次的预览结果留着，直到新结果渲染出来。
+    convMpNotice('🧠 正在逐个对话线提取记忆预览... 已发送请求，模型提取可能需要几十秒。你可以稍等一下。');
     const p = convMpPanel();
-    p.style.display = '';
-    p.textContent = '';
-    const loading = document.createElement('div');
-    loading.style.cssText = 'padding:14px;color:var(--text-muted);line-height:1.7;';
-    loading.textContent = '🧠 正在逐个对话线提取记忆预览... 已发送请求，模型提取可能需要几十秒。你可以稍等一下。';
-    p.appendChild(loading);
     try { p.scrollIntoView({behavior:'smooth',block:'start'}); } catch(_e) {}
     try {
         const r = await fetch('/api/memory-palace/extract-preview-sessions', {
@@ -1221,12 +1243,13 @@ async function previewMemoryPalaceFromSelectedConversations() {
         });
         const d = await r.json();
         if (d.error || d.status === 'error') {
-            setConvPlainMessage(p, '提取失败：' + (d.error || '未知错误'), {style:'color:var(--error);padding:12px;'});
+            convMpNotice('提取失败：' + (d.error || '未知错误'), 'error');
             return;
         }
+        convMpClearNotice();
         renderConvMemoryPalacePreview(d.groups || []);
     } catch(e) {
-        setConvPlainMessage(p, '请求失败：' + e.message, {style:'color:var(--error);padding:12px;'});
+        convMpNotice('请求失败：' + e.message, 'error');
     } finally {
         _convMemoryPalacePreviewRunning = false;
         if (btn) { btn.disabled = false; btn.textContent = oldText || '🧠 提取记忆'; }

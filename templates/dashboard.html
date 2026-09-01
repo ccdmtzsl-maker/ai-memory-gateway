@@ -414,7 +414,8 @@
 
                 <div class="card toolbar-card">
                     <div class="toolbar">
-                        <button class="btn" style="background:#fff;border-style:dashed;border-width:2px;border-radius:18px;padding:10px 20px;font-weight:900;box-shadow:0 6px 0 rgba(15,23,42,.08), inset 0 0 0 3px rgba(255,255,255,.92);border-color:#9ca3af;color:#5f6670;" onclick="loadUserImpression()">刷新</button>
+                        <button class="btn" style="background:#fff;border-style:dashed;border-width:2px;border-radius:18px;padding:10px 20px;font-weight:900;box-shadow:0 6px 0 rgba(15,23,42,.08), inset 0 0 0 3px rgba(255,255,255,.92);border-color:#9ca3af;color:#5f6670;" onclick="loadUserImpression(true)">刷新</button>
+                        <button class="btn" style="background:#fff;border-style:dashed;border-width:2px;border-radius:18px;padding:10px 20px;font-weight:900;box-shadow:0 6px 0 rgba(15,23,42,.08), inset 0 0 0 3px rgba(255,255,255,.92);border-color:#64748b;color:#334155;" onclick="refreshUserActivityMeta()">统计活跃元数据</button>
                         <button class="btn" style="background:#fff;border-style:dashed;border-width:2px;border-radius:18px;padding:10px 20px;font-weight:900;box-shadow:0 6px 0 rgba(15,23,42,.08), inset 0 0 0 3px rgba(255,255,255,.92);border-color:#e8a7bb;color:#d94f7a;" onclick="confirmGenerateUserImpressionPreview('initial')">生成画像</button>
                         <button class="btn" style="background:#fff;border-style:dashed;border-width:2px;border-radius:18px;padding:10px 20px;font-weight:900;box-shadow:0 6px 0 rgba(15,23,42,.08), inset 0 0 0 3px rgba(255,255,255,.92);border-color:#1e3a8a;color:#1e3a8a;" onclick="confirmGenerateUserImpressionPreview('update')">追加/更新</button>
                         <button class="btn" style="background:#fff;border-style:dashed;border-width:2px;border-radius:18px;padding:10px 20px;font-weight:900;box-shadow:0 6px 0 rgba(15,23,42,.08), inset 0 0 0 3px rgba(255,255,255,.92);border-color:#475569;color:#475569;" onclick="previewUserImpressionMaterials()">预览材料</button>
@@ -422,6 +423,8 @@
                     </div>
                     <div class="hint" style="margin-top:10px;">initial 会从零生成；update 会带入旧画像并读取更多近期聊天。两者都会先生成预览，不会自动覆盖。</div>
                 </div>
+
+                <div id="userActivityMetaCard" class="card" style="padding:18px;margin-bottom:14px;">活跃元数据未统计。</div>
 
                 <div id="uiEditorCard" style="display:none;"></div>
 

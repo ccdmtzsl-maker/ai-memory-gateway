@@ -154,6 +154,8 @@ def invalidate_user_impression_prompt_cache(character_id: str = "default"):
     """Clear user impression prompt/dashboard cache after updates."""
     character_id = character_id or "default"
     _cache_delete_prefix(f"prompt_var:user_impression:{character_id}")
+    _cache_delete_prefix(f"prompt_var:user_activity_meta:{character_id}")
+    _cache_delete_prefix(f"user_activity_meta:{character_id}")
     _cache_delete_prefix(f"user_impression:{character_id}")
 
 
@@ -2929,6 +2931,7 @@ async def replace_memory_palace_variables(prompt: str, query: str = "", characte
 async def replace_explicit_memory_variables(prompt: str, query: str = "", character_id: str = "default", recent_messages=None, session_id: str = "") -> str:
     prompt = await replace_daily_impression_variables(prompt)
     prompt = await replace_user_impression_variables(prompt, character_id=character_id)
+    prompt = await replace_user_activity_meta_variables(prompt, character_id=character_id)
     prompt = await replace_special_memory_variables(prompt, character_id=character_id)
     prompt = await replace_memory_palace_variables(prompt, query=query, character_id=character_id, recent_messages=recent_messages, session_id=session_id)
     return prompt
@@ -7907,6 +7910,304 @@ def _get_user_impression_generation_lock(character_id: str):
         lock = asyncio.Lock()
         _user_impression_generation_locks[key] = lock
     return lock
+
+
+# ============================================================
+# 用户活跃元数据（User Activity Meta）
+# 只做结构化统计，不调用 LLM，不写入用户画像。
+# ============================================================
+
+_USER_ACTIVITY_META_ROOM_LABELS = {
+    "living_room": "客厅",
+    "bedroom": "卧室",
+    "study": "书房",
+    "user_room": "用户房间",
+    "self_room": "自我房间",
+    "attic": "阁楼",
+    "windowsill": "窗台",
+}
+
+def _user_activity_meta_split_tags(raw) -> list:
+    text = str(raw or "").strip()
+    if not text:
+        return []
+    parts = re.split(r"[、,，;；\s]+", text)
+    result = []
+    seen = set()
+    for part in parts:
+        tag = str(part or "").strip()
+        if not tag or tag in seen:
+            continue
+        seen.add(tag)
+        result.append(tag)
+    return result
+
+
+def _user_activity_meta_pct(count: int, total: int) -> float:
+    try:
+        total = int(total or 0)
+        if total <= 0:
+            return 0.0
+        return round(int(count or 0) * 100.0 / total, 1)
+    except Exception:
+        return 0.0
+
+
+async def collect_user_activity_meta(character_id: str = "default", force: bool = False) -> dict:
+    """统计用户长期活跃元数据：活跃节律 + 主题分布。
+
+    设计目标：
+    - 手动刷新为主；不自动总结、不调用 LLM；
+    - 数据只读，不写入用户画像；
+    - 缓存 15 分钟，避免页面/变量频繁查库。
+    """
+    character_id = character_id or "default"
+    cache_key = f"user_activity_meta:{character_id}"
+    if not force:
+        cached = _cache_get(cache_key)
+        if cached is not None:
+            return cached
+
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        conv_stats = await conn.fetchrow("""
+            SELECT
+                COUNT(*) FILTER (WHERE role = 'user')::int AS user_messages,
+                COUNT(DISTINCT DATE(created_at)) FILTER (WHERE role = 'user')::int AS active_days_all,
+                COUNT(DISTINCT DATE(created_at)) FILTER (
+                    WHERE role = 'user' AND created_at >= NOW() - INTERVAL '30 days'
+                )::int AS active_days_30,
+                COUNT(DISTINCT DATE(created_at)) FILTER (
+                    WHERE role = 'user' AND created_at >= NOW() - INTERVAL '90 days'
+                )::int AS active_days_90,
+                MIN(created_at) FILTER (WHERE role = 'user') AS first_user_at,
+                MAX(created_at) FILTER (WHERE role = 'user') AS last_user_at
+            FROM conversations
+        """)
+        hour_rows = await conn.fetch("""
+            SELECT EXTRACT(HOUR FROM created_at)::int AS hour, COUNT(*)::int AS count
+            FROM conversations
+            WHERE role = 'user' AND created_at >= NOW() - INTERVAL '90 days'
+            GROUP BY hour
+            ORDER BY hour
+        """)
+        day_rows = await conn.fetch("""
+            SELECT DATE(created_at) AS day, COUNT(*)::int AS count
+            FROM conversations
+            WHERE role = 'user' AND created_at >= NOW() - INTERVAL '90 days'
+            GROUP BY day
+            ORDER BY day
+        """)
+        room_rows = await conn.fetch("""
+            SELECT room, COUNT(*)::int AS count
+            FROM memory_palace_nodes
+            WHERE character_id = $1 AND COALESCE(is_box_summary, FALSE) = FALSE
+            GROUP BY room
+            ORDER BY count DESC, room ASC
+        """, character_id)
+        tag_rows = await conn.fetch("""
+            SELECT tags
+            FROM memory_palace_nodes
+            WHERE character_id = $1
+              AND COALESCE(is_box_summary, FALSE) = FALSE
+              AND COALESCE(tags, '') <> ''
+        """, character_id)
+
+    # 活跃时段分组：尽量高密度，不写自然语言判断
+    hour_counts = {int(r["hour"]): int(r["count"] or 0) for r in hour_rows}
+    periods = [
+        ("morning", "早晨 06:00–12:00", range(6, 12)),
+        ("afternoon", "下午 12:00–18:00", range(12, 18)),
+        ("evening", "晚间 18:00–24:00", range(18, 24)),
+        ("late_night", "凌晨 00:00–06:00", range(0, 6)),
+    ]
+    period_items = []
+    period_total = sum(hour_counts.values())
+    for key, label, hours in periods:
+        count = sum(hour_counts.get(h, 0) for h in hours)
+        period_items.append({
+            "key": key,
+            "label": label,
+            "count": count,
+            "percent": _user_activity_meta_pct(count, period_total),
+        })
+    top_hours = sorted(
+        [{"hour": h, "count": c, "percent": _user_activity_meta_pct(c, period_total)}
+         for h, c in hour_counts.items()],
+        key=lambda x: (-x["count"], x["hour"])
+    )[:6]
+
+    # 连续活跃 / 沉默：基于近 90 天有 user 消息的自然日
+    days = []
+    for r in day_rows:
+        d = r["day"]
+        if hasattr(d, "isoformat"):
+            days.append(d.isoformat())
+        else:
+            days.append(str(d))
+    day_set = set(days)
+    longest_streak = 0
+    current_streak = 0
+    longest_gap = 0
+    if days:
+        start_date = min(datetime.fromisoformat(d).date() for d in days)
+        end_date = max(datetime.fromisoformat(d).date() for d in days)
+        cur = start_date
+        last_active = None
+        while cur <= end_date:
+            iso = cur.isoformat()
+            if iso in day_set:
+                current_streak += 1
+                longest_streak = max(longest_streak, current_streak)
+                if last_active is not None:
+                    gap = (cur - last_active).days - 1
+                    longest_gap = max(longest_gap, gap)
+                last_active = cur
+            else:
+                current_streak = 0
+            cur += timedelta(days=1)
+
+    total_nodes = sum(int(r["count"] or 0) for r in room_rows)
+    room_items = []
+    for r in room_rows:
+        room = str(r["room"] or "")
+        count = int(r["count"] or 0)
+        room_items.append({
+            "room": room,
+            "label": _USER_ACTIVITY_META_ROOM_LABELS.get(room, room),
+            "count": count,
+            "percent": _user_activity_meta_pct(count, total_nodes),
+        })
+
+    tag_counts = {}
+    for r in tag_rows:
+        for tag in _user_activity_meta_split_tags(r["tags"]):
+            tag_counts[tag] = tag_counts.get(tag, 0) + 1
+    top_tags = [
+        {"tag": tag, "count": count}
+        for tag, count in sorted(tag_counts.items(), key=lambda kv: (-kv[1], kv[0]))[:20]
+    ]
+
+    first_user_at = conv_stats.get("first_user_at") if conv_stats else None
+    last_user_at = conv_stats.get("last_user_at") if conv_stats else None
+    generated_at = datetime.now(timezone.utc)
+
+    result = {
+        "status": "ok",
+        "character_id": character_id,
+        "generated_at": generated_at.isoformat(),
+        "generated_at_text": generated_at.strftime("%Y-%m-%d %H:%M UTC"),
+        "window": "近 90 天节律 / 全量主题",
+        "activity": {
+            "user_messages": int((conv_stats or {}).get("user_messages") or 0),
+            "active_days_all": int((conv_stats or {}).get("active_days_all") or 0),
+            "active_days_30": int((conv_stats or {}).get("active_days_30") or 0),
+            "active_days_90": int((conv_stats or {}).get("active_days_90") or 0),
+            "first_user_at": first_user_at.isoformat() if first_user_at else None,
+            "last_user_at": last_user_at.isoformat() if last_user_at else None,
+            "periods": period_items,
+            "top_hours": top_hours,
+            "longest_streak_90": longest_streak,
+            "longest_gap_90": longest_gap,
+        },
+        "themes": {
+            "memory_count": total_nodes,
+            "rooms": room_items,
+            "top_tags": top_tags,
+        },
+    }
+    return _cache_set(cache_key, result, ttl=900)
+
+
+def format_user_activity_meta_for_prompt_data(meta: dict) -> str:
+    if not isinstance(meta, dict) or meta.get("status") != "ok":
+        return ""
+    activity = meta.get("activity") or {}
+    themes = meta.get("themes") or {}
+    lines = [
+        "### [用户长期活跃元数据] (User Activity Meta)",
+        f"统计窗口：{meta.get('window') or '近 90 天节律 / 全量主题'}；生成时间：{meta.get('generated_at_text') or ''}",
+        "",
+        "【活跃节律】",
+        f"- 用户消息总数：{activity.get('user_messages') or 0}",
+        f"- 活跃天数：近30天 {activity.get('active_days_30') or 0} / 30；近90天 {activity.get('active_days_90') or 0} / 90；全量 {activity.get('active_days_all') or 0}",
+        f"- 近90天最长连续活跃：{activity.get('longest_streak_90') or 0} 天；最长沉默：{activity.get('longest_gap_90') or 0} 天",
+    ]
+    period_lines = []
+    for item in activity.get("periods") or []:
+        period_lines.append(f"{item.get('label')} {item.get('percent') or 0}%({item.get('count') or 0})")
+    if period_lines:
+        lines.append("- 活跃时段：" + "；".join(period_lines))
+    top_hours = activity.get("top_hours") or []
+    if top_hours:
+        lines.append("- 高频小时：" + "、".join(f"{int(x.get('hour') or 0):02d}:00({x.get('count') or 0})" for x in top_hours[:6]))
+
+    lines.extend(["", "【主题分布】"])
+    lines.append(f"- 记忆节点数：{themes.get('memory_count') or 0}")
+    rooms = themes.get("rooms") or []
+    if rooms:
+        lines.append("- 房间占比：" + "；".join(
+            f"{x.get('label') or x.get('room')} {x.get('percent') or 0}%({x.get('count') or 0})"
+            for x in rooms[:7]
+        ))
+    tags = themes.get("top_tags") or []
+    if tags:
+        lines.append("- 高频标签：" + "、".join(f"{x.get('tag')}({x.get('count')})" for x in tags[:12]))
+    lines.append("")
+    return "\n".join(lines)
+
+
+async def format_user_activity_meta_for_prompt(character_id: str = "default") -> str:
+    character_id = character_id or "default"
+    cache_key = f"prompt_var:user_activity_meta:{character_id}"
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
+    meta = await collect_user_activity_meta(character_id=character_id, force=False)
+    result = format_user_activity_meta_for_prompt_data(meta)
+    return _cache_set(cache_key, result, ttl=900)
+
+
+async def replace_user_activity_meta_variables(prompt: str, character_id: str = "default") -> str:
+    if not isinstance(prompt, str) or "{{user_activity_meta" not in prompt:
+        return prompt
+    pattern = re.compile(r"\{\{user_activity_meta\}\}")
+    replacement = await format_user_activity_meta_for_prompt(character_id=character_id)
+    return pattern.sub(replacement, prompt)
+
+
+@app.post("/api/user-activity-meta/refresh")
+async def api_user_activity_meta_refresh(request: Request):
+    if not MEMORY_ENABLED:
+        return {"error": "记忆系统未启用"}
+    try:
+        try:
+            data = await request.json()
+        except Exception:
+            data = {}
+        character_id = (data or {}).get("character_id") or "default"
+        force = bool((data or {}).get("force", True))
+        meta = await collect_user_activity_meta(character_id=character_id, force=force)
+        # 手动统计后同步刷新 prompt 变量缓存，方便立刻检测。
+        _cache_set(f"prompt_var:user_activity_meta:{character_id}", format_user_activity_meta_for_prompt_data(meta), ttl=900)
+        return meta
+    except Exception as e:
+        return JSONResponse({"status": "error", "error": str(e)}, status_code=500)
+
+
+@app.get("/api/user-activity-meta")
+async def api_get_user_activity_meta(character_id: str = "default"):
+    if not MEMORY_ENABLED:
+        return {"error": "记忆系统未启用"}
+    try:
+        character_id = character_id or "default"
+        cached = _cache_get(f"user_activity_meta:{character_id}")
+        if cached is None:
+            return {"status": "not_found", "character_id": character_id}
+        return cached
+    except Exception as e:
+        return JSONResponse({"status": "error", "error": str(e)}, status_code=500)
+
 
 # ============================================================
 # 用户画像 / 印象档案（User Impression）阶段 1：基础 API

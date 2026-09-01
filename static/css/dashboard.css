@@ -1655,3 +1655,127 @@ body {
     font-size: 11px;
 }
 
+
+
+/* 用户长期活跃元数据 */
+.uam-head {
+    display:flex;
+    justify-content:space-between;
+    align-items:flex-start;
+    gap:12px;
+    flex-wrap:wrap;
+    margin-bottom:14px;
+}
+.uam-title {
+    font-size:15px;
+    font-weight:900;
+    color:#334155;
+    letter-spacing:.04em;
+}
+.uam-sub {
+    font-size:12px;
+    color:var(--text-muted);
+    margin-top:4px;
+}
+.uam-sub code {
+    background:rgba(15,23,42,.06);
+    border:1px solid rgba(148,163,184,.25);
+    padding:1px 6px;
+    border-radius:999px;
+    color:#475569;
+}
+.uam-grid {
+    display:grid;
+    grid-template-columns:repeat(auto-fit,minmax(280px,1fr));
+    gap:14px;
+}
+.uam-panel {
+    border:1px solid rgba(148,163,184,.28);
+    border-radius:16px;
+    padding:14px;
+    background:linear-gradient(180deg,rgba(255,255,255,.88),rgba(248,250,252,.74));
+}
+.uam-panel-title {
+    font-size:13px;
+    font-weight:900;
+    color:#475569;
+    margin-bottom:10px;
+}
+.uam-kpis {
+    display:grid;
+    grid-template-columns:repeat(auto-fit,minmax(92px,1fr));
+    gap:8px;
+    margin-bottom:12px;
+}
+.uam-kpis div {
+    border:1px solid rgba(148,163,184,.22);
+    border-radius:12px;
+    padding:8px 10px;
+    background:rgba(255,255,255,.72);
+}
+.uam-kpis b {
+    display:block;
+    font-size:16px;
+    color:#334155;
+}
+.uam-kpis span {
+    display:block;
+    font-size:11px;
+    color:var(--text-muted);
+    margin-top:2px;
+}
+.uam-list {
+    display:grid;
+    gap:8px;
+}
+.uam-row {
+    display:grid;
+    grid-template-columns:minmax(92px,1fr) minmax(90px,1.2fr) auto;
+    align-items:center;
+    gap:8px;
+    font-size:12px;
+    color:#475569;
+}
+.uam-row em {
+    font-style:normal;
+    color:var(--text-muted);
+    white-space:nowrap;
+}
+.uam-bar {
+    height:8px;
+    border-radius:999px;
+    background:rgba(148,163,184,.18);
+    overflow:hidden;
+}
+.uam-bar-fill {
+    height:100%;
+    border-radius:999px;
+    background:linear-gradient(90deg,#b6c7dc,#e8a7bb);
+}
+.uam-tags {
+    display:flex;
+    gap:6px;
+    flex-wrap:wrap;
+    margin-top:12px;
+}
+.uam-tags span {
+    display:inline-flex;
+    align-items:center;
+    gap:5px;
+    border:1px solid rgba(148,163,184,.28);
+    background:rgba(255,255,255,.72);
+    border-radius:999px;
+    padding:4px 8px;
+    font-size:12px;
+    color:#475569;
+}
+.uam-tags b {
+    font-size:10px;
+    color:#64748b;
+}
+.uam-muted,
+.uam-empty {
+    font-size:13px;
+    color:var(--text-muted);
+    line-height:1.7;
+}

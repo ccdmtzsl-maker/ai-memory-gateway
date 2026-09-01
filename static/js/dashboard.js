@@ -106,6 +106,7 @@ function switchSection(name) {
     }
     if (name === 'user-impression') {
         loadUserImpression();
+        loadUserActivityMeta();
     }
     if (name === 'logs') {
         loadDashboardLogs();
@@ -2270,6 +2271,7 @@ let _userImpressionPreviewAbortController = null;
 let _userImpressionGenerating = false;
 let _userImpressionPreviewRequestId = 0;
 let _userImpressionEditOpen = false;
+let _userActivityMetaCurrent = null;
 
 function uiEsc(v) {
     return String(v === undefined || v === null ? '' : v)
@@ -2306,6 +2308,123 @@ function uiTextBlock(title, text) {
         uiNoteHeading(title, 'pink') +
         '<div style="font-size:14px;line-height:1.85;white-space:pre-wrap;color:#4f5660;">' + uiEsc(text || '暂无') + '</div>'
     );
+}
+
+
+function userActivityMetaBar(percent) {
+    const p = Math.max(0, Math.min(100, Number(percent || 0)));
+    return '<div class="uam-bar"><div class="uam-bar-fill" style="width:' + p + '%;"></div></div>';
+}
+
+function renderUserActivityMeta(meta) {
+    const el = document.getElementById('userActivityMetaCard');
+    if (!el) return;
+    if (!meta || meta.status !== 'ok') {
+        el.innerHTML =
+            '<div class="uam-head">' +
+                '<div><div class="uam-title">用户长期活跃元数据</div>' +
+                '<div class="uam-sub">只统计活跃节律和主题分布；不会写入用户画像。Prompt 变量：<code>{{user_activity_meta}}</code></div></div>' +
+                '<button class="btn btn-secondary" onclick="refreshUserActivityMeta()">统计</button>' +
+            '</div>' +
+            '<div class="uam-empty">尚未统计。点击“统计活跃元数据”手动刷新。</div>';
+        return;
+    }
+    const activity = meta.activity || {};
+    const themes = meta.themes || {};
+    const periods = activity.periods || [];
+    const rooms = themes.rooms || [];
+    const tags = themes.top_tags || [];
+
+    let html = '<div class="uam-head">' +
+        '<div><div class="uam-title">用户长期活跃元数据</div>' +
+        '<div class="uam-sub">统计窗口：' + uiEsc(meta.window || '近 90 天节律 / 全量主题') +
+        ' · 生成：' + uiEsc(meta.generated_at_text || '') +
+        ' · Prompt 变量：<code>{{user_activity_meta}}</code></div></div>' +
+        '<button class="btn btn-secondary" onclick="refreshUserActivityMeta()">重新统计</button>' +
+        '</div>';
+
+    html += '<div class="uam-grid">';
+    html += '<div class="uam-panel"><div class="uam-panel-title">活跃节律</div>' +
+        '<div class="uam-kpis">' +
+            '<div><b>' + uiEsc(activity.user_messages || 0) + '</b><span>用户消息</span></div>' +
+            '<div><b>' + uiEsc(activity.active_days_30 || 0) + '/30</b><span>近30天活跃</span></div>' +
+            '<div><b>' + uiEsc(activity.active_days_90 || 0) + '/90</b><span>近90天活跃</span></div>' +
+            '<div><b>' + uiEsc(activity.longest_streak_90 || 0) + '天</b><span>最长连续</span></div>' +
+            '<div><b>' + uiEsc(activity.longest_gap_90 || 0) + '天</b><span>最长沉默</span></div>' +
+        '</div>';
+
+    html += '<div class="uam-list">';
+    if (periods.length) {
+        periods.forEach(function(p) {
+            html += '<div class="uam-row"><span>' + uiEsc(p.label || p.key || '') + '</span>' +
+                userActivityMetaBar(p.percent || 0) +
+                '<em>' + uiEsc(p.percent || 0) + '% · ' + uiEsc(p.count || 0) + '</em></div>';
+        });
+    } else {
+        html += '<div class="uam-muted">暂无近90天时段数据。</div>';
+    }
+    html += '</div></div>';
+
+    html += '<div class="uam-panel"><div class="uam-panel-title">主题分布</div>' +
+        '<div class="uam-muted">记忆节点：' + uiEsc(themes.memory_count || 0) + '</div>' +
+        '<div class="uam-list">';
+    if (rooms.length) {
+        rooms.forEach(function(r) {
+            html += '<div class="uam-row"><span>' + uiEsc(r.label || r.room || '') + '</span>' +
+                userActivityMetaBar(r.percent || 0) +
+                '<em>' + uiEsc(r.percent || 0) + '% · ' + uiEsc(r.count || 0) + '</em></div>';
+        });
+    } else {
+        html += '<div class="uam-muted">暂无记忆主题数据。</div>';
+    }
+    html += '</div>';
+    if (tags.length) {
+        html += '<div class="uam-tags">' + tags.slice(0, 16).map(function(t) {
+            return '<span>' + uiEsc(t.tag || '') + '<b>' + uiEsc(t.count || 0) + '</b></span>';
+        }).join('') + '</div>';
+    }
+    html += '</div></div>';
+    el.innerHTML = html;
+}
+
+async function loadUserActivityMeta() {
+    const el = document.getElementById('userActivityMetaCard');
+    if (!el) return;
+    if (_userActivityMetaCurrent) {
+        renderUserActivityMeta(_userActivityMetaCurrent);
+        return;
+    }
+    renderUserActivityMeta(null);
+    try {
+        const resp = await fetch('/api/user-activity-meta?character_id=default');
+        const data = await resp.json();
+        if (data.status === 'ok') {
+            _userActivityMetaCurrent = data;
+            renderUserActivityMeta(data);
+        }
+    } catch (e) {
+        console.warn('load user activity meta failed', e);
+    }
+}
+
+async function refreshUserActivityMeta() {
+    const el = document.getElementById('userActivityMetaCard');
+    if (el) el.innerHTML = '<div class="uam-muted">正在统计活跃元数据...</div>';
+    try {
+        const resp = await fetch('/api/user-activity-meta/refresh', {
+            method: 'POST',
+            headers: {'Content-Type':'application/json'},
+            body: JSON.stringify({character_id:'default', force:true})
+        });
+        const data = await resp.json();
+        if (data.status !== 'ok') throw new Error(data.error || '统计失败');
+        _userActivityMetaCurrent = data;
+        renderUserActivityMeta(data);
+        showUserImpressionMsg('success', '活跃元数据已刷新。');
+    } catch (e) {
+        if (el) el.innerHTML = '<div class="msg-box msg-error">统计失败：' + uiEsc(e.message) + '</div>';
+        showUserImpressionMsg('error', '活跃元数据统计失败：' + e.message);
+    }
 }
 
 function renderUserImpressionObject(imp) {
@@ -2622,8 +2741,13 @@ function renderUserImpression() {
     renderUserImpressionEditorCard();
 }
 
-async function loadUserImpression() {
+async function loadUserImpression(force) {
     const el = document.getElementById('uiCurrentImpression');
+    if (force) {
+        _userImpressionCurrent = null;
+        _userActivityMetaCurrent = null;
+        loadUserActivityMeta();
+    }
     // 已有数据时直接渲染，不闪加载中
     if (_userImpressionCurrent !== null) {
         renderUserImpression();

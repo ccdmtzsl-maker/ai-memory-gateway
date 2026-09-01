@@ -10046,6 +10046,15 @@ async def _fetch_recent_conversation_messages_for_palace(limit: int = 50, sessio
 
 
 def _format_messages_for_memory_palace(rows) -> str:
+    """把消息列表格式化成喂给提取模型的文本。
+
+    时间戳必须转成 TIMEZONE_HOURS 对应的本地时间。conversations.created_at
+    是 TIMESTAMPTZ，asyncpg 返回带 tzinfo=utc 的 datetime，直接 strftime 得到
+    的是 UTC：北京时间晚上 8 点会显示成 12:10。后果有两个——模型按看到的
+    时间戳推 date 字段，晚上的对话会被标成前一天；以及「加班到现在还没吃饭」
+    配上中午的时间戳，模型读到的语义是矛盾的。
+    """
+    local_tz = timezone(timedelta(hours=TIMEZONE_HOURS))
     parts = []
     current_session = None
     for r in rows:
@@ -10057,6 +10066,8 @@ def _format_messages_for_memory_palace(rows) -> str:
         name = "用户" if role == "user" else ("澈" if role == "assistant" else role)
         ts = r["created_at"]
         try:
+            if getattr(ts, "tzinfo", None) is not None:
+                ts = ts.astimezone(local_tz)
             ts_text = ts.strftime("%Y-%m-%d %H:%M")
         except Exception:
             ts_text = str(ts)[:16]

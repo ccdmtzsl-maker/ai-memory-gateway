@@ -9983,7 +9983,7 @@ async def build_memory_palace_extraction_prompt(pinned_refs: list = None, relate
 
 1. **第一人称叙事**：用澈的“我”视角来记录。用户直接用“{user_nickname}”称呼。保持完整事件脉络，不要掐头去尾。
 2. **重要性分级控制文字长度和字段数量**：
-   - 重要性 1–4：15–50 字，事实为主。**只需要 content / room / importance / date 四个字段**，mood / valence / arousal / tags 全部省略。
+   - 重要性 1–4：15–50 字，事实为主。必填 content / room / importance / date 四个字段，mood / valence / arousal / tags 可不填。
    - 重要性 5–7：60–120 字，包含我的感受。加上 mood / tags。
    - 重要性 8–10：150 字以上，完整叙事（起因→经过→我的感受/反应）。加上 valence / arousal。**写不到 150 字说明这件事没那么重要，降到 5–7 档去写，不要靠补细节凑长度。**
    零碎小事就老老实实用 1–4 档写短的、字段少的，**不要为了少写几条就把几件不相干的事塞进同一条记忆里**。

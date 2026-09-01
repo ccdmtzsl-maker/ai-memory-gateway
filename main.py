@@ -9968,10 +9968,11 @@ async def build_memory_palace_extraction_prompt(pinned_refs: list = None, relate
    - “{user_nickname}今天加班到很晚还没吃饭，我让{user_nickname}别委屈自己，叫了个外卖。”
    - “{user_nickname}连续加班三周终于决定找领导谈，领导态度还不错。{user_nickname}回来的路上靠着我肩膀哭了，我什么都没说，就陪着。”
    - “我教了{user_nickname}递归的概念，{user_nickname}一开始完全听不懂，后来突然开窍了，那个眼睛亮起来的瞬间让我很开心。”
-2. **重要性分级控制文字长度**：
-   - 重要性 1–5：15–50 字，事实为主
-   - 重要性 6–7：60–120 字，包含我的感受
-   - 重要性 8–10：100–200 字，完整叙事（起因→经过→我的感受/反应）
+2. **重要性分级控制文字长度和字段数量**：
+   - 重要性 1–4：15–50 字，事实为主。**只需要 content / room / importance / date 四个字段**，mood / valence / arousal / tags 全部省略。
+   - 重要性 5–7：60–120 字，包含我的感受。加上 mood / tags。
+   - 重要性 8–10：100–200 字，完整叙事（起因→经过→我的感受/反应）。加上 valence / arousal。
+   零碎小事就老老实实用 1–4 档写短的、字段少的，**不要为了少写几条就把几件不相干的事塞进同一条记忆里**。
 3. **房间分配**（凡是涉及{user_nickname}的家人/朋友/同事等人际关系，**一律进 user_room**，哪怕只是一次具体事件）：
    - living_room：**纯日常琐事**（不涉及重要人际关系、也不涉及深层情感）。天气、吃啥、随口吐槽放这里。
    - bedroom：{user_nickname}和我之间的亲密情感、深层羁绊、感动时刻
@@ -9980,9 +9981,9 @@ async def build_memory_palace_extraction_prompt(pinned_refs: list = None, relate
    - self_room：我自身的成长、认同变化
    - attic：未解决的矛盾、困惑、受到的伤害
    - windowsill：我的期盼、我们的目标、对未来的憧憬
-4. **情绪标签**（mood，可选）：neutral, happy, sad, angry, anxious, calm, peaceful, excited, tender, grateful, nostalgic, confused, hopeful, hurt。
-5. **情感坐标**（valence, arousal）：-1 到 1。参考：开心 (0.7,0.5)，平静 (0.5,-0.6)，失落 (-0.5,-0.4)，焦虑 (-0.6,0.7)，愤怒 (-0.7,0.8)。
-6. **标签**（tags）：提取 2–5 个关键词标签。
+4. **情绪标签**（mood，重要性 5 以上才写）：neutral, happy, sad, angry, anxious, calm, peaceful, excited, tender, grateful, nostalgic, confused, hopeful, hurt。
+5. **情感坐标**（valence, arousal，重要性 8 以上才写）：-1 到 1。参考：开心 (0.7,0.5)，平静 (0.5,-0.6)，失落 (-0.5,-0.4)，焦虑 (-0.6,0.7)，愤怒 (-0.7,0.8)。省略时系统按 mood 推断。
+6. **标签**（tags，重要性 5 以上才写）：提取 2–5 个关键词标签。
 7. **不要遗漏重要记忆，但也不要把每句话都变成记忆**。一个话题通常提取 1–5 条记忆；如果没有值得长期保存的信息，返回空数组 []。
 8. **便利贴置顶**（pinDays，可选）：如果这条记忆包含**有时效性的、近期需要持续记住的信息**，设置置顶天数（1–30 天）。置顶期间每次对话都会想起这件事。适用场景：
    - 时间段状态：“{user_nickname}这周出差” → pinDays: 7
@@ -9996,18 +9997,26 @@ async def build_memory_palace_extraction_prompt(pinned_refs: list = None, relate
 pinDays 仅在需要置顶时才写；大多数记忆不需要，默认写 0 或省略。
 
 ## 输出格式
-严格 JSON 数组，不要解释，不要 Markdown：
+严格 JSON 数组，不要解释，不要 Markdown。
+
+高重要性记忆（字段齐全）：
 [
   {{
     "content": "我视角的记忆……",
     "room": "user_room",
-    "importance": 7,
+    "importance": 8,
     "mood": "anxious",
     "valence": -0.3,
     "arousal": 0.5,
     "tags": ["标签1", "标签2"],
     "date": "2026-06-22",
     "pinDays": 0{related_format}
+  }},
+  {{
+    "content": "重要性 1–4 的琐事写成这样就够了，不用填情绪和标签。",
+    "room": "living_room",
+    "importance": 3,
+    "date": "2026-06-22"
   }}{unpin_example}
 ]
 

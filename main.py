@@ -9902,6 +9902,12 @@ async def bind_memory_palace_event_boxes(event_links: list, event_hints: dict, c
                 if nid not in live_ids:
                     live_ids.append(nid)
             # A node should belong to one active EventBox only. Remove these nodes from other boxes first.
+            #
+            # 必须限定「真的装着这些节点的盒子」。之前只写 id <> $2，等于每次绑一条
+            # 关联就把该角色其它所有盒子的 updated_at 刷成 NOW()——array_remove 对
+            # 不含该节点的盒子是空操作，但 updated_at = NOW() 照样生效。列表接口按
+            # updated_at DESC 排序并显示这个时间，于是仪表盘上所有盒子的日期会被
+            # 抹平成同一天，也看不出哪个盒子最近真的有新片段。
             if target_node_ids:
                 await conn.execute("""
                     UPDATE memory_palace_event_boxes
@@ -9909,7 +9915,11 @@ async def bind_memory_palace_event_boxes(event_links: list, event_hints: dict, c
                         archived_memory_ids = array_remove(array_remove(archived_memory_ids, $3), $4),
                         updated_at = NOW()
                     WHERE character_id = $1 AND id <> $2
-                """, character_id, box_id, target_node_ids[0], target_node_ids[1] if len(target_node_ids) > 1 else target_node_ids[0])
+                      AND (
+                          live_memory_ids && $5::text[]
+                          OR archived_memory_ids && $5::text[]
+                      )
+                """, character_id, box_id, target_node_ids[0], target_node_ids[1] if len(target_node_ids) > 1 else target_node_ids[0], list(dict.fromkeys(target_node_ids)))
             tags = _merge_text_tags((box or {}).get("tags"), hint.get("eventTags") or [], by_id[existing_id].get("tags"), by_id[new_id].get("tags"))
             name = (box or {}).get("name") or hint.get("eventName") or "未命名事件"
             if hint.get("eventName") and name == "未命名事件":

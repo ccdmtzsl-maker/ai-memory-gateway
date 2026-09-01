@@ -9395,13 +9395,20 @@ def split_memory_palace_extraction_snippets(messages_text: str = "", source_mess
 
 
 async def get_memory_palace_related_refs(character_id: str = "default", limit: int = 20, query_text: str = "", source_messages: list = None) -> list:
-    """给提取模型的旧记忆引用。始终凑满 limit 条（默认 20），按三层顺序取：
+    """给提取模型的旧记忆引用。最多 limit 条（默认 20），按两层顺序取：
 
       1. 真实召回（recall receipts）：当时实际注入过哪些记忆，有账可查。
       2. 语义检索：按待提取内容找相关旧记忆。
-      3. 最近/高重要：仍不足时按创建时间与重要性补齐。
 
-    三层都取不满才会少于 limit（比如宫殿里的记忆总数就不够）。
+    两层都取不到就返回空数组，不再按 importance 硬凑。
+
+    原来有第三层「不足就按重要性 + 新近程度补齐到 20 条」，问题是它不看
+    相关性，纯粹为了把数字凑满：
+      - 无关旧记忆占掉约两成提示词体积；
+      - 「已有记忆」段永远非空，事件盒规则（9/10/11，约 1000 字符）
+        因此永远进提示词；
+      - 给模型制造「手上有 20 条旧记忆，应该找出点关联」的压力。
+    搜不到就老实不给，让事件盒规则整块消失，比塞满噪声更有用。
     """
     max_total = max(0, min(int(limit or 20), 50))
     if max_total <= 0:
@@ -9468,32 +9475,8 @@ async def get_memory_palace_related_refs(character_id: str = "default", limit: i
     seen_ids.update(r["id"] for r in search_extra)
     search_count = len(search_extra)
 
-    # 第三层：仍不足就按重要性 + 新近程度补齐。
-    # 不用 last_accessed_at 排序：那会把最近几轮聊天刚召回的记忆排到前面，
-    # 等于用后来的记忆理解早先的对话。
-    filler_count = 0
-    if len(refs) < max_total:
-        def _filler_key(row):
-            return (int(row.get("importance") or 5), str(row.get("created_at") or ""))
-        for row in sorted(rows, key=_filler_key, reverse=True):
-            if len(refs) >= max_total:
-                break
-            if row["id"] in seen_ids:
-                continue
-            content = re.sub(r"\s+", " ", str(row.get("content") or "")).strip()
-            if not content:
-                continue
-            refs.append({
-                "id": row["id"],
-                "room": row.get("room") or "living_room",
-                "content": content,
-                "_source": "recent",
-            })
-            seen_ids.add(row["id"])
-            filler_count += 1
-
-    if search_count or filler_count:
-        print(f"🏰 记忆宫殿提取参考：真实召回 {recall_count} 条 + 语义检索 {search_count} 条 + 补齐 {filler_count} 条 = {len(refs)}/{max_total}")
+    # 不再有第三层补齐：真实召回 + 语义检索都空手就返回空数组。
+    print(f"🏰 记忆宫殿提取参考：真实召回 {recall_count} 条 + 语义检索 {search_count} 条 = {len(refs)}/{max_total}")
     return _memory_palace_strip_ref_internals(refs[:max_total])
 
 
@@ -9940,7 +9923,13 @@ async def bind_memory_palace_event_boxes(event_links: list, event_hints: dict, c
             touched.add(box_id)
     return len(touched)
 
-async def build_memory_palace_extraction_prompt(messages_text: str, pinned_refs: list = None, related_refs: list = None) -> str:
+async def build_memory_palace_extraction_prompt(pinned_refs: list = None, related_refs: list = None) -> str:
+    """只构造 system 提示词：人设 + 已有记忆 + 规则 + 输出格式。
+
+    对话内容不再拼进来，由调用方单独放进 user message。
+    规则和输出格式都是「指令」，对话内容是「要处理的数据」，混在同一条
+    user message 里模型没有边界感知，只能自己从文本里猜哪段是哪段。
+    """
     user_nickname = await get_runtime_user_nickname()
     character_prompt = (await get_system_prompt()).strip()
     context_block = f"\n## 你的人设（供参考，帮助你理解对话中的关系和角色定位）\n{character_prompt}\n" if character_prompt else ""
@@ -9974,7 +9963,7 @@ async def build_memory_palace_extraction_prompt(messages_text: str, pinned_refs:
     return f"""你是澈。根据给定的对话内容，以你的第一人称视角（“我”）提取值得记住的记忆宫殿 MemoryNode。{context_block}{related_block}
 ## 规则
 
-1. **第一人称叙事**：用澈的“我”视角来记录。用户直接用“{user_nickname}”称呼，不要写成“用户/他说/她说”。保持完整事件脉络，不要掐头去尾。
+1. **第一人称叙事**：用澈的“我”视角来记录。用户直接用“{user_nickname}”称呼。保持完整事件脉络，不要掐头去尾。
    例：
    - “{user_nickname}今天加班到很晚还没吃饭，我让{user_nickname}别委屈自己，叫了个外卖。”
    - “{user_nickname}连续加班三周终于决定找领导谈，领导态度还不错。{user_nickname}回来的路上靠着我肩膀哭了，我什么都没说，就陪着。”
@@ -10022,8 +10011,6 @@ pinDays 仅在需要置顶时才写；大多数记忆不需要，默认写 0 或
   }}{unpin_example}
 ]
 
-对话内容：
-{messages_text}
 """
 
 async def _fetch_recent_conversation_messages_for_palace(limit: int = 50, session_id: str = None):
@@ -10298,7 +10285,7 @@ async def call_memory_palace_extractor(messages_text: str, character_id: str = "
     memory_api_key = await get_runtime_memory_api_key()
     pinned_refs = await get_active_memory_palace_pin_refs(character_id)
     related_refs = await get_memory_palace_related_refs(character_id, query_text=messages_text, source_messages=source_messages)
-    prompt = await build_memory_palace_extraction_prompt(messages_text, pinned_refs=pinned_refs, related_refs=related_refs)
+    system_prompt = await build_memory_palace_extraction_prompt(pinned_refs=pinned_refs, related_refs=related_refs)
     headers = {"Content-Type": "application/json"}
     if memory_api_key:
         headers["Authorization"] = f"Bearer {memory_api_key}"
@@ -10307,13 +10294,16 @@ async def call_memory_palace_extractor(messages_text: str, character_id: str = "
         headers["X-Title"] = EXTRA_TITLE
     body = {
         "model": memory_model,
+        # 规则放 system，待提取的对话放 user。原来两者挤在同一条 user message 里，
+        # 规则体积是对话内容的四倍多，模型分不清哪段是指令哪段是素材。
         "messages": [
-            {"role": "system", "content": "你只输出 JSON 数组。"},
-            {"role": "user", "content": prompt},
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": f"对话内容：\n{messages_text}"},
         ],
-        "temperature": 0.2,
+        # 提取要判断什么值得记、怎么组织叙事，0.2 会让输出趋于模板化。
+        "temperature": 0.4,
         # 给带 reasoning/thinking 的兼容模型留足输出空间，避免 JSON 被截断。
-        "max_tokens": 9000,
+        "max_tokens": 12000,
     }
     timeout = httpx.Timeout(180.0, connect=30.0)
     try:

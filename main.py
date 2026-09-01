@@ -7968,36 +7968,45 @@ async def collect_user_activity_meta(character_id: str = "default", force: bool 
         if cached is not None:
             return cached
 
+    tz_hours = int(TIMEZONE_HOURS or 0)
+    local_tz = timezone(timedelta(hours=tz_hours))
+
     pool = await get_pool()
     async with pool.acquire() as conn:
+        # created_at 是 TIMESTAMPTZ；DATE()/EXTRACT 会按数据库会话时区算，
+        # asyncpg 默认会话是 UTC，直接用会把本地晚上的对话算到前一天/错误时段。
+        # 所以统一先折算到 TIMEZONE_HOURS 指定的本地时区再取日期和小时。
         conv_stats = await conn.fetchrow("""
             SELECT
                 COUNT(*) FILTER (WHERE role = 'user')::int AS user_messages,
-                COUNT(DISTINCT DATE(created_at)) FILTER (WHERE role = 'user')::int AS active_days_all,
-                COUNT(DISTINCT DATE(created_at)) FILTER (
+                COUNT(DISTINCT ((created_at AT TIME ZONE 'UTC') + make_interval(hours => $1))::date)
+                    FILTER (WHERE role = 'user')::int AS active_days_all,
+                COUNT(DISTINCT ((created_at AT TIME ZONE 'UTC') + make_interval(hours => $1))::date) FILTER (
                     WHERE role = 'user' AND created_at >= NOW() - INTERVAL '30 days'
                 )::int AS active_days_30,
-                COUNT(DISTINCT DATE(created_at)) FILTER (
+                COUNT(DISTINCT ((created_at AT TIME ZONE 'UTC') + make_interval(hours => $1))::date) FILTER (
                     WHERE role = 'user' AND created_at >= NOW() - INTERVAL '90 days'
                 )::int AS active_days_90,
                 MIN(created_at) FILTER (WHERE role = 'user') AS first_user_at,
                 MAX(created_at) FILTER (WHERE role = 'user') AS last_user_at
             FROM conversations
-        """)
+        """, tz_hours)
         hour_rows = await conn.fetch("""
-            SELECT EXTRACT(HOUR FROM created_at)::int AS hour, COUNT(*)::int AS count
+            SELECT EXTRACT(HOUR FROM ((created_at AT TIME ZONE 'UTC') + make_interval(hours => $1)))::int AS hour,
+                   COUNT(*)::int AS count
             FROM conversations
             WHERE role = 'user' AND created_at >= NOW() - INTERVAL '90 days'
             GROUP BY hour
             ORDER BY hour
-        """)
+        """, tz_hours)
         day_rows = await conn.fetch("""
-            SELECT DATE(created_at) AS day, COUNT(*)::int AS count
+            SELECT ((created_at AT TIME ZONE 'UTC') + make_interval(hours => $1))::date AS day,
+                   COUNT(*)::int AS count
             FROM conversations
             WHERE role = 'user' AND created_at >= NOW() - INTERVAL '90 days'
             GROUP BY day
             ORDER BY day
-        """)
+        """, tz_hours)
         room_rows = await conn.fetch("""
             SELECT room, COUNT(*)::int AS count
             FROM memory_palace_nodes
@@ -8091,12 +8100,25 @@ async def collect_user_activity_meta(character_id: str = "default", force: bool 
     first_user_at = conv_stats.get("first_user_at") if conv_stats else None
     last_user_at = conv_stats.get("last_user_at") if conv_stats else None
     generated_at = datetime.now(timezone.utc)
+    generated_at_local = generated_at.astimezone(local_tz)
+    tz_label = f"UTC{'+' if tz_hours >= 0 else '-'}{abs(tz_hours)}"
+
+    def _local_text(value):
+        if not value:
+            return None
+        try:
+            dt = value if getattr(value, "tzinfo", None) else value.replace(tzinfo=timezone.utc)
+            return dt.astimezone(local_tz).strftime("%Y-%m-%d %H:%M")
+        except Exception:
+            return None
 
     result = {
         "status": "ok",
         "character_id": character_id,
+        "timezone_hours": tz_hours,
+        "timezone_label": tz_label,
         "generated_at": generated_at.isoformat(),
-        "generated_at_text": generated_at.strftime("%Y-%m-%d %H:%M UTC"),
+        "generated_at_text": f"{generated_at_local.strftime('%Y-%m-%d %H:%M')} {tz_label}",
         "window": "近 90 天节律 / 全量主题",
         "activity": {
             "user_messages": int((conv_stats or {}).get("user_messages") or 0),
@@ -8105,6 +8127,8 @@ async def collect_user_activity_meta(character_id: str = "default", force: bool 
             "active_days_90": int((conv_stats or {}).get("active_days_90") or 0),
             "first_user_at": first_user_at.isoformat() if first_user_at else None,
             "last_user_at": last_user_at.isoformat() if last_user_at else None,
+            "first_user_at_text": _local_text(first_user_at),
+            "last_user_at_text": _local_text(last_user_at),
             "periods": period_items,
             "top_hours": top_hours,
             "longest_streak_90": longest_streak,
@@ -8126,7 +8150,7 @@ def format_user_activity_meta_for_prompt_data(meta: dict) -> str:
     themes = meta.get("themes") or {}
     lines = [
         "### [用户长期活跃元数据] (User Activity Meta)",
-        f"统计窗口：{meta.get('window') or '近 90 天节律 / 全量主题'}；生成时间：{meta.get('generated_at_text') or ''}",
+        f"统计窗口：{meta.get('window') or '近 90 天节律 / 全量主题'}；生成时间：{meta.get('generated_at_text') or ''}；时段按 {meta.get('timezone_label') or 'UTC+8'} 本地时间统计",
         "",
         "【活跃节律】",
         f"- 用户消息总数：{activity.get('user_messages') or 0}",

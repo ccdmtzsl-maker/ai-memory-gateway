@@ -2338,6 +2338,7 @@ function renderUserActivityMeta(meta) {
     let html = '<div class="uam-head">' +
         '<div><div class="uam-title">用户长期活跃元数据</div>' +
         '<div class="uam-sub">统计窗口：' + uiEsc(meta.window || '近 90 天节律 / 全量主题') +
+        ' · 时段时区：' + uiEsc(meta.timezone_label || 'UTC+8') +
         ' · 生成：' + uiEsc(meta.generated_at_text || '') +
         ' · Prompt 变量：<code>{{user_activity_meta}}</code></div></div>' +
         '<button class="btn btn-secondary" onclick="refreshUserActivityMeta()">重新统计</button>' +
@@ -2352,6 +2353,11 @@ function renderUserActivityMeta(meta) {
             '<div><b>' + uiEsc(activity.longest_streak_90 || 0) + '天</b><span>最长连续</span></div>' +
             '<div><b>' + uiEsc(activity.longest_gap_90 || 0) + '天</b><span>最长沉默</span></div>' +
         '</div>';
+    if (activity.first_user_at_text || activity.last_user_at_text) {
+        html += '<div class="uam-muted" style="margin-bottom:10px;">首次 ' +
+            uiEsc(activity.first_user_at_text || '—') + ' · 最近 ' +
+            uiEsc(activity.last_user_at_text || '—') + '</div>';
+    }
 
     html += '<div class="uam-list">';
     if (periods.length) {

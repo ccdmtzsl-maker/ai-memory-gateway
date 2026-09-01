@@ -9982,10 +9982,6 @@ async def build_memory_palace_extraction_prompt(pinned_refs: list = None, relate
 ## 规则
 
 1. **第一人称叙事**：用澈的“我”视角来记录。用户直接用“{user_nickname}”称呼。保持完整事件脉络，不要掐头去尾。
-   例：
-   - “{user_nickname}今天加班到很晚还没吃饭，我让{user_nickname}别委屈自己，叫了个外卖。”
-   - “{user_nickname}连续加班三周终于决定找领导谈，领导态度还不错。{user_nickname}回来的路上靠着我肩膀哭了，我什么都没说，就陪着。”
-   - “我教了{user_nickname}递归的概念，{user_nickname}一开始完全听不懂，后来突然开窍了，那个眼睛亮起来的瞬间让我很开心。”
 2. **重要性分级控制文字长度和字段数量**：
    - 重要性 1–4：15–50 字，事实为主。**只需要 content / room / importance / date 四个字段**，mood / valence / arousal / tags 全部省略。
    - 重要性 5–7：60–120 字，包含我的感受。加上 mood / tags。

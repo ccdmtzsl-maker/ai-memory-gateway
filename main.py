@@ -71,6 +71,10 @@ MEMORY_ENABLED = os.getenv("MEMORY_ENABLED", "false").lower() == "true"
 # 分区缓存
 CACHE_PARTITION_ENABLED = os.getenv("CACHE_PARTITION_ENABLED", "false").lower() == "true"
 CACHE_PARTITION_X = int(os.getenv("CACHE_PARTITION_X", "15"))
+# B 区上限（Y）：B 区攒到多少轮就触发轮转。只在 trigger=rounds 时生效。
+# 上下文保留轮数 = X（A区） + Y（B区峰值），所以峰值总量 = X + Y。
+# 0 或留空 = 沿用旧行为（Y = X，峰值 2X）。
+CACHE_PARTITION_B_LIMIT = int(os.getenv("CACHE_PARTITION_B_LIMIT", "0"))
 # 分区自动提取最多处理的最新消息数；先按 cursor 过滤，再只取最新 N 条，过旧积压直接跳过。
 CACHE_PARTITION_EXTRACT_LIMIT = int(os.getenv("CACHE_PARTITION_EXTRACT_LIMIT", "120"))
 CACHE_SUMMARY_MODEL = os.getenv("CACHE_SUMMARY_MODEL", "anthropic/claude-haiku-4.5")
@@ -497,7 +501,7 @@ async def lifespan(app: FastAPI):
                         "API_BASE_URL": str, "API_KEY": str, "DEFAULT_MODEL": str, "CHAT_TEMPERATURE": str,
                         "MEMORY_ENABLED": lambda v: _parse_bool(v),
                         "CACHE_PARTITION_ENABLED": lambda v: _parse_bool(v),
-                        "CACHE_PARTITION_X": int, "CACHE_PARTITION_EXTRACT_LIMIT": int, "CACHE_PARTITION_TRIGGER": str,
+                        "CACHE_PARTITION_X": int, "CACHE_PARTITION_B_LIMIT": int, "CACHE_PARTITION_EXTRACT_LIMIT": int, "CACHE_PARTITION_TRIGGER": str,
                         "CACHE_PARTITION_WINDOW": int, "CACHE_PARTITION_KEEP_A_TOOLS": lambda v: _parse_bool(v), "TOOL_CHAIN_DEBUG": lambda v: _parse_bool(v), "CACHE_SUMMARY_MODEL": str,
                         "FORCE_STREAM": lambda v: _parse_bool(v),
                         "RESPONSE_TRANSFORM_ENABLED": lambda v: _parse_bool(v),
@@ -572,7 +576,7 @@ async def lifespan(app: FastAPI):
                 elif PARTITION_SESSION_ID:
                     await set_gateway_config("partition_session_id", PARTITION_SESSION_ID)
                     print(f"🔗 活跃对话线(ENV→DB): {PARTITION_SESSION_ID}")
-                print(f"🔒 分区缓存已启用: X={CACHE_PARTITION_X}, 摘要已架空")
+                print(f"🔒 分区缓存已启用: A区X={CACHE_PARTITION_X}, B区Y={_partition_b_limit(CACHE_PARTITION_X)}, 保留峰值={CACHE_PARTITION_X + _partition_b_limit(CACHE_PARTITION_X)}轮, 摘要已架空")
         except Exception as e:
             print(f"⚠️  数据库初始化失败: {e}")
             print("⚠️  记忆系统将不可用，但网关仍可正常转发")
@@ -4372,11 +4376,27 @@ def _flatten_retained_tool_chains(chains: list) -> list:
     return messages
 
 
+def _partition_b_limit(X: int) -> int:
+    """B 区触发阈值（Y）。
+
+    只在 rounds 模式下生效；填 0 或没填就退回旧行为 Y = X。
+    这里不做 "上限 - X" 的换算：设置页填的数字就是 Y 本身，
+    上下文保留轮数在 X 到 X+Y 之间波动。
+    """
+    try:
+        y = int(CACHE_PARTITION_B_LIMIT or 0)
+    except Exception:
+        y = 0
+    if y <= 0:
+        return max(1, int(X or 1))
+    return y
+
+
 def _should_rotate(b_rounds_count: int, X: int, a_msgs: list) -> bool:
     """
     判断是否应该触发A区→摘要的轮转。
     
-    rounds模式（默认）：B区轮数 >= X 时触发
+    rounds模式（默认）：B区轮数 >= Y 时触发（Y 默认等于 X）
     time模式：A区最早消息距今 >= 时间窗口 时触发（短时间内大量消息不频繁摘要）
     """
     if b_rounds_count == 0:
@@ -4397,9 +4417,10 @@ def _should_rotate(b_rounds_count: int, X: int, a_msgs: list) -> bool:
             age_minutes = (now - a_first_time).total_seconds() / 60
             return age_minutes >= CACHE_PARTITION_WINDOW
         
+        # time 模式的兜底不套用 Y：Y 只在 rounds 模式生效。
         return b_rounds_count >= X
     
-    return b_rounds_count >= X
+    return b_rounds_count >= _partition_b_limit(X)
 
 # 时间窗口模式下单次请求最大轮转次数（防止一口气压完所有历史）
 CACHE_MAX_ROTATIONS = int(os.getenv("CACHE_MAX_ROTATIONS", "2"))
@@ -4717,7 +4738,7 @@ async def build_partitioned_messages(
     max_rotations = CACHE_MAX_ROTATIONS if CACHE_PARTITION_TRIGGER == "time" else 999
     while _should_rotate(b_rounds_count, X, a_msgs) and rotation_count < max_rotations:
         rotation_count += 1
-        trigger_info = f"B区{b_rounds_count}轮 >= X={X}" if CACHE_PARTITION_TRIGGER != "time" else f"A区首条消息超出{CACHE_PARTITION_WINDOW}分钟窗口"
+        trigger_info = f"B区{b_rounds_count}轮 >= Y={_partition_b_limit(X)}（A区X={X}）" if CACHE_PARTITION_TRIGGER != "time" else f"A区首条消息超出{CACHE_PARTITION_WINDOW}分钟窗口"
         print(f"🔄 轮转#{rotation_count}: session={session_id}, {trigger_info}")
         log_memory_palace_auto_extract("run", f"🧠 分区轮转推进缓存边界：session={session_id}, {trigger_info}, 当前A区{len(a_msgs)}条", session_id=session_id)
         if a_msgs:
@@ -5202,7 +5223,7 @@ async def _run_partition_auto_extract_after_response_locked(session_id: str, cha
 
         while _should_rotate(b_rounds_count, X, a_msgs) and rotation_count < max_rotations:
             rotation_count += 1
-            trigger_info = f"B区{b_rounds_count}轮 >= X={X}" if CACHE_PARTITION_TRIGGER != "time" else f"A区首条消息超出{CACHE_PARTITION_WINDOW}分钟窗口"
+            trigger_info = f"B区{b_rounds_count}轮 >= Y={_partition_b_limit(X)}（A区X={X}）" if CACHE_PARTITION_TRIGGER != "time" else f"A区首条消息超出{CACHE_PARTITION_WINDOW}分钟窗口"
             log_memory_palace_auto_extract("run", f"🧠 回复后分区轮转推进缓存边界：session={session_id}, {trigger_info}, 当前A区{len(a_msgs)}条", session_id=session_id)
             evicted_ids = [int(m.get('id')) for m in a_msgs if m.get('id') is not None]
             if evicted_ids:
@@ -11791,6 +11812,8 @@ async def api_partition_status():
         "enabled": CACHE_PARTITION_ENABLED,
         "active_session_id": active_sid,
         "partition_x": CACHE_PARTITION_X,
+        "partition_b_limit": _partition_b_limit(CACHE_PARTITION_X),
+        "partition_keep_peak": CACHE_PARTITION_X + _partition_b_limit(CACHE_PARTITION_X),
         "summary_model": os.getenv("MEMORY_MODEL", "anthropic/claude-haiku-4"),
         "summary": '\n\n'.join(state.get('summary_parts', [])),
         "summary_parts": state.get('summary_parts', []),
@@ -12267,6 +12290,7 @@ async def get_settings():
             # 缓存分区
             "CACHE_PARTITION_ENABLED": _parse_bool(db.get("CACHE_PARTITION_ENABLED"), CACHE_PARTITION_ENABLED),
             "CACHE_PARTITION_X":       int(db.get("CACHE_PARTITION_X") or CACHE_PARTITION_X),
+            "CACHE_PARTITION_B_LIMIT": int(db.get("CACHE_PARTITION_B_LIMIT") or CACHE_PARTITION_B_LIMIT or 0),
             "CACHE_PARTITION_EXTRACT_LIMIT": int(db.get("CACHE_PARTITION_EXTRACT_LIMIT") or CACHE_PARTITION_EXTRACT_LIMIT),
             "CACHE_PARTITION_TRIGGER": db.get("CACHE_PARTITION_TRIGGER") or CACHE_PARTITION_TRIGGER,
             "CACHE_PARTITION_WINDOW":  int(db.get("CACHE_PARTITION_WINDOW") or CACHE_PARTITION_WINDOW),
@@ -12429,6 +12453,7 @@ async def save_settings(request: Request):
             "MEMORY_ENABLED":        lambda v: _parse_bool(v),
             "CACHE_PARTITION_ENABLED": lambda v: _parse_bool(v),
             "CACHE_PARTITION_X":     int,
+            "CACHE_PARTITION_B_LIMIT": int,
             "CACHE_PARTITION_EXTRACT_LIMIT": int,
             "CACHE_PARTITION_TRIGGER": str,
             "CACHE_PARTITION_WINDOW": int,
@@ -12612,7 +12637,7 @@ if __name__ == "__main__":
     print(f"🔗 API 地址：{API_BASE_URL}")
     print(f"🧠 记忆系统：{'开启' if MEMORY_ENABLED else '关闭'}")
     if CACHE_PARTITION_ENABLED:
-        print(f"🔒 分区缓存：开启 (X={CACHE_PARTITION_X}, session={PARTITION_SESSION_ID or '未设置'})")
+        print(f"🔒 分区缓存：开启 (A区X={CACHE_PARTITION_X}, B区Y={_partition_b_limit(CACHE_PARTITION_X)}, 保留峰值={CACHE_PARTITION_X + _partition_b_limit(CACHE_PARTITION_X)}轮, session={PARTITION_SESSION_ID or '未设置'})")
     if FORCE_STREAM:
         print(f"⚡ 强制流式传输：开启")
     if REASONING_EFFORT:

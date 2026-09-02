@@ -651,6 +651,12 @@
                     <div class="settings-field">
                         <label>轮转周期 (CACHE_PARTITION_X)</label>
                         <input type="number" id="set-CACHE_PARTITION_X" class="input" min="5" max="100">
+                        <small class="form-hint">A 区长度，也是每次轮转挤出上下文、交给记忆提取的批量。默认 15。</small>
+                    </div>
+                    <div class="settings-field">
+                        <label>B 区上限 (CACHE_PARTITION_B_LIMIT)</label>
+                        <input type="number" id="set-CACHE_PARTITION_B_LIMIT" class="input" min="0" max="200">
+                        <small class="form-hint">B 区攒到 Y 轮就触发一次轮转，切掉最旧的 X 轮交给记忆提取。上下文保留轮数在 Y 到 X+Y-1 之间波动。例：X=15、Y=26 → 保留 26–40 轮，每次挤出 15 轮。填 0 表示沿用旧行为（Y = X）。仅轮次触发模式（<code>CACHE_PARTITION_TRIGGER=rounds</code>）生效。</small>
                     </div>
                     <div class="settings-field">
                         <label>自动提取最新消息上限 (CACHE_PARTITION_EXTRACT_LIMIT)</label>

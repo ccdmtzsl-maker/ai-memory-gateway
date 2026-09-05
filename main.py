@@ -6790,7 +6790,11 @@ async def generate_daily_impression_for_date(impression_date, start_hour: int = 
             current_session_id = session_id
             current_lines = []
 
-        time_text = m["created_at"].strftime("%H:%M") if hasattr(m.get("created_at"), "strftime") else ""
+        # created_at 是 TIMESTAMPTZ，asyncpg 返回带 tzinfo=utc 的 datetime，
+        # 直接 strftime 得到的是 UTC：北京时间晚上 22:30 会显示成 14:30，
+        # 模型会把晚上的对话当成下午。先折算成 TIMEZONE_HOURS 对应的本地时间。
+        _local_dt = _to_local_dt(m.get("created_at"))
+        time_text = _local_dt.strftime("%H:%M") if _local_dt else ""
         current_lines.append(
             f"[{time_text}] {role_map.get(m.get('role'), m.get('role'))}: {m.get('content') or ''}"
         )

@@ -320,6 +320,14 @@
 
                 <div id="mp-msg" class="msg-container"></div>
 
+                <div class="card" id="mpSummaryRawCard" style="margin-bottom:16px;">
+                    <div class="toolbar" style="align-items:center;justify-content:space-between;">
+                        <div style="font-weight:900;color:#111827;">事件盒压缩·模型原始返回</div>
+                        <button type="button" class="btn" style="background:#fff;border-style:dashed;border-width:2px;border-radius:14px;padding:6px 14px;font-weight:800;border-color:#0369a1;color:#0369a1;" onclick="loadEventBoxSummaryRaw()">刷新</button>
+                    </div>
+                    <div id="mpSummaryRawBody" style="margin-top:10px;font-size:12px;color:var(--text-muted);">点「刷新」查看最近几次压缩时模型返回的原始文本。</div>
+                </div>
+
                 <div id="mpRooms" class="mp-rooms-grid" style="display:grid;grid-template-columns:repeat(3,minmax(220px,1fr));min-width:760px;gap:14px;margin-bottom:16px;">
                     加载中...
                 </div>

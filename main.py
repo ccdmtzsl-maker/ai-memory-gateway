@@ -8648,6 +8648,14 @@ async def api_memory_palace_event_boxes(character_id: str = "default", limit: in
         return {"status": "error", "error": str(e), "boxes": []}
 
 
+@app.get("/api/memory-palace/event-boxes/summary-raw")
+async def api_memory_palace_event_box_summary_raw(limit: int = 5):
+    """事件盒压缩时模型返回的原始文本（进程内最近若干条，重启即清）。"""
+    limit = max(1, min(int(limit or 5), _EVENT_BOX_SUMMARY_RAW_LOG_MAX))
+    return {"status": "ok", "count": len(_EVENT_BOX_SUMMARY_RAW_LOG),
+            "items": _EVENT_BOX_SUMMARY_RAW_LOG[:limit]}
+
+
 @app.get("/api/memory-palace/event-boxes/{box_id}")
 async def api_memory_palace_event_box_detail(box_id: str, character_id: str = "default"):
     if not MEMORY_ENABLED:
@@ -10491,6 +10499,34 @@ def _memory_palace_parse_summary_json(text: str) -> dict:
     return {}
 
 
+_EVENT_BOX_SUMMARY_RAW_LOG = []
+_EVENT_BOX_SUMMARY_RAW_LOG_MAX = 20
+
+
+def _record_event_box_summary_raw(box: dict, character_id: str, raw_text: str,
+                                  parsed: dict = None, error: str = "") -> None:
+    """记下事件盒压缩时模型返回的原始文本，供仪表盘顶部预览。
+
+    只留进程内最近若干条，重启即清。目的是判断压缩失败到底是模型输出坏了
+    还是流程没走到模型。
+    """
+    try:
+        entry = {
+            "at": (datetime.now(timezone.utc) + timedelta(hours=TIMEZONE_HOURS)).strftime("%Y-%m-%d %H:%M:%S"),
+            "box_id": str(box.get("id") or ""),
+            "box_name": str(box.get("name") or ""),
+            "character_id": str(character_id or ""),
+            "raw": str(raw_text or ""),
+            "parsed_ok": bool(parsed),
+            "parsed_keys": sorted(list(parsed.keys())) if isinstance(parsed, dict) else [],
+            "error": str(error or ""),
+        }
+        _EVENT_BOX_SUMMARY_RAW_LOG.insert(0, entry)
+        del _EVENT_BOX_SUMMARY_RAW_LOG[_EVENT_BOX_SUMMARY_RAW_LOG_MAX:]
+    except Exception:
+        pass
+
+
 async def call_memory_palace_event_box_summarizer(box: dict, live_nodes: list, character_id: str = "default", old_summary: dict = None) -> dict:
     base_url = await get_runtime_memory_api_base_url()
     if not base_url:
@@ -10563,13 +10599,27 @@ async def call_memory_palace_event_box_summarizer(box: dict, live_nodes: list, c
         headers["HTTP-Referer"] = EXTRA_REFERER
         headers["X-Title"] = EXTRA_TITLE
     body = {"model": memory_model, "messages": [{"role": "system", "content": "你只输出 JSON 对象。"}, {"role": "user", "content": prompt}], "temperature": 0.3, "max_tokens": 12000}
-    async with httpx.AsyncClient(timeout=60.0) as client:
-        resp = await client.post(base_url, headers=headers, json=body)
-        resp.raise_for_status()
-        data = resp.json()
-    item = _memory_palace_parse_summary_json(data.get("choices", [{}])[0].get("message", {}).get("content", ""))
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            resp = await client.post(base_url, headers=headers, json=body)
+            resp.raise_for_status()
+            data = resp.json()
+    except Exception as e:
+        _record_event_box_summary_raw(box, character_id, "", None, f"请求失败: {e}")
+        raise
+    raw_text = ""
+    try:
+        raw_text = data.get("choices", [{}])[0].get("message", {}).get("content", "") or ""
+    except Exception:
+        raw_text = ""
+    if not str(raw_text).strip():
+        # 没有 content 时把整个响应体留下：可能是 reasoning 字段、也可能是报错体
+        raw_text = json.dumps(data, ensure_ascii=False)[:8000]
+    item = _memory_palace_parse_summary_json(raw_text)
     if not str(item.get("content") or "").strip():
+        _record_event_box_summary_raw(box, character_id, raw_text, item, "解析后没有 content")
         raise RuntimeError("事件盒压缩未返回 content")
+    _record_event_box_summary_raw(box, character_id, raw_text, item, "")
     return item
 
 async def maybe_compress_memory_palace_event_boxes(box_ids=None, character_id: str = "default", threshold: int = None) -> int:

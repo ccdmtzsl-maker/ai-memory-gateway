@@ -939,11 +939,12 @@ _MEMORY_PALACE_MOOD_TO_VA = {
     "anxious": (-0.6, 0.7), "tender": (0.6, -0.2), "excited": (0.8, 0.8),
     "peaceful": (0.5, -0.6), "confused": (-0.2, 0.2), "hurt": (-0.7, 0.3),
     "grateful": (0.6, 0.3), "nostalgic": (0.2, -0.3), "neutral": (0.0, 0.0),
+    "calm": (0.4, -0.7), "hopeful": (0.6, 0.2),
     "开心": (0.7, 0.5), "难过": (-0.7, -0.5), "悲伤": (-0.7, -0.5),
     "愤怒": (-0.7, 0.8), "焦虑": (-0.6, 0.7), "温柔": (0.6, -0.2),
     "兴奋": (0.8, 0.8), "平静": (0.5, -0.6), "困惑": (-0.2, 0.2),
     "受伤": (-0.7, 0.3), "感激": (0.6, 0.3), "怀念": (0.2, -0.3),
-    "中性": (0.0, 0.0),
+    "中性": (0.0, 0.0), "平和": (0.4, -0.7), "期待": (0.6, 0.2),
 }
 
 _MEMORY_PALACE_PERSONALITY_WEIGHTS = {
@@ -10498,30 +10499,62 @@ async def call_memory_palace_event_box_summarizer(box: dict, live_nodes: list, c
     if not memory_model:
         raise RuntimeError("MEMORY_MODEL 未设置")
     memory_api_key = await get_runtime_memory_api_key()
+    character_name = await get_runtime_character_name()
+    user_nickname = await get_runtime_user_nickname()
     lines = []
     for idx, node in enumerate(live_nodes, 1):
         date_text = str(node.get("date") or node.get("created_at") or "")[:10]
         lines.append(f"{idx}. [{date_text}] ({node.get('room')}, importance {node.get('importance')}) {node.get('content')}")
+    fragments_text = "\n".join(lines)
     old_summary_text = str((old_summary or {}).get("content") or "").strip()
+    # 二次及以后压缩：先摆旧 summary，再摆新增碎片，让模型知道这是增量而不是重来。
     if old_summary_text:
-        fragment_block = "旧整合回忆:\n" + old_summary_text + "\n\n这次新增的活跃片段:\n" + "\n".join(lines)
+        fragment_block = "\n".join([
+            "## 你之前已经回忆过这件事一次，那时记下的是：",
+            old_summary_text,
+            "",
+            "后来又新增了下面这些：",
+            "## 关于这件事的零散记忆碎片：",
+            fragments_text,
+        ])
     else:
-        fragment_block = "活跃片段:\n" + "\n".join(lines)
+        fragment_block = "\n".join([
+            "## 关于这件事的零散记忆碎片：",
+            fragments_text,
+        ])
+    room_options = "、".join(
+        f"{rid}（{_MEMORY_PALACE_ROOM_DESCRIPTIONS.get(rid, '')}）"
+        for rid in _MEMORY_PALACE_ROOM_ORDER
+    )
+    mood_options = " / ".join(sorted(_MEMORY_PALACE_ALLOWED_MOODS))
     prompt = "\n".join([
-        "你正在整理记忆宫殿里的同一事件盒。请把旧整合回忆和新增片段重写成一条稳定的整合回忆。",
+        f"你是 {character_name}。下面这些记忆都属于一件事：「{box.get('name') or '未命名事件'}」。",
+        "请把它们整合成一段连贯的、第一人称（「我」）的回忆。",
         "",
-        f"事件盒名称:{box.get('name') or '未命名事件'}",
         f"事件盒标签:{box.get('tags') or ''}",
         "",
         fragment_block,
         "",
-        "要求:",
-        "1. 用第一人称'我'写，保留事件起因、发展、重要结果和我的感受。",
-        "2. 如果有旧整合回忆，必须把旧回忆里的关键信息保留下来，再融合新增片段；不要只总结新增片段。",
-        "3. 不要凭空添加新事实。",
-        "4. 120-320 字，重要关系和时间线不要丢。",
-        "5. 返回严格 JSON 对象，不要 markdown:",
-        '{"content":"整合回忆正文","name":"5-12字事件名","tags":["标签1","标签2"],"mood":"neutral","importance":8,"valence":0,"arousal":0}',
+        "**要求（严格遵守）**：",
+        f"1. **第一人称**（用「我」），从 {character_name} 的视角写。{user_nickname} 用名字直接称呼。",
+        "2. **字数目标 300-600 字，绝对上限 800 字**。紧凑、务实、不口水。",
+        "3. **只保留关键信息**：具体人物、动作、对象、场景、转折、情绪。**去掉所有语气填充、修辞铺陈、重复感慨**（如「真是的」、「怎么说呢」、「不过话说回来」等）。事实先行。",
+        "4. **带时间点但不冗余**：每件事标一次日期就够（「3 月 20 日…4 月 5 日…」），不要每句都重复时间。",
+        "5. **连贯但简洁**：不套「起因/经过/结果」模板，但要让读者能按顺序看懂事情怎么发展的。",
+        "6. **覆盖所有关键词**（这是给向量检索用的）—— 每条记忆碎片里出现过的具体名词、地点、人物必须在 content 里出现一次。",
+        "7. 如果上面给了「你之前已经回忆过这件事」，必须把旧回忆里的关键信息保留下来再融合新增碎片；不要只总结新增部分。",
+        "8. 不要凭空添加新事实。",
+        "9. **content 字符串内严禁使用半角双引号 `\"`**。要引用人物原话、书名、外号、术语，一律用中文方角引号「」、《》或单引号 `'`。否则会破坏外层 JSON 解析、整批记忆白丢。",
+        "",
+        "附带输出 metadata：",
+        "- name：5-12 字的精炼盒名",
+        "- tags：5-10 个具体的搜索 tag（具体名词）",
+        f"- room：从这些里选一个最贴合整段回忆的 —— {room_options}",
+        f"- importance：1-10",
+        f"- mood：{mood_options}",
+        "",
+        "严格 JSON，不要 markdown 包裹（content 里的引用一律用「」《》，不要用 \"）：",
+        '{"content":"（紧凑的第一人称回忆，300-600 字）","name":"...","tags":["...","..."],"room":"...","importance":7,"mood":"..."}',
     ])
     headers = {"Content-Type": "application/json"}
     if memory_api_key:
@@ -10614,6 +10647,21 @@ async def maybe_compress_memory_palace_event_boxes(box_ids=None, character_id: s
             tags_value = summary.get("tags")
             tags = _merge_text_tags(tags_value if isinstance(tags_value, list) else str(tags_value or ""), box.get("tags"))
             mood = str(summary.get("mood") or "neutral").strip()
+            if mood not in _MEMORY_PALACE_ALLOWED_MOODS:
+                mood = "neutral"
+            # 方案 A：summary 的房间由模型按整段回忆判断，不再永久锁在
+            # 「首次压缩时最早那条碎片」的房间上。白名单外的取值一律回退：
+            # 有旧 summary 就沿用旧房间，否则用最早碎片的房间。
+            fallback_room = str(
+                (old_summary or {}).get("room")
+                or live_nodes[0].get("room")
+                or "living_room"
+            ).strip()
+            if fallback_room not in _MEMORY_PALACE_ALLOWED_ROOMS:
+                fallback_room = "living_room"
+            room = str(summary.get("room") or "").strip()
+            if room not in _MEMORY_PALACE_ALLOWED_ROOMS:
+                room = fallback_room
             importance = max(1, min(int(summary.get("importance") or max([n.get("importance") or 5 for n in live_nodes])), 10))
             valence = _memory_palace_float_or_none(summary.get("valence"))
             arousal = _memory_palace_float_or_none(summary.get("arousal"))
@@ -10658,14 +10706,14 @@ async def maybe_compress_memory_palace_event_boxes(box_ids=None, character_id: s
 
                 if box.get("summary_node_id"):
                     await conn.execute("""
-                        UPDATE memory_palace_nodes SET content=$3,tags=$4,importance=$5,mood=$6,valence=$7,arousal=$8,event_box_id=$9,archived=FALSE,is_box_summary=TRUE,metadata=$10::jsonb,updated_at=NOW()
+                        UPDATE memory_palace_nodes SET content=$3,tags=$4,importance=$5,mood=$6,valence=$7,arousal=$8,event_box_id=$9,archived=FALSE,is_box_summary=TRUE,metadata=$10::jsonb,room=$11,updated_at=NOW()
                         WHERE id=$1 AND character_id=$2
-                    """, summary_id, character_id, content, tags, importance, mood, valence, arousal, box.get("id"), metadata)
+                    """, summary_id, character_id, content, tags, importance, mood, valence, arousal, box.get("id"), metadata, room)
                 else:
                     await conn.execute("""
                         INSERT INTO memory_palace_nodes (id, character_id, content, room, tags, importance, mood, valence, arousal, date, embedded, created_at, last_accessed_at, access_count, origin, event_box_id, archived, is_box_summary, metadata, updated_at)
                         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::date,FALSE,NOW(),NOW(),0,'event_box_summary',$11,FALSE,TRUE,$12::jsonb,NOW())
-                    """, summary_id, character_id, content, live_nodes[0].get("room") or "living_room", tags, importance, mood, valence, arousal, first_date, box.get("id"), metadata)
+                    """, summary_id, character_id, content, room, tags, importance, mood, valence, arousal, first_date, box.get("id"), metadata)
                 compressed_ids = [n["id"] for n in live_nodes]
                 archived_ids = list(dict.fromkeys([*(box.get("archived_memory_ids") or []), *compressed_ids]))
                 remaining_live = [x for x in live_ids if x not in compressed_ids and x != summary_id]
@@ -10684,7 +10732,7 @@ async def maybe_compress_memory_palace_event_boxes(box_ids=None, character_id: s
             except Exception as e:
                 print(f"⚠️ 事件盒 summary embedding 失败 {summary_id}: {e}")
             compressed += 1
-            print(f"🗜️ 事件盒压缩完成 {box.get('id')}：{len(live_nodes)} 条" + (" + 旧summary" if old_summary else "") + f" → summary {summary_id}" + ("，已封盒" if should_seal else ""))
+            print(f"🗜️ 事件盒压缩完成 {box.get('id')}：{len(live_nodes)} 条" + (" + 旧summary" if old_summary else "") + f" → summary {summary_id} room={room}" + ("，已封盒" if should_seal else ""))
         finally:
             if lock_acquired:
                 try:

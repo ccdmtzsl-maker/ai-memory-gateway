@@ -8648,14 +8648,6 @@ async def api_memory_palace_event_boxes(character_id: str = "default", limit: in
         return {"status": "error", "error": str(e), "boxes": []}
 
 
-@app.get("/api/memory-palace/event-boxes/summary-raw")
-async def api_memory_palace_event_box_summary_raw(limit: int = 5):
-    """事件盒压缩时模型返回的原始文本（进程内最近若干条，重启即清）。"""
-    limit = max(1, min(int(limit or 5), _EVENT_BOX_SUMMARY_RAW_LOG_MAX))
-    return {"status": "ok", "count": len(_EVENT_BOX_SUMMARY_RAW_LOG),
-            "items": _EVENT_BOX_SUMMARY_RAW_LOG[:limit]}
-
-
 @app.get("/api/memory-palace/event-boxes/{box_id}")
 async def api_memory_palace_event_box_detail(box_id: str, character_id: str = "default"):
     if not MEMORY_ENABLED:
@@ -8829,10 +8821,11 @@ async def api_memory_palace_compress_event_boxes(request: Request):
         box_ids = data.get("box_ids")
         if isinstance(box_ids, str):
             box_ids = [box_ids]
-        compressed = await maybe_compress_memory_palace_event_boxes(box_ids if box_ids else None, character_id=character_id, threshold=data.get("threshold"))
+        failures = []
+        compressed = await maybe_compress_memory_palace_event_boxes(box_ids if box_ids else None, character_id=character_id, threshold=data.get("threshold"), failures=failures)
         if compressed:
             invalidate_memory_palace_cache(character_id)
-        return {"status": "ok", "compressed": compressed}
+        return {"status": "ok", "compressed": compressed, "failures": failures}
     except Exception as e:
         return {"status": "error", "error": str(e), "compressed": 0}
 
@@ -10499,32 +10492,16 @@ def _memory_palace_parse_summary_json(text: str) -> dict:
     return {}
 
 
-_EVENT_BOX_SUMMARY_RAW_LOG = []
-_EVENT_BOX_SUMMARY_RAW_LOG_MAX = 20
+class MemoryPalaceSummaryParseError(Exception):
+    """事件盒压缩时模型返回的内容解析不出 content。
 
-
-def _record_event_box_summary_raw(box: dict, character_id: str, raw_text: str,
-                                  parsed: dict = None, error: str = "") -> None:
-    """记下事件盒压缩时模型返回的原始文本，供仪表盘顶部预览。
-
-    只留进程内最近若干条，重启即清。目的是判断压缩失败到底是模型输出坏了
-    还是流程没走到模型。
+    raw 存模型返回的原始文本，供上层拼进前端提示，方便直接看出是模型
+    输出坏了还是根本没返回东西。
     """
-    try:
-        entry = {
-            "at": (datetime.now(timezone.utc) + timedelta(hours=TIMEZONE_HOURS)).strftime("%Y-%m-%d %H:%M:%S"),
-            "box_id": str(box.get("id") or ""),
-            "box_name": str(box.get("name") or ""),
-            "character_id": str(character_id or ""),
-            "raw": str(raw_text or ""),
-            "parsed_ok": bool(parsed),
-            "parsed_keys": sorted(list(parsed.keys())) if isinstance(parsed, dict) else [],
-            "error": str(error or ""),
-        }
-        _EVENT_BOX_SUMMARY_RAW_LOG.insert(0, entry)
-        del _EVENT_BOX_SUMMARY_RAW_LOG[_EVENT_BOX_SUMMARY_RAW_LOG_MAX:]
-    except Exception:
-        pass
+
+    def __init__(self, raw: str = ""):
+        self.raw = str(raw or "")
+        super().__init__("事件盒压缩解析不成功")
 
 
 async def call_memory_palace_event_box_summarizer(box: dict, live_nodes: list, character_id: str = "default", old_summary: dict = None) -> dict:
@@ -10599,30 +10576,30 @@ async def call_memory_palace_event_box_summarizer(box: dict, live_nodes: list, c
         headers["HTTP-Referer"] = EXTRA_REFERER
         headers["X-Title"] = EXTRA_TITLE
     body = {"model": memory_model, "messages": [{"role": "system", "content": "你只输出 JSON 对象。"}, {"role": "user", "content": prompt}], "temperature": 0.3, "max_tokens": 12000}
-    try:
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            resp = await client.post(base_url, headers=headers, json=body)
-            resp.raise_for_status()
-            data = resp.json()
-    except Exception as e:
-        _record_event_box_summary_raw(box, character_id, "", None, f"请求失败: {e}")
-        raise
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        resp = await client.post(base_url, headers=headers, json=body)
+        resp.raise_for_status()
+        data = resp.json()
     raw_text = ""
     try:
         raw_text = data.get("choices", [{}])[0].get("message", {}).get("content", "") or ""
     except Exception:
         raw_text = ""
     if not str(raw_text).strip():
-        # 没有 content 时把整个响应体留下：可能是 reasoning 字段、也可能是报错体
-        raw_text = json.dumps(data, ensure_ascii=False)[:8000]
+        # 没有 content 时把整个响应体带上：可能是 reasoning 字段、也可能是报错体
+        raw_text = json.dumps(data, ensure_ascii=False)[:4000]
     item = _memory_palace_parse_summary_json(raw_text)
     if not str(item.get("content") or "").strip():
-        _record_event_box_summary_raw(box, character_id, raw_text, item, "解析后没有 content")
-        raise RuntimeError("事件盒压缩未返回 content")
-    _record_event_box_summary_raw(box, character_id, raw_text, item, "")
+        # 原始内容直接塞进异常，供上层拼进前端提示
+        raise MemoryPalaceSummaryParseError(str(raw_text))
     return item
 
-async def maybe_compress_memory_palace_event_boxes(box_ids=None, character_id: str = "default", threshold: int = None) -> int:
+async def maybe_compress_memory_palace_event_boxes(box_ids=None, character_id: str = "default", threshold: int = None, failures: list = None) -> int:
+    """压缩达到阈值的事件盒，返回成功压缩的个数。
+
+    failures 传一个 list 进来时，解析失败的盒子会往里追加
+    {"box_id","box_name","raw"}，供接口拼进前端提示。不传就沿用旧行为。
+    """
     threshold = max(2, int(threshold or MEMORY_PALACE_EVENT_BOX_COMPRESS_THRESHOLD or 4))
     pool = await get_pool()
     async with pool.acquire() as conn:
@@ -10688,8 +10665,23 @@ async def maybe_compress_memory_palace_event_boxes(box_ids=None, character_id: s
 
             try:
                 summary = await call_memory_palace_event_box_summarizer(box, live_nodes, character_id=character_id, old_summary=old_summary)
+            except MemoryPalaceSummaryParseError as e:
+                print(f"⚠️ 事件盒压缩失败 {box.get('id')}: 解析不成功")
+                if failures is not None:
+                    failures.append({
+                        "box_id": str(box.get("id") or ""),
+                        "box_name": str(box.get("name") or ""),
+                        "raw": e.raw,
+                    })
+                continue
             except Exception as e:
                 print(f"⚠️ 事件盒压缩失败 {box.get('id')}: {e}")
+                if failures is not None:
+                    failures.append({
+                        "box_id": str(box.get("id") or ""),
+                        "box_name": str(box.get("name") or ""),
+                        "raw": str(e),
+                    })
                 continue
 
             content = str(summary.get("content") or "").strip()

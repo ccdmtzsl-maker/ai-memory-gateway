@@ -728,40 +728,15 @@ function renderMemoryPalaceEventBoxes() {
     }).join('');
 }
 
-async function loadEventBoxSummaryRaw() {
-    const el = document.getElementById('mpSummaryRawBody');
-    if (!el) return;
-    el.textContent = '加载中...';
-    try {
-        const resp = await fetch('/api/memory-palace/event-boxes/summary-raw?limit=5');
-        const data = await resp.json();
-        if (data.error || data.status === 'error') throw new Error(data.error || '读取失败');
-        const items = data.items || [];
-        if (!items.length) {
-            el.innerHTML = '<div style="color:var(--text-muted);">还没有记录。压缩真正调用过模型之后这里才会有内容——如果压缩显示 0 个而这里始终为空，说明流程没走到模型。</div>';
-            return;
-        }
-        el.innerHTML = items.map(it => {
-            const ok = it.parsed_ok
-                ? '<span style="color:#15803d;font-weight:800;">解析成功</span>'
-                : '<span style="color:#be123c;font-weight:800;">解析失败</span>';
-            const err = it.error
-                ? '<div style="color:#be123c;margin-top:4px;">' + mpEsc(it.error) + '</div>'
-                : '';
-            const keys = (it.parsed_keys || []).length
-                ? '<div style="margin-top:4px;color:var(--text-muted);">解析出的字段：' + mpEsc((it.parsed_keys || []).join(', ')) + '</div>'
-                : '';
-            return '<div style="border:1px solid var(--border-color);border-radius:10px;padding:10px;margin-bottom:8px;background:#fff;">' +
-                '<div style="font-weight:800;color:#111827;">' + mpEsc(it.box_name || '未命名事件') + ' · ' + ok + '</div>' +
-                '<div style="color:var(--text-muted);margin-top:2px;">' + mpEsc(it.at || '') + ' · box=' + mpEsc(it.box_id || '') + '</div>' +
-                err + keys +
-                '<pre style="margin-top:6px;white-space:pre-wrap;word-break:break-all;background:#f8fafc;border-radius:8px;padding:8px;max-height:280px;overflow:auto;font-size:11px;line-height:1.5;">' +
-                mpEsc(it.raw || '(空)') + '</pre>' +
-            '</div>';
-        }).join('');
-    } catch (e) {
-        el.innerHTML = '<div style="color:#be123c;">读取失败：' + mpEsc(e.message) + '</div>';
+function mpEventBoxCompressMsg(data) {
+    const compressed = Number(data.compressed || 0);
+    const failures = data.failures || [];
+    if (!failures.length) {
+        return {text: '事件盒压缩完成：压缩 ' + compressed + ' 个', level: ''};
     }
+    // 解析失败时把模型原始返回直接放进括号，方便一眼看出是输出坏了还是没返回东西
+    const detail = failures.map(f => String(f.raw || '(空)')).join(' ｜ ');
+    return {text: '事件盒压缩失败：解析不成功(' + detail + ')', level: 'error'};
 }
 
 async function compressMemoryPalaceEventBoxes() {
@@ -777,8 +752,8 @@ async function compressMemoryPalaceEventBoxes() {
         });
         const data = await resp.json();
         if (data.error || data.status === 'error') throw new Error(data.error || '压缩失败');
-        mpMsg('事件盒压缩完成：压缩 ' + Number(data.compressed || 0) + ' 个');
-        await loadEventBoxSummaryRaw();
+        const info = mpEventBoxCompressMsg(data);
+        mpMsg(info.text, info.level);
         await loadMemoryPalace();
     } catch (e) {
         mpMsg('事件盒压缩失败：' + e.message, 'error');
@@ -906,8 +881,8 @@ async function compressCurrentMemoryPalaceEventBox(id) {
         const resp = await fetch('/api/memory-palace/event-boxes/compress', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({box_ids:[id], threshold:2})});
         const data = await resp.json();
         if (data.error || data.status === 'error') throw new Error(data.error || '压缩失败');
-        mpMsg('事件盒压缩完成：压缩 ' + Number(data.compressed || 0) + ' 个');
-        await loadEventBoxSummaryRaw();
+        const info = mpEventBoxCompressMsg(data);
+        mpMsg(info.text, info.level);
         await loadMemoryPalaceEventBoxes();
         await loadMemoryPalaceEventBoxDetail(id);
     } catch (e) {

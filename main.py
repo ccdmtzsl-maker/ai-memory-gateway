@@ -3969,7 +3969,7 @@ async def chat_completions(request: Request):
             if dangling_count:
                 print(f"🔧 分区模式: 清理{dangling_count}条末尾悬空assistant(tool_calls)")
 
-        _log_tool_chain_snapshot("after_client_trim", client_new_msgs, session_id=session_id, enabled=tool_chain_debug, extra=f"client_tools={len(client_tools, log_fn=add_dashboard_log) if client_tools else 0}")
+        _log_tool_chain_snapshot("after_client_trim", client_new_msgs, session_id=session_id, enabled=tool_chain_debug, extra=f"client_tools={len(client_tools) if client_tools else 0}", log_fn=add_dashboard_log)
 
         if client_tools:
             # 判断DB是否处于"等待tool结果"状态（最后一条是assistant(tool_calls)）

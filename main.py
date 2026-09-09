@@ -9,7 +9,7 @@ AI Memory Gateway — 带记忆系统的 LLM 转发网关
 3. 转发给 LLM API（支持 OpenRouter / OpenAI / 任何兼容接口）
 4. 后台自动存储对话 + 用 AI 提取新记忆
 
-环境变量 cfg.MEMORY_ENABLED=false 时退化为纯转发网关（第一阶段）。
+环境变量 MEMORY_ENABLED=false 时退化为纯转发网关（第一阶段）。
 """
 
 import os
@@ -129,22 +129,50 @@ from text_and_impression import (
     is_auto_trigger_message,
     safe_parse_user_impression_json_object,
 )
-from runtime_config import cfg
-
 # ============================================================
 # 配置项 —— 全部从环境变量读取，部署时在云平台面板里设置
 # ============================================================
 
+# 你的 API Key（OpenRouter / OpenAI / 其他兼容服务）
+API_KEY = os.getenv("API_KEY", "")
 
 # 你的环境变量名可以自己定，比如就叫 MY_SECRET_KEY
 SECRET_KEY = os.environ.get("SECRET_KEY", "")
 
+# API 地址（改这个就能切换不同的 LLM 服务商）
+# OpenRouter: https://openrouter.ai/api/v1/chat/completions
+# OpenAI:     https://api.openai.com/v1/chat/completions
+# 本地 Ollama: http://localhost:11434/v1/chat/completions
+API_BASE_URL = os.getenv("API_BASE_URL", "https://openrouter.ai/api/v1/chat/completions")
+
+# 默认模型（如果客户端没指定就用这个）
+DEFAULT_MODEL = os.getenv("DEFAULT_MODEL", "anthropic/claude-sonnet-4")
+
+# 主聊天温度参数；留空则不覆盖客户端请求
+CHAT_TEMPERATURE = os.getenv("CHAT_TEMPERATURE", "")
 
 # 网关端口
 PORT = int(os.getenv("PORT", "8080"))
 
+# 记忆系统开关（数据库出问题时可以临时关掉）
+MEMORY_ENABLED = os.getenv("MEMORY_ENABLED", "false").lower() == "true"
 
+# 分区缓存
+CACHE_PARTITION_ENABLED = os.getenv("CACHE_PARTITION_ENABLED", "false").lower() == "true"
+CACHE_PARTITION_X = int(os.getenv("CACHE_PARTITION_X", "15"))
+# B 区上限（Y）：B 区攒到多少轮就触发轮转。只在 trigger=rounds 时生效。
+# 上下文保留轮数 = X（A区） + Y（B区峰值），所以峰值总量 = X + Y。
+# 0 或留空 = 沿用旧行为（Y = X，峰值 2X）。
+CACHE_PARTITION_B_LIMIT = int(os.getenv("CACHE_PARTITION_B_LIMIT", "0"))
+# 分区自动提取最多处理的最新消息数；先按 cursor 过滤，再只取最新 N 条，过旧积压直接跳过。
+CACHE_PARTITION_EXTRACT_LIMIT = int(os.getenv("CACHE_PARTITION_EXTRACT_LIMIT", "120"))
+CACHE_SUMMARY_MODEL = os.getenv("CACHE_SUMMARY_MODEL", "anthropic/claude-haiku-4.5")
+CACHE_PARTITION_TRIGGER = os.getenv("CACHE_PARTITION_TRIGGER", "rounds")  # rounds=按轮次 | time=按时间窗口
+CACHE_PARTITION_WINDOW = int(os.getenv("CACHE_PARTITION_WINDOW", "30"))  # 时间窗口（分钟），仅 trigger=time 时生效
+CACHE_PARTITION_KEEP_A_TOOLS = os.getenv("CACHE_PARTITION_KEEP_A_TOOLS", "false").lower() == "true"  # A区是否保留tool/tool_calls
+SPARSE_TIMESTAMP_ENABLED = os.getenv("SPARSE_TIMESTAMP_ENABLED", "false").lower() == "true"  # A区无附件消息按间隔稀疏打时间戳
 PARTITION_SESSION_ID = os.getenv("PARTITION_SESSION_ID", "")
+TOOL_CHAIN_DEBUG = os.getenv("TOOL_CHAIN_DEBUG", "false").lower() == "true"  # 工具链结构诊断日志
 
 def get_active_session_id() -> str:
     return PARTITION_SESSION_ID
@@ -273,6 +301,35 @@ def _serialize_dashboard_conversation_message(row) -> dict:
         "created_at": row["created_at"].isoformat() if row.get("created_at") else None,
     }
 
+# 强制流式传输（部分客户端不发stream=true导致thinking数据丢失，开启后强制所有请求走流式）
+FORCE_STREAM = os.getenv("FORCE_STREAM", "false").lower() == "true"
+
+# 非流式响应文本正则转换。流式响应不处理，避免 chunk 拆分导致误替换。
+RESPONSE_TRANSFORM_ENABLED = os.getenv("RESPONSE_TRANSFORM_ENABLED", "false").lower() == "true"
+RESPONSE_TRANSFORM_RULES = os.getenv("RESPONSE_TRANSFORM_RULES", "")
+
+# 推理/思维链参数（部分客户端走网关时不会自动添加reasoning参数，导致上游不返回thinking数据）
+# 设为 low/medium/high 会在转发请求时注入 reasoning_effort 参数
+REASONING_EFFORT = os.getenv("REASONING_EFFORT", "")
+
+# 记忆宫殿提取中称呼用户用的昵称；留空则使用“用户”
+USER_NICKNAME = os.getenv("USER_NICKNAME", "用户")
+
+# 当前角色名称；用于用户画像等需要明确角色视角的提示词
+CHARACTER_NAME = os.getenv("CHARACTER_NAME", "澈")
+
+# 记忆宫殿默认注入数量；是否启用跟随 MEMORY_ENABLED 总开关
+MEMORY_PALACE_DEFAULT_LIMIT = int(os.getenv("MEMORY_PALACE_DEFAULT_LIMIT", "5"))
+# 记忆宫殿自动注入深度：0=保持现状插在最新消息后；N=向上数 N 条普通对话消息后插入
+MEMORY_PALACE_INJECTION_DEPTH = int(os.getenv("MEMORY_PALACE_INJECTION_DEPTH", "0"))
+
+# 关键词触发上下文（轻量世界书）：仅当前轮临时注入 system，不写入历史。
+KEYWORD_CONTEXT_ENABLED = os.getenv("KEYWORD_CONTEXT_ENABLED", "false").lower() == "true"
+KEYWORD_CONTEXT_RULES = os.getenv("KEYWORD_CONTEXT_RULES", "[]")
+
+# 上下文模板：把用户消息后的多条 system 合并成一条，按模板变量排布
+CONTEXT_TEMPLATE_ENABLED = os.getenv("CONTEXT_TEMPLATE_ENABLED", "false").lower() == "true"
+CONTEXT_TEMPLATE = os.getenv("CONTEXT_TEMPLATE", "")
 
 # 默认模板：仅在设置页从未保存过内容时作为初始值展示
 DEFAULT_CONTEXT_TEMPLATE = (
@@ -293,33 +350,39 @@ MEMORY_PALACE_EVENT_BOX_LIVE_HARD_CAP = int(os.getenv("MEMORY_PALACE_EVENT_BOX_L
 MEMORY_PALACE_AUTO_EVENT_BOX_MODE = str(os.getenv("MEMORY_PALACE_AUTO_EVENT_BOX_MODE", "related") or "related").strip().lower()
 MEMORY_PALACE_EVENT_BOX_SEAL_THRESHOLD = int(os.getenv("MEMORY_PALACE_EVENT_BOX_SEAL_THRESHOLD", "6"))
 
+# 记忆模型专用 API 地址。留空时不会自动回退到主 API_BASE_URL，由调用方决定是否跳过。
+MEMORY_API_BASE_URL = os.getenv("MEMORY_API_BASE_URL", "")
+
+# 记忆模型专用 API Key（不设则回退到主 API_KEY）
+# 适用于中转站按模型分组、不同模型需要不同 Key 的场景
+MEMORY_API_KEY = os.getenv("MEMORY_API_KEY", "")
 
 def get_memory_api_key() -> str:
-    return cfg.MEMORY_API_KEY or cfg.API_KEY
+    return MEMORY_API_KEY or API_KEY
 
 def get_memory_api_base_url() -> str:
-    return cfg.MEMORY_API_BASE_URL
+    return MEMORY_API_BASE_URL
 
 
 async def get_runtime_memory_api_base_url() -> str:
     """获取记忆模型 API 地址：优先读设置页写入的数据库配置，再回退到运行时全局值。"""
     try:
-        db_value = await get_gateway_config("cfg.MEMORY_API_BASE_URL", "")
+        db_value = await get_gateway_config("MEMORY_API_BASE_URL", "")
         if db_value and str(db_value).strip():
             return str(db_value).strip()
     except Exception as e:
-        print(f"[memory_config] 读取 cfg.MEMORY_API_BASE_URL 配置失败，回退到运行时变量: {e}")
-    return str(cfg.MEMORY_API_BASE_URL or "").strip()
+        print(f"[memory_config] 读取 MEMORY_API_BASE_URL 配置失败，回退到运行时变量: {e}")
+    return str(MEMORY_API_BASE_URL or "").strip()
 
 
 async def get_runtime_memory_api_key() -> str:
-    """获取记忆模型 API Key：优先读设置页配置，再回退 cfg.MEMORY_API_KEY / cfg.API_KEY。"""
+    """获取记忆模型 API Key：优先读设置页配置，再回退 MEMORY_API_KEY / API_KEY。"""
     try:
-        db_value = await get_gateway_config("cfg.MEMORY_API_KEY", "")
+        db_value = await get_gateway_config("MEMORY_API_KEY", "")
         if db_value and str(db_value).strip():
             return str(db_value).strip()
     except Exception as e:
-        print(f"[memory_config] 读取 cfg.MEMORY_API_KEY 配置失败，回退到运行时变量: {e}")
+        print(f"[memory_config] 读取 MEMORY_API_KEY 配置失败，回退到运行时变量: {e}")
     return str(get_memory_api_key() or "").strip()
 
 
@@ -337,40 +400,40 @@ async def get_runtime_memory_model() -> str:
 async def get_runtime_user_nickname() -> str:
     """获取用户昵称：优先读设置页配置，留空时使用“用户”。"""
     try:
-        db_value = await get_gateway_config("cfg.USER_NICKNAME", "")
+        db_value = await get_gateway_config("USER_NICKNAME", "")
         if db_value and str(db_value).strip():
             return str(db_value).strip()
     except Exception as e:
-        print(f"[memory_config] 读取 cfg.USER_NICKNAME 配置失败，回退到运行时变量: {e}")
-    return str(cfg.USER_NICKNAME or "用户").strip() or "用户"
+        print(f"[memory_config] 读取 USER_NICKNAME 配置失败，回退到运行时变量: {e}")
+    return str(USER_NICKNAME or "用户").strip() or "用户"
 
 
 async def get_runtime_character_name() -> str:
-    """获取当前角色名称：优先读设置页配置，留空时使用 cfg.CHARACTER_NAME / 澈。"""
+    """获取当前角色名称：优先读设置页配置，留空时使用 CHARACTER_NAME / 澈。"""
     try:
-        db_value = await get_gateway_config("cfg.CHARACTER_NAME", "")
+        db_value = await get_gateway_config("CHARACTER_NAME", "")
         if db_value and str(db_value).strip():
             return str(db_value).strip()
     except Exception as e:
-        print(f"[memory_config] 读取 cfg.CHARACTER_NAME 配置失败，回退到运行时变量: {e}")
-    return str(cfg.CHARACTER_NAME or "澈").strip() or "澈"
+        print(f"[memory_config] 读取 CHARACTER_NAME 配置失败，回退到运行时变量: {e}")
+    return str(CHARACTER_NAME or "澈").strip() or "澈"
 
 
 async def get_runtime_memory_palace_enabled() -> bool:
-    """记忆宫殿自动注入跟随 cfg.MEMORY_ENABLED 总开关。"""
-    return bool(cfg.MEMORY_ENABLED)
+    """记忆宫殿自动注入跟随 MEMORY_ENABLED 总开关。"""
+    return bool(MEMORY_ENABLED)
 
 
 async def get_runtime_memory_palace_default_limit() -> int:
     """获取 {{memory_palace}} 默认注入数量，显式参数如 {{memory_palace:10}} 不受影响。"""
     try:
-        db_value = await get_gateway_config("cfg.MEMORY_PALACE_DEFAULT_LIMIT", "")
+        db_value = await get_gateway_config("MEMORY_PALACE_DEFAULT_LIMIT", "")
         if db_value is not None and str(db_value).strip() != "":
             return max(1, min(int(db_value), 30))
     except Exception as e:
-        print(f"[memory_config] 读取 cfg.MEMORY_PALACE_DEFAULT_LIMIT 配置失败，回退到运行时变量: {e}")
+        print(f"[memory_config] 读取 MEMORY_PALACE_DEFAULT_LIMIT 配置失败，回退到运行时变量: {e}")
     try:
-        return max(1, min(int(cfg.MEMORY_PALACE_DEFAULT_LIMIT or 5), 30))
+        return max(1, min(int(MEMORY_PALACE_DEFAULT_LIMIT or 5), 30))
     except Exception:
         return 5
 
@@ -378,13 +441,13 @@ async def get_runtime_memory_palace_default_limit() -> int:
 async def get_runtime_memory_palace_injection_depth() -> int:
     """获取记忆宫殿自动注入深度：0=最新消息后；N=向上数 N 条普通对话消息后。"""
     try:
-        db_value = await get_gateway_config("cfg.MEMORY_PALACE_INJECTION_DEPTH", "")
+        db_value = await get_gateway_config("MEMORY_PALACE_INJECTION_DEPTH", "")
         if db_value is not None and str(db_value).strip() != "":
             return max(0, min(int(db_value), 50))
     except Exception as e:
-        print(f"[memory_config] 读取 cfg.MEMORY_PALACE_INJECTION_DEPTH 配置失败，回退到运行时变量: {e}")
+        print(f"[memory_config] 读取 MEMORY_PALACE_INJECTION_DEPTH 配置失败，回退到运行时变量: {e}")
     try:
-        return max(0, min(int(cfg.MEMORY_PALACE_INJECTION_DEPTH or 0), 50))
+        return max(0, min(int(MEMORY_PALACE_INJECTION_DEPTH or 0), 50))
     except Exception:
         return 0
 
@@ -392,55 +455,55 @@ async def get_runtime_memory_palace_injection_depth() -> int:
 async def get_runtime_keyword_context_enabled() -> bool:
     """关键词触发上下文开关：优先读设置页配置。"""
     try:
-        db_value = await get_gateway_config("cfg.KEYWORD_CONTEXT_ENABLED", None)
+        db_value = await get_gateway_config("KEYWORD_CONTEXT_ENABLED", None)
         if db_value is not None and str(db_value).strip() != "":
-            return _parse_bool(db_value, cfg.KEYWORD_CONTEXT_ENABLED)
+            return _parse_bool(db_value, KEYWORD_CONTEXT_ENABLED)
     except Exception as e:
-        print(f"[keyword_context] 读取 cfg.KEYWORD_CONTEXT_ENABLED 失败，回退运行时变量: {e}")
-    return bool(cfg.KEYWORD_CONTEXT_ENABLED)
+        print(f"[keyword_context] 读取 KEYWORD_CONTEXT_ENABLED 失败，回退运行时变量: {e}")
+    return bool(KEYWORD_CONTEXT_ENABLED)
 
 
 async def get_runtime_keyword_context_rules_raw() -> str:
     """关键词触发规则 JSON：优先读设置页配置。"""
     try:
-        db_value = await get_gateway_config("cfg.KEYWORD_CONTEXT_RULES", "")
+        db_value = await get_gateway_config("KEYWORD_CONTEXT_RULES", "")
         if db_value is not None and str(db_value).strip() != "":
             return str(db_value)
     except Exception as e:
-        print(f"[keyword_context] 读取 cfg.KEYWORD_CONTEXT_RULES 失败，回退运行时变量: {e}")
-    return str(cfg.KEYWORD_CONTEXT_RULES or "[]")
+        print(f"[keyword_context] 读取 KEYWORD_CONTEXT_RULES 失败，回退运行时变量: {e}")
+    return str(KEYWORD_CONTEXT_RULES or "[]")
 
 
 async def get_runtime_context_template_enabled() -> bool:
     """上下文模板开关：优先读设置页配置。"""
     try:
-        db_value = await get_gateway_config("cfg.CONTEXT_TEMPLATE_ENABLED", None)
+        db_value = await get_gateway_config("CONTEXT_TEMPLATE_ENABLED", None)
         if db_value is not None and str(db_value).strip() != "":
-            return _parse_bool(db_value, cfg.CONTEXT_TEMPLATE_ENABLED)
+            return _parse_bool(db_value, CONTEXT_TEMPLATE_ENABLED)
     except Exception as e:
-        print(f"[context_template] 读取 cfg.CONTEXT_TEMPLATE_ENABLED 失败，回退运行时变量: {e}")
-    return bool(cfg.CONTEXT_TEMPLATE_ENABLED)
+        print(f"[context_template] 读取 CONTEXT_TEMPLATE_ENABLED 失败，回退运行时变量: {e}")
+    return bool(CONTEXT_TEMPLATE_ENABLED)
 
 
 async def get_runtime_sparse_timestamp_enabled() -> bool:
     """稀疏时间戳开关：优先读设置页配置。"""
     try:
-        db_value = await get_gateway_config("cfg.SPARSE_TIMESTAMP_ENABLED", None)
+        db_value = await get_gateway_config("SPARSE_TIMESTAMP_ENABLED", None)
         if db_value is not None and str(db_value).strip() != "":
-            return _parse_bool(db_value, cfg.SPARSE_TIMESTAMP_ENABLED)
+            return _parse_bool(db_value, SPARSE_TIMESTAMP_ENABLED)
     except Exception as e:
-        print(f"[sparse_timestamp] 读取 cfg.SPARSE_TIMESTAMP_ENABLED 失败，回退运行时变量: {e}")
-    return bool(cfg.SPARSE_TIMESTAMP_ENABLED)
+        print(f"[sparse_timestamp] 读取 SPARSE_TIMESTAMP_ENABLED 失败，回退运行时变量: {e}")
+    return bool(SPARSE_TIMESTAMP_ENABLED)
 
 async def get_runtime_context_template() -> str:
     """上下文模板内容：优先读设置页配置。"""
     try:
-        db_value = await get_gateway_config("cfg.CONTEXT_TEMPLATE", "")
+        db_value = await get_gateway_config("CONTEXT_TEMPLATE", "")
         if db_value is not None and str(db_value).strip() != "":
             return str(db_value)
     except Exception as e:
-        print(f"[context_template] 读取 cfg.CONTEXT_TEMPLATE 失败，回退运行时变量: {e}")
-    return str(cfg.CONTEXT_TEMPLATE or DEFAULT_CONTEXT_TEMPLATE)
+        print(f"[context_template] 读取 CONTEXT_TEMPLATE 失败，回退运行时变量: {e}")
+    return str(CONTEXT_TEMPLATE or DEFAULT_CONTEXT_TEMPLATE)
 
 # 额外的请求头（有些 API 需要，比如 OpenRouter 需要 Referer）
 EXTRA_REFERER = os.getenv("EXTRA_REFERER", "https://ai-memory-gateway.local")
@@ -511,7 +574,7 @@ def invalidate_system_prompt_cache():
 async def lifespan(app: FastAPI):
     """应用启动时初始化数据库，关闭时断开连接"""
     global PARTITION_SESSION_ID
-    if cfg.MEMORY_ENABLED:
+    if MEMORY_ENABLED:
         try:
             await init_tables()
             await ensure_token_usage_table()
@@ -521,6 +584,25 @@ async def lifespan(app: FastAPI):
             try:
                 db_cfg = await get_all_gateway_config()
                 if db_cfg:
+                    _RESTORE_MAIN = {
+                        "API_BASE_URL": str, "API_KEY": str, "DEFAULT_MODEL": str, "CHAT_TEMPERATURE": str,
+                        "MEMORY_ENABLED": lambda v: _parse_bool(v),
+                        "CACHE_PARTITION_ENABLED": lambda v: _parse_bool(v),
+                        "CACHE_PARTITION_X": int, "CACHE_PARTITION_B_LIMIT": int, "CACHE_PARTITION_EXTRACT_LIMIT": int, "CACHE_PARTITION_TRIGGER": str,
+                        "CACHE_PARTITION_WINDOW": int, "CACHE_PARTITION_KEEP_A_TOOLS": lambda v: _parse_bool(v), "TOOL_CHAIN_DEBUG": lambda v: _parse_bool(v), "CACHE_SUMMARY_MODEL": str,
+                        "FORCE_STREAM": lambda v: _parse_bool(v),
+                        "RESPONSE_TRANSFORM_ENABLED": lambda v: _parse_bool(v),
+                        "PERF_DIAGNOSTIC_ENABLED": lambda v: _parse_bool(v),
+                        "RESPONSE_TRANSFORM_RULES": str,
+                        "REASONING_EFFORT": str,
+                        "MEMORY_PALACE_DEFAULT_LIMIT": int,
+                        "MEMORY_PALACE_INJECTION_DEPTH": int,
+            "KEYWORD_CONTEXT_ENABLED": lambda v: _parse_bool(v),
+            "KEYWORD_CONTEXT_RULES": str,
+            "CONTEXT_TEMPLATE_ENABLED": lambda v: _parse_bool(v),
+            "CONTEXT_TEMPLATE": str,
+            "SPARSE_TIMESTAMP_ENABLED": lambda v: _parse_bool(v),
+                    }
                     _RESTORE_DB = {
                         "EMBEDDING_API_KEY": str, "EMBEDDING_BASE_URL": str,
                         "EMBEDDING_MODEL": str, "EMBEDDING_DIM": int,
@@ -529,22 +611,22 @@ async def lifespan(app: FastAPI):
                     for key, val in db_cfg.items():
                         if not val:
                             continue
-                        # cfg.MEMORY_ENABLED 始终以环境变量为准，不接受 DB 覆盖；并清理历史脏数据
-                        if key == "cfg.MEMORY_ENABLED":
+                        # MEMORY_ENABLED 始终以环境变量为准，不接受 DB 覆盖；并清理历史脏数据
+                        if key == "MEMORY_ENABLED":
                             try:
                                 _pool = await get_pool()
                                 async with _pool.acquire() as _conn:
-                                    await _conn.execute("DELETE FROM gateway_config WHERE key = \'cfg.MEMORY_ENABLED\'")
-                                print("\U0001f9f9 已清理 DB 中的 cfg.MEMORY_ENABLED 脏数据（以环境变量为准）")
+                                    await _conn.execute("DELETE FROM gateway_config WHERE key = \'MEMORY_ENABLED\'")
+                                print("\U0001f9f9 已清理 DB 中的 MEMORY_ENABLED 脏数据（以环境变量为准）")
                             except Exception as _e:
-                                print(f"\u26a0\ufe0f  清理 cfg.MEMORY_ENABLED 脏数据失败: {_e}")
+                                print(f"\u26a0\ufe0f  清理 MEMORY_ENABLED 脏数据失败: {_e}")
                             continue
                         # 跳过被误存为打码值的 Key 字段
-                        if key in ("cfg.API_KEY", "cfg.MEMORY_API_KEY", "EMBEDDING_API_KEY") and _is_masked(str(val)):
+                        if key in ("API_KEY", "MEMORY_API_KEY", "EMBEDDING_API_KEY") and _is_masked(str(val)):
                             print(f"⚠️  跳过恢复 {key}：DB 中存储的是打码值，将使用环境变量")
                             continue
-                        if key.startswith('cfg.'):
-                            cfg.update(key.replace('cfg.', '', 1), val)
+                        if key in _RESTORE_MAIN:
+                            globals()[key] = _RESTORE_MAIN[key](val)
                             restored.append(key)
                         elif key in _RESTORE_DB:
                             setattr(_db_module, key, _RESTORE_DB[key](val))
@@ -554,18 +636,18 @@ async def lifespan(app: FastAPI):
                             import memory_extractor as _me_mod
                             _me_mod.MEMORY_MODEL = str(val)
                             restored.append(key)
-                        elif key == "cfg.MEMORY_API_KEY":
+                        elif key == "MEMORY_API_KEY":
                             if not _is_masked(str(val)):
-                                cfg.MEMORY_API_KEY = str(val)
+                                globals()[key] = str(val)
                                 import memory_extractor as _me_mod
-                                _me_mod.cfg.MEMORY_API_KEY = str(val)
+                                _me_mod.MEMORY_API_KEY = str(val)
                                 restored.append(key)
                             else:
-                                print(f"⚠️  跳过恢复 cfg.MEMORY_API_KEY：DB 中存储的是打码值")
-                        elif key == "cfg.MEMORY_API_BASE_URL":
-                            cfg.MEMORY_API_BASE_URL = str(val)
+                                print(f"⚠️  跳过恢复 MEMORY_API_KEY：DB 中存储的是打码值")
+                        elif key == "MEMORY_API_BASE_URL":
+                            globals()[key] = str(val)
                             import memory_extractor as _me_mod
-                            _me_mod.cfg.MEMORY_API_BASE_URL = str(val)
+                            _me_mod.MEMORY_API_BASE_URL = str(val)
                             restored.append(key)
                     if restored:
                         print(f"🔄 从数据库恢复 {len(restored)} 项面板配置: {', '.join(restored)}")
@@ -573,7 +655,7 @@ async def lifespan(app: FastAPI):
                 print(f"[warning] 恢复面板配置失败: {e}")
             
             # 分区缓存：从DB读取活跃对话线ID
-            if cfg.CACHE_PARTITION_ENABLED:
+            if CACHE_PARTITION_ENABLED:
                 db_sid = await get_gateway_config("partition_session_id", "")
                 if db_sid:
                     PARTITION_SESSION_ID = db_sid
@@ -581,16 +663,16 @@ async def lifespan(app: FastAPI):
                 elif PARTITION_SESSION_ID:
                     await set_gateway_config("partition_session_id", PARTITION_SESSION_ID)
                     print(f"🔗 活跃对话线(ENV→DB): {PARTITION_SESSION_ID}")
-                print(f"🔒 分区缓存已启用: A区X={cfg.CACHE_PARTITION_X}, B区Y={_partition_b_limit(cfg.CACHE_PARTITION_X)}, 保留峰值={cfg.CACHE_PARTITION_X + _partition_b_limit(cfg.CACHE_PARTITION_X)}轮, 摘要已架空")
+                print(f"🔒 分区缓存已启用: A区X={CACHE_PARTITION_X}, B区Y={_partition_b_limit(CACHE_PARTITION_X)}, 保留峰值={CACHE_PARTITION_X + _partition_b_limit(CACHE_PARTITION_X)}轮, 摘要已架空")
         except Exception as e:
             print(f"⚠️  数据库初始化失败: {e}")
             print("⚠️  记忆系统将不可用，但网关仍可正常转发")
     else:
-        print("ℹ️  记忆系统已关闭（设置 cfg.MEMORY_ENABLED=true 开启）")
+        print("ℹ️  记忆系统已关闭（设置 MEMORY_ENABLED=true 开启）")
     
     yield
     
-    if cfg.MEMORY_ENABLED:
+    if MEMORY_ENABLED:
         await close_pool()
 
 
@@ -606,6 +688,9 @@ _PERF_DIAGNOSTIC_PREFIXES = (
     "/api/daily-impressions",
     "/api/user-impression",
 )
+
+# 性能诊断开关：默认关闭，需在设置页面手动开启。
+PERF_DIAGNOSTIC_ENABLED = os.getenv("PERF_DIAGNOSTIC_ENABLED", "false").lower() == "true"
 
 
 def _database_pool_snapshot() -> str:
@@ -630,7 +715,7 @@ async def dashboard_performance_diagnostic_middleware(request: Request, call_nex
     if not watched or path.startswith("/api/dashboard/"):
         return await call_next(request)
 
-    if not cfg.PERF_DIAGNOSTIC_ENABLED:
+    if not PERF_DIAGNOSTIC_ENABLED:
         return await call_next(request)
 
     started = time.perf_counter()
@@ -2554,10 +2639,10 @@ def _convert_replacement_groups(replacement: str) -> str:
 
 def apply_response_transform_rules(text: str) -> str:
     """按配置的正则规则转换非流式 assistant 文本。规则格式：pattern => replacement，一行一条。"""
-    if not cfg.RESPONSE_TRANSFORM_ENABLED or not isinstance(text, str) or not text:
+    if not RESPONSE_TRANSFORM_ENABLED or not isinstance(text, str) or not text:
         return text
 
-    rules_text = cfg.RESPONSE_TRANSFORM_RULES or ""
+    rules_text = RESPONSE_TRANSFORM_RULES or ""
     if not rules_text.strip():
         return text
 
@@ -2608,7 +2693,7 @@ async def extract_memory_palace_from_partition_messages(messages: list, session_
 
 async def _extract_memory_palace_from_partition_messages_locked(messages: list, session_id: str, character_id: str = "default") -> dict:
     """实际执行分区自动提取；调用方已保证同会话串行。"""
-    if not cfg.MEMORY_ENABLED or not messages:
+    if not MEMORY_ENABLED or not messages:
         reason = "disabled_or_empty"
         log_memory_palace_auto_extract("info", f"🧠 分区自动提取跳过：{reason} session={session_id}", session_id=session_id)
         return {"status": "skipped", "reason": reason, "created": 0, "marked": 0}
@@ -2641,7 +2726,7 @@ async def _extract_memory_palace_from_partition_messages_locked(messages: list, 
             log_memory_palace_auto_extract("info", f"🧠 分区自动提取等待：没有游标后的新消息 session={session_id}, cursor={last_id}", session_id=session_id)
             return {"status": "skipped", "reason": "no_new_after_cursor", "created": 0, "marked": 0}
         pending_count = len(rows)
-        batch_limit = max(1, int(cfg.CACHE_PARTITION_EXTRACT_LIMIT or 120))
+        batch_limit = max(1, int(CACHE_PARTITION_EXTRACT_LIMIT or 120))
         if len(rows) > batch_limit:
             skipped_old = len(rows) - batch_limit
             rows = rows[-batch_limit:]
@@ -2779,7 +2864,7 @@ def _partition_b_limit(X: int) -> int:
     上下文保留轮数在 X 到 X+Y 之间波动。
     """
     try:
-        y = int(cfg.CACHE_PARTITION_B_LIMIT or 0)
+        y = int(CACHE_PARTITION_B_LIMIT or 0)
     except Exception:
         y = 0
     if y <= 0:
@@ -2797,7 +2882,7 @@ def _should_rotate(b_rounds_count: int, X: int, a_msgs: list) -> bool:
     if b_rounds_count == 0:
         return False
     
-    if cfg.CACHE_PARTITION_TRIGGER == "time":
+    if CACHE_PARTITION_TRIGGER == "time":
         a_first_time = None
         for msg in a_msgs:
             t = msg.get('created_at')
@@ -2810,7 +2895,7 @@ def _should_rotate(b_rounds_count: int, X: int, a_msgs: list) -> bool:
             if a_first_time.tzinfo is None:
                 a_first_time = a_first_time.replace(tzinfo=timezone.utc)
             age_minutes = (now - a_first_time).total_seconds() / 60
-            return age_minutes >= cfg.CACHE_PARTITION_WINDOW
+            return age_minutes >= CACHE_PARTITION_WINDOW
         
         # time 模式的兜底不套用 Y：Y 只在 rounds 模式生效。
         return b_rounds_count >= X
@@ -2865,7 +2950,7 @@ async def build_partitioned_messages(
       [B区消息... 最后一条BP3]                    ← lookback命中
       [当前user: 时间+记忆+消息]                  ← 不缓存
     """
-    X = cfg.CACHE_PARTITION_X
+    X = CACHE_PARTITION_X
     
     non_system = [m for m in all_messages if m.get('role') not in ('system', 'developer')]
     
@@ -2892,7 +2977,7 @@ async def build_partitioned_messages(
 
     # Closing clears prior retained chains. Re-opening starts at the current partition boundary;
     # previously evicted history is never searched retroactively.
-    if not cfg.CACHE_PARTITION_KEEP_A_TOOLS:
+    if not CACHE_PARTITION_KEEP_A_TOOLS:
         if retained_tool_chains or keep_was_enabled:
             retained_tool_chains = []
             await save_session_cache_state(session_id, summary_parts, cumulative_a_start_round, [], False)
@@ -2917,17 +3002,17 @@ async def build_partitioned_messages(
     evicted_through_candidate = int(state.get('evicted_through_message_id') or 0)
     retained_audit_before = None
     retained_audit_captured = []
-    max_rotations = CACHE_MAX_ROTATIONS if cfg.CACHE_PARTITION_TRIGGER == "time" else 999
+    max_rotations = CACHE_MAX_ROTATIONS if CACHE_PARTITION_TRIGGER == "time" else 999
     while _should_rotate(b_rounds_count, X, a_msgs) and rotation_count < max_rotations:
         rotation_count += 1
-        trigger_info = f"B区{b_rounds_count}轮 >= Y={_partition_b_limit(X)}（A区X={X}）" if cfg.CACHE_PARTITION_TRIGGER != "time" else f"A区首条消息超出{cfg.CACHE_PARTITION_WINDOW}分钟窗口"
+        trigger_info = f"B区{b_rounds_count}轮 >= Y={_partition_b_limit(X)}（A区X={X}）" if CACHE_PARTITION_TRIGGER != "time" else f"A区首条消息超出{CACHE_PARTITION_WINDOW}分钟窗口"
         print(f"🔄 轮转#{rotation_count}: session={session_id}, {trigger_info}")
         log_memory_palace_auto_extract("run", f"🧠 分区轮转推进缓存边界：session={session_id}, {trigger_info}, 当前A区{len(a_msgs)}条", session_id=session_id)
         if a_msgs:
             evicted_ids = [int(m.get('id')) for m in a_msgs if m.get('id') is not None]
             if evicted_ids:
                 evicted_through_candidate = max(evicted_through_candidate, max(evicted_ids))
-        if cfg.CACHE_PARTITION_KEEP_A_TOOLS:
+        if CACHE_PARTITION_KEEP_A_TOOLS:
             captured = _extract_use_package_chains(a_msgs)
             if captured:
                 if retained_audit_before is None:
@@ -2949,7 +3034,7 @@ async def build_partitioned_messages(
     if rotation_count > 0:
         await save_session_cache_state(
             session_id, summary_parts, cumulative_a_start_round, retained_tool_chains,
-            cfg.CACHE_PARTITION_KEEP_A_TOOLS, evicted_through_message_id=evicted_through_candidate,
+            CACHE_PARTITION_KEEP_A_TOOLS, evicted_through_message_id=evicted_through_candidate,
         )
         if evicted_through_candidate > 0:
             asyncio.create_task(release_images_outside_cache(session_id, evicted_through_candidate, "主请求轮转"))
@@ -2971,12 +3056,12 @@ async def build_partitioned_messages(
     # 摘要区已架空：不再把历史 summary_parts 注入上下文。
 
     # 已轮转出 A 区的 use_package 链固定放在新对话历史开头。
-    if cfg.CACHE_PARTITION_KEEP_A_TOOLS and retained_tool_chains:
+    if CACHE_PARTITION_KEEP_A_TOOLS and retained_tool_chains:
         result.extend(_flatten_retained_tool_chains(retained_tool_chains))
 
     # A区：默认剥离tool消息和tool_calls以节省上下文；可在设置页开启保留。
     cleaned_a = []
-    if cfg.CACHE_PARTITION_KEEP_A_TOOLS:
+    if CACHE_PARTITION_KEEP_A_TOOLS:
         for msg in a_msgs:
             # created_at 保留到打戳阶段，由 _prepend_timestamp_to_user_messages 统一剥离
             m = {k: v for k, v in msg.items() if k not in ('id',)}
@@ -3192,7 +3277,7 @@ async def run_partition_auto_extract_after_response(session_id: str, character_i
     不阻塞当前回复：调用方通常在 process_memories_background 中等待。
     失败不推进 cursor，下次 assistant 回复保存后会再次尝试。
     """
-    if not cfg.MEMORY_ENABLED or not cfg.CACHE_PARTITION_ENABLED:
+    if not MEMORY_ENABLED or not CACHE_PARTITION_ENABLED:
         return
     lock_key = f"{character_id}:{session_id}"
     lock = _partition_auto_maintenance_locks.setdefault(lock_key, asyncio.Lock())
@@ -3291,7 +3376,7 @@ async def _run_partition_auto_extract_after_response_locked(session_id: str, cha
         keep_was_enabled = bool(state.get('keep_a_tools_enabled'))
 
         # 后台只观察永久边界之后的活跃区。删除尾部不会让 boundary_id 之前的消息重新出现。
-        if cfg.CACHE_PARTITION_KEEP_A_TOOLS:
+        if CACHE_PARTITION_KEEP_A_TOOLS:
             active_rows = await get_conversation_messages_after_id(session_id, boundary_id, limit=10000)
             active_msgs = []
             for row in active_rows or []:
@@ -3314,7 +3399,7 @@ async def _run_partition_auto_extract_after_response_locked(session_id: str, cha
         non_system = [m for m in active_msgs if m.get('role') not in ('system', 'developer')]
         rounds = group_by_rounds(non_system)
 
-        if not cfg.CACHE_PARTITION_KEEP_A_TOOLS:
+        if not CACHE_PARTITION_KEEP_A_TOOLS:
             if retained_tool_chains or keep_was_enabled:
                 retained_tool_chains = []
                 await save_session_cache_state(session_id, summary_parts, cumulative_a_start_round, [], False)
@@ -3322,7 +3407,7 @@ async def _run_partition_auto_extract_after_response_locked(session_id: str, cha
             retained_tool_chains = []
             await save_session_cache_state(session_id, summary_parts, cumulative_a_start_round, [], True)
 
-        X = cfg.CACHE_PARTITION_X
+        X = CACHE_PARTITION_X
         local_start_round = 0
         a_round_groups = rounds[:X]
         b_round_groups = rounds[X:]
@@ -3332,16 +3417,16 @@ async def _run_partition_auto_extract_after_response_locked(session_id: str, cha
         boundary_candidate = boundary_id
         retained_audit_before = None
         retained_audit_captured = []
-        max_rotations = CACHE_MAX_ROTATIONS if cfg.CACHE_PARTITION_TRIGGER == "time" else 999
+        max_rotations = CACHE_MAX_ROTATIONS if CACHE_PARTITION_TRIGGER == "time" else 999
 
         while _should_rotate(b_rounds_count, X, a_msgs) and rotation_count < max_rotations:
             rotation_count += 1
-            trigger_info = f"B区{b_rounds_count}轮 >= Y={_partition_b_limit(X)}（A区X={X}）" if cfg.CACHE_PARTITION_TRIGGER != "time" else f"A区首条消息超出{cfg.CACHE_PARTITION_WINDOW}分钟窗口"
+            trigger_info = f"B区{b_rounds_count}轮 >= Y={_partition_b_limit(X)}（A区X={X}）" if CACHE_PARTITION_TRIGGER != "time" else f"A区首条消息超出{CACHE_PARTITION_WINDOW}分钟窗口"
             log_memory_palace_auto_extract("run", f"🧠 回复后分区轮转推进缓存边界：session={session_id}, {trigger_info}, 当前A区{len(a_msgs)}条", session_id=session_id)
             evicted_ids = [int(m.get('id')) for m in a_msgs if m.get('id') is not None]
             if evicted_ids:
                 boundary_candidate = max(boundary_candidate, max(evicted_ids))
-            if cfg.CACHE_PARTITION_KEEP_A_TOOLS:
+            if CACHE_PARTITION_KEEP_A_TOOLS:
                 captured = _extract_use_package_chains(a_msgs)
                 if captured:
                     if retained_audit_before is None:
@@ -3358,7 +3443,7 @@ async def _run_partition_auto_extract_after_response_locked(session_id: str, cha
         if rotation_count > 0:
             await save_session_cache_state(
                 session_id, summary_parts, cumulative_a_start_round, retained_tool_chains,
-                cfg.CACHE_PARTITION_KEEP_A_TOOLS, evicted_through_message_id=boundary_candidate,
+                CACHE_PARTITION_KEEP_A_TOOLS, evicted_through_message_id=boundary_candidate,
             )
             if boundary_candidate > 0:
                 asyncio.create_task(release_images_outside_cache(session_id, boundary_candidate, "回复后轮转"))
@@ -3377,7 +3462,7 @@ async def _run_partition_auto_extract_after_response_locked(session_id: str, cha
                 session_id=session_id,
             )
         extract_msgs = await _fetch_partition_extract_messages_range(
-            session_id, last_id, boundary_id, max(1, int(cfg.CACHE_PARTITION_EXTRACT_LIMIT or 120)),
+            session_id, last_id, boundary_id, max(1, int(CACHE_PARTITION_EXTRACT_LIMIT or 120)),
         )
         if extract_msgs:
             log_memory_palace_auto_extract(
@@ -3643,7 +3728,7 @@ async def health_check():
         "gateway": "AI Memory Gateway v2.0",
         "system_prompt_loaded": len(SYSTEM_PROMPT) > 0,
         "system_prompt_length": len(SYSTEM_PROMPT),
-        "memory_enabled": cfg.MEMORY_ENABLED,
+        "memory_enabled": MEMORY_ENABLED,
     }
 
 
@@ -3654,7 +3739,7 @@ async def list_models():
         "object": "list",
         "data": [
             {
-                "id": cfg.DEFAULT_MODEL,
+                "id": DEFAULT_MODEL,
                 "object": "model",
                 "created": 1700000000,
                 "owned_by": "ai-memory-gateway",
@@ -3666,10 +3751,10 @@ async def list_models():
 @app.post("/v1/chat/completions")
 async def chat_completions(request: Request):
     """核心转发接口"""
-    if not cfg.API_KEY:
+    if not API_KEY:
         return JSONResponse(
             status_code=500,
-            content={"error": "cfg.API_KEY 未设置，请在环境变量中配置"},
+            content={"error": "API_KEY 未设置，请在环境变量中配置"},
         )
     
     body = await request.json()
@@ -3696,7 +3781,7 @@ async def chat_completions(request: Request):
     # ---------- 检测是否应跳过对话存储 ----------
     # 客户端通过header显式声明（如标题生成等辅助请求）
     skip_conversation_log = request.headers.get("X-Skip-Conversation-Log", "").lower() == "true"
-    tool_chain_debug = cfg.TOOL_CHAIN_DEBUG
+    tool_chain_debug = TOOL_CHAIN_DEBUG
     
     # ---------- 提取用户最新消息 ----------
     user_message = ""
@@ -3759,7 +3844,7 @@ async def chat_completions(request: Request):
     )
     
     # ---------- 分区缓存模式 ----------
-    if cfg.CACHE_PARTITION_ENABLED:
+    if CACHE_PARTITION_ENABLED:
         active_sid = get_active_session_id()
         if active_sid:
             session_id = active_sid
@@ -4204,20 +4289,20 @@ async def chat_completions(request: Request):
         body["messages"] = upstream_messages
     
     # ---------- 模型处理 ----------
-    model = body.get("model", cfg.DEFAULT_MODEL)
+    model = body.get("model", DEFAULT_MODEL)
     if not model:
-        model = cfg.DEFAULT_MODEL
+        model = DEFAULT_MODEL
     body["model"] = model
     
     # ---------- 温度参数注入 ----------
-    if str(cfg.CHAT_TEMPERATURE).strip() != "":
+    if str(CHAT_TEMPERATURE).strip() != "":
         try:
-            body["temperature"] = float(cfg.CHAT_TEMPERATURE)
+            body["temperature"] = float(CHAT_TEMPERATURE)
         except Exception:
-            print(f"⚠️ cfg.CHAT_TEMPERATURE 无效，跳过注入: {cfg.CHAT_TEMPERATURE}")
+            print(f"⚠️ CHAT_TEMPERATURE 无效，跳过注入: {CHAT_TEMPERATURE}")
 
     # ---------- cache_control 兼容性处理 ----------
-    if cfg.CACHE_PARTITION_ENABLED and not _is_anthropic_model(model):
+    if CACHE_PARTITION_ENABLED and not _is_anthropic_model(model):
         _strip_cache_control(body.get("messages", []))
     
     # ---------- 记录最近一次实际发送给上游的请求体（Dashboard 手动查看） ----------
@@ -4229,39 +4314,39 @@ async def chat_completions(request: Request):
             "session_id": session_id,
             "model": body.get("model", ""),
             "message_count": len(body.get("messages", []) or []),
-            "cache_partition_enabled": cfg.CACHE_PARTITION_ENABLED,
+            "cache_partition_enabled": CACHE_PARTITION_ENABLED,
         }
     except Exception as e:
         print(f"⚠️ 记录上次请求体失败: {e}")
 
     # ---------- 转发请求 ----------
     headers = {
-        "Authorization": f"Bearer {cfg.API_KEY}",
+        "Authorization": f"Bearer {API_KEY}",
         "Content-Type": "application/json",
     }
     # OpenRouter 需要的额外头
-    if "openrouter" in cfg.API_BASE_URL:
+    if "openrouter" in API_BASE_URL:
         headers["HTTP-Referer"] = EXTRA_REFERER
         headers["X-Title"] = EXTRA_TITLE
     
     is_stream = body.get("stream", False)
     
     # 强制流式传输（解决部分客户端不发stream=true的问题）
-    if cfg.FORCE_STREAM and not is_stream:
+    if FORCE_STREAM and not is_stream:
         is_stream = True
         body["stream"] = True
-        print(f"⚡ 强制开启流式传输（cfg.FORCE_STREAM=true）")
+        print(f"⚡ 强制开启流式传输（FORCE_STREAM=true）")
     
     # 注入推理参数（解决客户端走网关时不带reasoning参数的问题）
-    if cfg.REASONING_EFFORT:
+    if REASONING_EFFORT:
         # 统一用 reasoning_effort（Claude/OpenAI/Google Gemini OpenAI兼容端点都支持）
         # 先删除客户端可能已带的值，确保用我们配置的
         body.pop("reasoning_effort", None)
         body.pop("google", None)
-        body["reasoning_effort"] = cfg.REASONING_EFFORT
-        print(f"🧠 注入推理参数: reasoning_effort={cfg.REASONING_EFFORT}")
+        body["reasoning_effort"] = REASONING_EFFORT
+        print(f"🧠 注入推理参数: reasoning_effort={REASONING_EFFORT}")
     
-    print(f"📡 请求: model={model}, stream={is_stream}, memory={'on' if cfg.MEMORY_ENABLED else 'off'}", flush=True)
+    print(f"📡 请求: model={model}, stream={is_stream}, memory={'on' if MEMORY_ENABLED else 'off'}", flush=True)
     
     # 调试：打印请求体中的推理相关字段
     debug_keys = {k: v for k, v in body.items() if k in ('reasoning_effort', 'google', 'reasoning')}
@@ -4276,7 +4361,7 @@ async def chat_completions(request: Request):
         )
     else:
         async with httpx.AsyncClient(timeout=300) as client:
-            response = await client.post(cfg.API_BASE_URL, headers=headers, json=body)
+            response = await client.post(API_BASE_URL, headers=headers, json=body)
             
             if response.status_code == 200:
                 resp_data = response.json()
@@ -4309,7 +4394,7 @@ async def chat_completions(request: Request):
                 except (KeyError, IndexError):
                     pass
                 
-                if cfg.MEMORY_ENABLED and (user_message or tool_messages):
+                if MEMORY_ENABLED and (user_message or tool_messages):
                     sync_saved_tool_call = False
                     if assistant_tool_calls and not tool_messages and not skip_conversation_log and not is_auto_trigger:
                         sync_saved_tool_call = await persist_assistant_tool_calls_sync(
@@ -4355,7 +4440,7 @@ async def stream_and_capture(headers: dict, body: dict, session_id: str, user_me
     accumulated_tool_calls = {}  # index -> {id, type, function: {name, arguments}}
     
     async with httpx.AsyncClient(timeout=300) as client:
-        async with client.stream("POST", cfg.API_BASE_URL, headers=headers, json=body) as response:
+        async with client.stream("POST", API_BASE_URL, headers=headers, json=body) as response:
             # 打印上游响应头（排查thinking问题用）
             upstream_ct = response.headers.get("content-type", "")
             print(f"📨 上游响应: status={response.status_code}, content-type={upstream_ct}", flush=True)
@@ -4470,7 +4555,7 @@ async def stream_and_capture(headers: dict, body: dict, session_id: str, user_me
             asyncio.create_task(save_token_usage(session_id, model, pt, ct, tt))
             print(f"📊 Stream Token: {pt} + {ct} = {tt}")
     
-    if cfg.MEMORY_ENABLED and (user_message or tool_messages):
+    if MEMORY_ENABLED and (user_message or tool_messages):
         sync_saved_tool_call = False
         if assistant_tool_calls and not tool_messages and not skip_conversation_log and not is_auto_trigger:
             sync_saved_tool_call = await persist_assistant_tool_calls_sync(
@@ -4499,7 +4584,7 @@ from image_archive import (
 )
 
 # 注入分区开关读取
-set_partition_enabled_getter(lambda: cfg.CACHE_PARTITION_ENABLED)
+set_partition_enabled_getter(lambda: CACHE_PARTITION_ENABLED)
 
 
 @app.get("/api/image-archive/status")
@@ -4509,7 +4594,7 @@ async def api_image_archive_status():
         "enabled": IMAGE_ARCHIVE_ENABLED,
         "ready": image_archive_ready(),
         "active": image_archive_active(),
-        "partition_enabled": cfg.CACHE_PARTITION_ENABLED,
+        "partition_enabled": CACHE_PARTITION_ENABLED,
         "config": {
             "R2_ENDPOINT": bool(R2_ENDPOINT),
             "R2_ACCESS_KEY": bool(R2_ACCESS_KEY),
@@ -4578,7 +4663,7 @@ async def export_memory_palace_backup_data():
 
 @app.get("/api/memory-palace/export-stats")
 async def api_memory_palace_export_stats():
-    if not cfg.MEMORY_ENABLED:
+    if not MEMORY_ENABLED:
         return {"error": "记忆系统未启用"}
     cache_key = "mp:stats:export"
     cached = _cache_get(cache_key)
@@ -4605,8 +4690,8 @@ async def api_memory_palace_export_stats():
 
 @app.get("/export/memory-palace")
 async def export_memory_palace_backup():
-    if not cfg.MEMORY_ENABLED:
-        return {"error": "记忆系统未启用（设置 cfg.MEMORY_ENABLED=true 开启）"}
+    if not MEMORY_ENABLED:
+        return {"error": "记忆系统未启用（设置 MEMORY_ENABLED=true 开启）"}
     try:
         data = await export_memory_palace_backup_data()
         filename = f"memory_palace_backup_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.json"
@@ -4754,7 +4839,7 @@ async def confirm_memory_palace_import(import_token: str, strategy: str = "merge
 
 @app.post("/api/memory-palace/import/preview")
 async def api_memory_palace_import_preview(request: Request):
-    if not cfg.MEMORY_ENABLED:
+    if not MEMORY_ENABLED:
         return {"status":"error", "error":"记忆系统未启用"}
     try:
         data = await request.json()
@@ -4767,7 +4852,7 @@ async def api_memory_palace_import_preview(request: Request):
 
 @app.post("/api/memory-palace/import/confirm")
 async def api_memory_palace_import_confirm(request: Request):
-    if not cfg.MEMORY_ENABLED:
+    if not MEMORY_ENABLED:
         return {"status":"error", "error":"记忆系统未启用"}
     try:
         data = await request.json()
@@ -4788,8 +4873,8 @@ async def api_memory_palace_import_confirm(request: Request):
 @app.get("/dashboard", response_class=HTMLResponse)
 async def dashboard_page(request: Request):
     """Dashboard - 整合的记忆管理界面"""
-    if not cfg.MEMORY_ENABLED:
-        return HTMLResponse("<h3>记忆系统未启用（设置 cfg.MEMORY_ENABLED=true 开启）</h3>")
+    if not MEMORY_ENABLED:
+        return HTMLResponse("<h3>记忆系统未启用（设置 MEMORY_ENABLED=true 开启）</h3>")
     
     return templates.TemplateResponse(request, "dashboard.html")
 
@@ -4915,7 +5000,7 @@ async def generate_daily_impression_for_date(impression_date, start_hour: int = 
 
     memory_api_base_url = await get_runtime_memory_api_base_url()
     if not memory_api_base_url:
-        return {"status": "error", "error": "cfg.MEMORY_API_BASE_URL 未设置，无法生成日印象"}
+        return {"status": "error", "error": "MEMORY_API_BASE_URL 未设置，无法生成日印象"}
 
     impression_model = os.getenv("MEMORY_MODEL", "anthropic/claude-haiku-4")
     try:
@@ -5005,7 +5090,7 @@ def _serialize_daily_impression(row):
 
 @app.get("/api/daily-impressions")
 async def api_list_daily_impressions(limit: int = 30):
-    if not cfg.MEMORY_ENABLED:
+    if not MEMORY_ENABLED:
         return {"error": "记忆系统未启用"}
     limit = max(1, min(int(limit or 30), 10000))
     cache_key = f"daily:list:{limit}"
@@ -5019,7 +5104,7 @@ async def api_list_daily_impressions(limit: int = 30):
 
 @app.get("/api/daily-impressions/stats")
 async def api_daily_impressions_stats():
-    if not cfg.MEMORY_ENABLED:
+    if not MEMORY_ENABLED:
         return {"error": "记忆系统未启用"}
     cache_key = "daily:stats"
     cached = _cache_get(cache_key)
@@ -5049,7 +5134,7 @@ async def api_daily_impressions_stats():
 @app.get("/api/daily-impressions/months")
 async def api_daily_impression_months():
     """日印象月份概览：只返回月份、数量和日期范围，不返回全部正文。"""
-    if not cfg.MEMORY_ENABLED:
+    if not MEMORY_ENABLED:
         return {"error": "记忆系统未启用"}
     cache_key = "daily:months"
     cached = _cache_get(cache_key)
@@ -5094,7 +5179,7 @@ async def api_daily_impression_months():
 @app.get("/api/daily-impressions/month/{month}")
 async def api_daily_impressions_by_month(month: str):
     """按月读取日印象；进入页面默认只加载本月。month 格式 YYYY-MM。"""
-    if not cfg.MEMORY_ENABLED:
+    if not MEMORY_ENABLED:
         return {"error": "记忆系统未启用"}
     month = str(month or "").strip()
     if not re.match(r"^\d{4}-\d{2}$", month):
@@ -5125,7 +5210,7 @@ async def api_daily_impressions_by_month(month: str):
 
 @app.get("/api/daily-impressions/{date_str}")
 async def api_get_daily_impression(date_str: str):
-    if not cfg.MEMORY_ENABLED:
+    if not MEMORY_ENABLED:
         return {"error": "记忆系统未启用"}
     impression_date = datetime.strptime(date_str, "%Y-%m-%d").date()
     row = await get_daily_impression(impression_date)
@@ -5136,7 +5221,7 @@ async def api_get_daily_impression(date_str: str):
 
 @app.post("/api/daily-impressions/generate")
 async def api_generate_daily_impression(request: Request):
-    if not cfg.MEMORY_ENABLED:
+    if not MEMORY_ENABLED:
         return {"error": "记忆系统未启用"}
     data = await request.json()
     date_str = data.get("date")
@@ -5152,7 +5237,7 @@ async def api_generate_daily_impression(request: Request):
 
 @app.put("/api/daily-impressions/{date_str}")
 async def api_update_daily_impression(date_str: str, request: Request):
-    if not cfg.MEMORY_ENABLED:
+    if not MEMORY_ENABLED:
         return {"error": "记忆系统未启用"}
     try:
         impression_date = datetime.strptime(date_str, "%Y-%m-%d").date()
@@ -5177,7 +5262,7 @@ async def api_update_daily_impression(date_str: str, request: Request):
 
 @app.delete("/api/daily-impressions/{date_str}")
 async def api_delete_daily_impression(date_str: str):
-    if not cfg.MEMORY_ENABLED:
+    if not MEMORY_ENABLED:
         return {"error": "记忆系统未启用"}
     try:
         impression_date = datetime.strptime(date_str, "%Y-%m-%d").date()
@@ -5536,7 +5621,7 @@ async def call_user_impression_generator(materials: dict) -> dict:
     """调用记忆模型生成用户画像预览。只返回结果，不保存。使用流式，避免长时间无首字节导致前端/代理 failed to fetch。"""
     base_url = await get_runtime_memory_api_base_url()
     if not base_url:
-        raise RuntimeError("cfg.MEMORY_API_BASE_URL 未设置")
+        raise RuntimeError("MEMORY_API_BASE_URL 未设置")
     memory_model = await get_runtime_memory_model()
     if not memory_model:
         raise RuntimeError("MEMORY_MODEL 未设置")
@@ -5988,7 +6073,7 @@ async def replace_user_activity_meta_variables(prompt: str, character_id: str = 
 
 @app.post("/api/user-activity-meta/refresh")
 async def api_user_activity_meta_refresh(request: Request):
-    if not cfg.MEMORY_ENABLED:
+    if not MEMORY_ENABLED:
         return {"error": "记忆系统未启用"}
     try:
         try:
@@ -6007,7 +6092,7 @@ async def api_user_activity_meta_refresh(request: Request):
 
 @app.delete("/api/user-activity-meta")
 async def api_delete_user_activity_meta(character_id: str = "default"):
-    if not cfg.MEMORY_ENABLED:
+    if not MEMORY_ENABLED:
         return {"error": "记忆系统未启用"}
     try:
         character_id = character_id or "default"
@@ -6021,7 +6106,7 @@ async def api_delete_user_activity_meta(character_id: str = "default"):
 
 @app.get("/api/user-activity-meta")
 async def api_get_user_activity_meta(character_id: str = "default"):
-    if not cfg.MEMORY_ENABLED:
+    if not MEMORY_ENABLED:
         return {"error": "记忆系统未启用"}
     try:
         character_id = character_id or "default"
@@ -6043,7 +6128,7 @@ async def api_get_user_activity_meta(character_id: str = "default"):
 
 @app.get("/api/user-impression")
 async def api_get_user_impression(character_id: str = "default"):
-    if not cfg.MEMORY_ENABLED:
+    if not MEMORY_ENABLED:
         return {"error": "记忆系统未启用"}
     character_id = character_id or "default"
     cache_key = f"user_impression:{character_id}"
@@ -6060,7 +6145,7 @@ async def api_get_user_impression(character_id: str = "default"):
 
 @app.post("/api/user-impression/confirm")
 async def api_confirm_user_impression(request: Request):
-    if not cfg.MEMORY_ENABLED:
+    if not MEMORY_ENABLED:
         return {"error": "记忆系统未启用"}
     try:
         data = await request.json()
@@ -6087,7 +6172,7 @@ async def api_confirm_user_impression(request: Request):
 
 @app.delete("/api/user-impression")
 async def api_delete_user_impression(character_id: str = "default"):
-    if not cfg.MEMORY_ENABLED:
+    if not MEMORY_ENABLED:
         return {"error": "记忆系统未启用"}
     result = await delete_user_impression(character_id=character_id or "default")
     invalidate_user_impression_prompt_cache(character_id or "default")
@@ -6096,7 +6181,7 @@ async def api_delete_user_impression(character_id: str = "default"):
 
 @app.post("/api/user-impression/materials-preview")
 async def api_user_impression_materials_preview(request: Request):
-    if not cfg.MEMORY_ENABLED:
+    if not MEMORY_ENABLED:
         return {"error": "记忆系统未启用"}
     try:
         data = await request.json()
@@ -6131,7 +6216,7 @@ async def api_cancel_user_impression_generation(request: Request):
 
 @app.post("/api/user-impression/generate-preview")
 async def api_user_impression_generate_preview(request: Request):
-    if not cfg.MEMORY_ENABLED:
+    if not MEMORY_ENABLED:
         return {"error": "记忆系统未启用"}
     try:
         data = await request.json()
@@ -6191,7 +6276,7 @@ async def api_user_impression_generate_preview(request: Request):
 
 @app.get("/api/memory-palace/rooms")
 async def api_memory_palace_rooms(character_id: str = "default"):
-    if not cfg.MEMORY_ENABLED:
+    if not MEMORY_ENABLED:
         return {"error": "记忆系统未启用"}
     character_id = character_id or "default"
     cache_key = f"mp:{character_id}:rooms"
@@ -6209,7 +6294,7 @@ async def api_memory_palace_rooms_with_nodes(
     limit: int = 40,
 ):
     """一次性返回房间列表 + 第一页节点，减少前端串行请求。"""
-    if not cfg.MEMORY_ENABLED:
+    if not MEMORY_ENABLED:
         return {"error": "记忆系统未启用"}
     character_id = character_id or "default"
     limit = max(1, min(int(limit or 40), 300))
@@ -6233,7 +6318,7 @@ async def api_memory_palace_nodes(
     limit: int = 100,
     offset: int = 0,
 ):
-    if not cfg.MEMORY_ENABLED:
+    if not MEMORY_ENABLED:
         return {"error": "记忆系统未启用"}
     character_id = character_id or "default"
     limit = max(1, min(int(limit or 100), 300))
@@ -6257,7 +6342,7 @@ async def api_memory_palace_session_nodes(
     limit: int = 100,
     offset: int = 0,
 ):
-    if not cfg.MEMORY_ENABLED:
+    if not MEMORY_ENABLED:
         return {"error": "记忆系统未启用"}
     session_id = str(session_id or "").strip()
     if not session_id:
@@ -6352,7 +6437,7 @@ def _serialize_event_box_node(row: dict) -> dict:
 
 @app.get("/api/memory-palace/event-boxes")
 async def api_memory_palace_event_boxes(character_id: str = "default", limit: int = 100, offset: int = 0, refresh: int = 0):
-    if not cfg.MEMORY_ENABLED:
+    if not MEMORY_ENABLED:
         return {"error": "记忆系统未启用"}
     character_id = character_id or "default"
     limit = max(1, min(int(limit or 100), 300))
@@ -6389,7 +6474,7 @@ async def api_memory_palace_event_boxes(character_id: str = "default", limit: in
 
 @app.get("/api/memory-palace/event-boxes/{box_id}")
 async def api_memory_palace_event_box_detail(box_id: str, character_id: str = "default"):
-    if not cfg.MEMORY_ENABLED:
+    if not MEMORY_ENABLED:
         return {"error": "记忆系统未启用"}
     try:
         pool = await get_pool()
@@ -6478,7 +6563,7 @@ async def api_memory_palace_event_box_detail(box_id: str, character_id: str = "d
 
 @app.post("/api/memory-palace/digest/preview")
 async def api_memory_palace_digest_preview(request: Request):
-    if not cfg.MEMORY_ENABLED:
+    if not MEMORY_ENABLED:
         return {"error": "\u8bb0\u5fc6\u7cfb\u7edf\u672a\u542f\u7528"}
     try:
         data = await request.json()
@@ -6496,7 +6581,7 @@ async def api_memory_palace_digest_preview(request: Request):
 
 @app.post("/api/memory-palace/digest/confirm")
 async def api_memory_palace_digest_confirm(request: Request):
-    if not cfg.MEMORY_ENABLED:
+    if not MEMORY_ENABLED:
         return {"error": "\u8bb0\u5fc6\u7cfb\u7edf\u672a\u542f\u7528"}
     try:
         data = await request.json()
@@ -6515,7 +6600,7 @@ async def api_memory_palace_digest_confirm(request: Request):
 
 @app.post("/api/memory-palace/digest")
 async def api_memory_palace_digest(request: Request):
-    if not cfg.MEMORY_ENABLED:
+    if not MEMORY_ENABLED:
         return {"error": "\u8bb0\u5fc6\u7cfb\u7edf\u672a\u542f\u7528"}
     try:
         data = await request.json()
@@ -6533,7 +6618,7 @@ async def api_memory_palace_digest(request: Request):
 
 @app.post("/api/memory-palace/consolidate")
 async def api_memory_palace_consolidate(request: Request):
-    if not cfg.MEMORY_ENABLED:
+    if not MEMORY_ENABLED:
         return {"error": "\u8bb0\u5fc6\u7cfb\u7edf\u672a\u542f\u7528"}
     try:
         data = await request.json()
@@ -6549,7 +6634,7 @@ async def api_memory_palace_consolidate(request: Request):
 
 @app.post("/api/memory-palace/event-boxes/compress")
 async def api_memory_palace_compress_event_boxes(request: Request):
-    if not cfg.MEMORY_ENABLED:
+    if not MEMORY_ENABLED:
         return {"error": "记忆系统未启用"}
     try:
         data = await request.json()
@@ -6571,7 +6656,7 @@ async def api_memory_palace_compress_event_boxes(request: Request):
 
 @app.post("/api/memory-palace/event-boxes/{box_id}/undo-compress")
 async def api_memory_palace_undo_event_box_compression(box_id: str, request: Request):
-    if not cfg.MEMORY_ENABLED:
+    if not MEMORY_ENABLED:
         return {"error": "记忆系统未启用"}
     try:
         data = await request.json()
@@ -6683,7 +6768,7 @@ async def api_memory_palace_undo_event_box_compression(box_id: str, request: Req
 
 @app.patch("/api/memory-palace/event-boxes/{box_id}")
 async def api_memory_palace_update_event_box(box_id: str, request: Request):
-    if not cfg.MEMORY_ENABLED:
+    if not MEMORY_ENABLED:
         return {"error": "记忆系统未启用"}
     try:
         data = await request.json()
@@ -6719,7 +6804,7 @@ async def api_memory_palace_update_event_box(box_id: str, request: Request):
 
 @app.post("/api/memory-palace/event-boxes/{box_id}/unbind-live")
 async def api_memory_palace_unbind_event_box_live(box_id: str, request: Request):
-    if not cfg.MEMORY_ENABLED:
+    if not MEMORY_ENABLED:
         return {"error": "记忆系统未启用"}
     try:
         data = await request.json()
@@ -6761,7 +6846,7 @@ async def api_memory_palace_unbind_event_box_live(box_id: str, request: Request)
 
 @app.post("/api/memory-palace/nodes/{node_id}/revive")
 async def api_memory_palace_revive_node(node_id: str, request: Request):
-    if not cfg.MEMORY_ENABLED:
+    if not MEMORY_ENABLED:
         return {"error": "记忆系统未启用"}
     try:
         data = await request.json()
@@ -6807,7 +6892,7 @@ async def api_memory_palace_revive_node(node_id: str, request: Request):
 
 @app.post("/api/memory-palace/event-boxes/{box_id}/add-node")
 async def api_memory_palace_add_node_to_event_box(box_id: str, request: Request):
-    if not cfg.MEMORY_ENABLED:
+    if not MEMORY_ENABLED:
         return {"error": "记忆系统未启用"}
     try:
         data = await request.json()
@@ -6858,7 +6943,7 @@ async def api_memory_palace_add_node_to_event_box(box_id: str, request: Request)
 
 @app.post("/api/memory-palace/event-boxes/{box_id}/remove-node")
 async def api_memory_palace_remove_node_from_specific_event_box(box_id: str, request: Request):
-    if not cfg.MEMORY_ENABLED:
+    if not MEMORY_ENABLED:
         return {"error": "记忆系统未启用"}
     try:
         data = await request.json()
@@ -6926,7 +7011,7 @@ async def api_memory_palace_remove_node_from_specific_event_box(box_id: str, req
 
 @app.delete("/api/memory-palace/event-boxes/{box_id}")
 async def api_memory_palace_delete_event_box(box_id: str, request: Request):
-    if not cfg.MEMORY_ENABLED:
+    if not MEMORY_ENABLED:
         return {"error": "记忆系统未启用"}
     try:
         data = await request.json()
@@ -6964,7 +7049,7 @@ async def api_memory_palace_delete_event_box(box_id: str, request: Request):
 
 @app.post("/api/memory-palace/nodes/{node_id}/remove-from-box")
 async def api_memory_palace_remove_node_from_event_box(node_id: str, request: Request):
-    if not cfg.MEMORY_ENABLED:
+    if not MEMORY_ENABLED:
         return {"error": "记忆系统未启用"}
     try:
         data = await request.json()
@@ -7019,7 +7104,7 @@ async def api_memory_palace_remove_node_from_event_box(node_id: str, request: Re
 
 @app.post("/api/memory-palace/event-boxes/manual-bind")
 async def api_memory_palace_manual_bind_event_box(request: Request):
-    if not cfg.MEMORY_ENABLED:
+    if not MEMORY_ENABLED:
         return {"error": "记忆系统未启用"}
     try:
         data = await request.json()
@@ -7043,7 +7128,7 @@ async def api_memory_palace_manual_bind_event_box(request: Request):
 
 @app.post("/api/memory-palace/pins/clear")
 async def api_memory_palace_clear_pins(request: Request):
-    if not cfg.MEMORY_ENABLED:
+    if not MEMORY_ENABLED:
         return {"error": "记忆系统未启用"}
     try:
         data = await request.json()
@@ -7068,7 +7153,7 @@ async def api_memory_palace_clear_pins(request: Request):
 
 @app.get("/api/memory-palace/nodes/{node_id}")
 async def api_memory_palace_get_node(node_id: str):
-    if not cfg.MEMORY_ENABLED:
+    if not MEMORY_ENABLED:
         return {"error": "记忆系统未启用"}
     node = await get_memory_palace_node(node_id)
     if not node:
@@ -7078,7 +7163,7 @@ async def api_memory_palace_get_node(node_id: str):
 
 @app.post("/api/memory-palace/debug-retrieve")
 async def api_memory_palace_debug_retrieve(request: Request):
-    if not cfg.MEMORY_ENABLED:
+    if not MEMORY_ENABLED:
         return {"error": "记忆系统未启用"}
     data = await request.json()
     query = (data.get("query") or "").strip()
@@ -7162,7 +7247,7 @@ async def api_memory_palace_debug_retrieve(request: Request):
 
 @app.post("/api/memory-palace/nodes")
 async def api_memory_palace_create_node(request: Request):
-    if not cfg.MEMORY_ENABLED:
+    if not MEMORY_ENABLED:
         return {"error": "记忆系统未启用"}
     data = await request.json()
     content_text = (data.get("content") or "").strip()
@@ -7195,7 +7280,7 @@ async def api_memory_palace_create_node(request: Request):
 
 @app.put("/api/memory-palace/nodes/{node_id}")
 async def api_memory_palace_update_node(node_id: str, request: Request):
-    if not cfg.MEMORY_ENABLED:
+    if not MEMORY_ENABLED:
         return {"error": "记忆系统未启用"}
     data = await request.json()
     if "metadata" in data:
@@ -7209,7 +7294,7 @@ async def api_memory_palace_update_node(node_id: str, request: Request):
 
 @app.delete("/api/memory-palace/nodes/{node_id}")
 async def api_memory_palace_delete_node(node_id: str):
-    if not cfg.MEMORY_ENABLED:
+    if not MEMORY_ENABLED:
         return {"error": "记忆系统未启用"}
     result = await delete_memory_palace_node(node_id)
     invalidate_memory_palace_cache("default")
@@ -7674,7 +7759,7 @@ class MemoryPalaceSummaryParseError(Exception):
 async def call_memory_palace_event_box_summarizer(box: dict, live_nodes: list, character_id: str = "default", old_summary: dict = None) -> dict:
     base_url = await get_runtime_memory_api_base_url()
     if not base_url:
-        raise RuntimeError("cfg.MEMORY_API_BASE_URL 未设置")
+        raise RuntimeError("MEMORY_API_BASE_URL 未设置")
     memory_model = await get_runtime_memory_model()
     if not memory_model:
         raise RuntimeError("MEMORY_MODEL 未设置")
@@ -7954,7 +8039,7 @@ async def maybe_compress_memory_palace_event_boxes(box_ids=None, character_id: s
 async def call_memory_palace_extractor(messages_text: str, character_id: str = "default", source_messages: list = None) -> tuple:
     base_url = await get_runtime_memory_api_base_url()
     if not base_url:
-        raise RuntimeError("cfg.MEMORY_API_BASE_URL 未设置")
+        raise RuntimeError("MEMORY_API_BASE_URL 未设置")
     memory_model = await get_runtime_memory_model()
     if not memory_model:
         raise RuntimeError("MEMORY_MODEL 未设置")
@@ -8437,7 +8522,7 @@ async def get_memory_palace_vector_stats() -> dict:
 
 @app.post("/api/memory-palace/extract-preview-sessions")
 async def api_memory_palace_extract_preview_sessions(request: Request):
-    if not cfg.MEMORY_ENABLED:
+    if not MEMORY_ENABLED:
         return {"error": "记忆系统未启用"}
     try:
         data = await request.json()
@@ -8453,7 +8538,7 @@ async def api_memory_palace_extract_preview_sessions(request: Request):
         character_id = data.get("character_id") or "default"
         # 手动预览与分区自动提取共用同一个消息上限，避免对话记录按钮一次塞入过多历史。
         # 即使前端传了旧的 limit=300，这里也以后端设置为准。
-        limit = max(1, int(cfg.CACHE_PARTITION_EXTRACT_LIMIT or 120))
+        limit = max(1, int(CACHE_PARTITION_EXTRACT_LIMIT or 120))
         unique_sids = sorted(set(session_ids))
         active_keys = [f"preview:{character_id}:{sid}" for sid in unique_sids]
         async with _memory_palace_manual_extract_guard:
@@ -8488,7 +8573,7 @@ async def api_memory_palace_extract_preview_sessions(request: Request):
 
 @app.post("/api/memory-palace/import-preview")
 async def api_memory_palace_import_preview(request: Request):
-    if not cfg.MEMORY_ENABLED:
+    if not MEMORY_ENABLED:
         return {"error": "记忆系统未启用"}
     try:
         data = await request.json()
@@ -8791,7 +8876,7 @@ async def extract_memories_from_text_for_palace(text: str, character_id: str = "
 
 @app.post("/api/memory-palace/extract-text")
 async def api_memory_palace_extract_text(request: Request):
-    if not cfg.MEMORY_ENABLED:
+    if not MEMORY_ENABLED:
         return {"error": "记忆系统未启用"}
     try:
         data = await request.json()
@@ -8847,7 +8932,7 @@ async def api_memory_palace_extract_text(request: Request):
 @app.post("/import/daily-impressions")
 async def import_daily_impressions(request: Request):
     """从 JSON 导入日印象（用于恢复备份）"""
-    if not cfg.MEMORY_ENABLED:
+    if not MEMORY_ENABLED:
         return {"error": "记忆系统未启用"}
     try:
         data = await request.json()
@@ -8890,7 +8975,7 @@ async def import_daily_impressions(request: Request):
 
 @app.get("/api/conversations")
 async def api_conversations(page: int = 1, per_page: int = 20):
-    if not cfg.MEMORY_ENABLED:
+    if not MEMORY_ENABLED:
         return {"error": "记忆系统未启用"}
     page = max(1, int(page))
     per_page = max(1, min(int(per_page), 100))
@@ -8905,7 +8990,7 @@ async def api_conversations(page: int = 1, per_page: int = 20):
 
 @app.get("/api/conversations/{session_id}/messages")
 async def api_conversation_messages(session_id: str, limit: int = 30, offset: int = 0):
-    if not cfg.MEMORY_ENABLED:
+    if not MEMORY_ENABLED:
         return {"error": "记忆系统未启用"}
     limit = max(1, min(int(limit or 30), 30))
     offset = max(0, int(offset or 0))
@@ -8929,7 +9014,7 @@ async def api_conversation_messages(session_id: str, limit: int = 30, offset: in
 
 @app.delete("/api/conversations/{session_id}")
 async def api_delete_conversation(session_id: str):
-    if not cfg.MEMORY_ENABLED:
+    if not MEMORY_ENABLED:
         return {"error": "记忆系统未启用"}
     try:
         await release_images_for_session(session_id)
@@ -8941,7 +9026,7 @@ async def api_delete_conversation(session_id: str):
 
 @app.post("/api/conversations/batch-delete")
 async def api_batch_delete(request: Request):
-    if not cfg.MEMORY_ENABLED:
+    if not MEMORY_ENABLED:
         return {"error": "记忆系统未启用"}
     try:
         body = await request.json()
@@ -8957,7 +9042,7 @@ async def api_batch_delete(request: Request):
 
 @app.post("/api/admin/merge-sessions")
 async def api_merge_sessions(request: Request):
-    if not cfg.MEMORY_ENABLED:
+    if not MEMORY_ENABLED:
         return {"error": "记忆系统未启用"}
     try:
         body = await request.json()
@@ -8974,7 +9059,7 @@ async def api_merge_sessions(request: Request):
 @app.get("/api/chat/search")
 async def api_search_conversations(q: str = "", limit: int = 20, offset: int = 0):
     """搜索对话内容"""
-    if not cfg.MEMORY_ENABLED:
+    if not MEMORY_ENABLED:
         return {"error": "记忆系统未启用"}
     if not q.strip():
         return {"error": "搜索关键词不能为空", "results": [], "total": 0}
@@ -8988,7 +9073,7 @@ async def api_search_conversations(q: str = "", limit: int = 20, offset: int = 0
 @app.patch("/api/chat/messages/{message_id}")
 async def api_update_message(message_id: int, request: Request):
     """编辑单条消息内容"""
-    if not cfg.MEMORY_ENABLED:
+    if not MEMORY_ENABLED:
         return {"error": "记忆系统未启用"}
     try:
         body = await request.json()
@@ -9019,7 +9104,7 @@ async def _delete_message_by_id(message_id: int):
 @app.delete("/api/messages/{message_id}")
 async def api_delete_message_legacy(message_id: int):
     """删除单条对话消息（兼容 Dashboard 旧接口）"""
-    if not cfg.MEMORY_ENABLED:
+    if not MEMORY_ENABLED:
         return {"error": "记忆系统未启用"}
     try:
         return await _delete_message_by_id(message_id)
@@ -9030,7 +9115,7 @@ async def api_delete_message_legacy(message_id: int):
 @app.get("/api/conversations/export")
 async def api_export_conversations():
     """导出所有对话记录"""
-    if not cfg.MEMORY_ENABLED:
+    if not MEMORY_ENABLED:
         return {"error": "记忆系统未启用"}
     try:
         data = await export_all_conversations()
@@ -9042,7 +9127,7 @@ async def api_export_conversations():
 @app.post("/api/conversations/import")
 async def api_import_conversations(request: Request):
     """导入对话记录（JSON格式，自动去重）"""
-    if not cfg.MEMORY_ENABLED:
+    if not MEMORY_ENABLED:
         return {"error": "记忆系统未启用"}
     try:
         records = await request.json()
@@ -9063,11 +9148,11 @@ async def api_partition_status():
     active_sid = get_active_session_id()
     state = await get_session_cache_state(active_sid) if active_sid else {}
     return {
-        "enabled": cfg.CACHE_PARTITION_ENABLED,
+        "enabled": CACHE_PARTITION_ENABLED,
         "active_session_id": active_sid,
-        "partition_x": cfg.CACHE_PARTITION_X,
-        "partition_b_limit": _partition_b_limit(cfg.CACHE_PARTITION_X),
-        "partition_keep_peak": cfg.CACHE_PARTITION_X + _partition_b_limit(cfg.CACHE_PARTITION_X),
+        "partition_x": CACHE_PARTITION_X,
+        "partition_b_limit": _partition_b_limit(CACHE_PARTITION_X),
+        "partition_keep_peak": CACHE_PARTITION_X + _partition_b_limit(CACHE_PARTITION_X),
         "summary_model": os.getenv("MEMORY_MODEL", "anthropic/claude-haiku-4"),
         "summary": '\n\n'.join(state.get('summary_parts', [])),
         "summary_parts": state.get('summary_parts', []),
@@ -9207,7 +9292,7 @@ _mp_backfill_status = {"running": False, "total": 0, "done": 0, "inserted": 0, "
 @app.get("/api/memory-palace/vector-stats")
 async def api_memory_palace_vector_stats():
     """只读诊断：返回记忆宫殿节点/向量数量，不触发补全、不修改数据。"""
-    if not cfg.MEMORY_ENABLED:
+    if not MEMORY_ENABLED:
         return {"error": "记忆系统未启用"}
     try:
         return await get_memory_palace_vector_stats()
@@ -9219,7 +9304,7 @@ async def api_memory_palace_vector_stats():
 @app.post("/api/memory-palace/vectors/clear-archived")
 async def api_memory_palace_clear_archived_vectors():
     """清除已归档记忆节点对应的向量，不删除记忆本体。"""
-    if not cfg.MEMORY_ENABLED:
+    if not MEMORY_ENABLED:
         return {"error": "记忆系统未启用"}
     try:
         pool = await get_pool()
@@ -9261,7 +9346,7 @@ async def api_mp_backfill_embeddings():
     所以旧逻辑判定「不缺向量」直接跳过，导致这些节点永远进不了
     pgvector 列、每次检索都要退回 Python 慢速计算。
     """
-    if not cfg.MEMORY_ENABLED:
+    if not MEMORY_ENABLED:
         return {"error": "记忆系统未启用"}
     if _mp_backfill_status["running"]:
         return {"error": "补算任务正在运行中，请等待完成"}
@@ -9406,22 +9491,22 @@ async def api_mp_backfill_embeddings_status():
 
 # ============================================================
 # 模型列表 API（/api/models）
-# 设置面板的 combo-box 用，根据 cfg.API_BASE_URL 自动适配
+# 设置面板的 combo-box 用，根据 API_BASE_URL 自动适配
 # ============================================================
 
 @app.get("/api/models")
 async def get_models():
-    """获取可用模型列表（根据 cfg.API_BASE_URL 自动适配）"""
-    is_openrouter = "openrouter.ai" in cfg.API_BASE_URL
-    is_google = "googleapis.com" in cfg.API_BASE_URL or "generativelanguage" in cfg.API_BASE_URL
-    is_openai = "api.openai.com" in cfg.API_BASE_URL
+    """获取可用模型列表（根据 API_BASE_URL 自动适配）"""
+    is_openrouter = "openrouter.ai" in API_BASE_URL
+    is_google = "googleapis.com" in API_BASE_URL or "generativelanguage" in API_BASE_URL
+    is_openai = "api.openai.com" in API_BASE_URL
 
     try:
         if is_openrouter:
             async with httpx.AsyncClient(timeout=30) as client:
                 response = await client.get(
                     "https://openrouter.ai/api/v1/models",
-                    headers={"Authorization": f"Bearer {cfg.API_KEY}"}
+                    headers={"Authorization": f"Bearer {API_KEY}"}
                 )
                 if response.status_code == 200:
                     data = response.json()
@@ -9433,7 +9518,7 @@ async def get_models():
         elif is_google:
             async with httpx.AsyncClient(timeout=30) as client:
                 response = await client.get(
-                    f"https://generativelanguage.googleapis.com/v1beta/models?key={cfg.API_KEY}"
+                    f"https://generativelanguage.googleapis.com/v1beta/models?key={API_KEY}"
                 )
                 if response.status_code == 200:
                     data = response.json()
@@ -9462,7 +9547,7 @@ async def get_models():
             async with httpx.AsyncClient(timeout=30) as client:
                 response = await client.get(
                     "https://api.openai.com/v1/models",
-                    headers={"Authorization": f"Bearer {cfg.API_KEY}"}
+                    headers={"Authorization": f"Bearer {API_KEY}"}
                 )
                 if response.status_code == 200:
                     data = response.json()
@@ -9505,15 +9590,13 @@ def _is_masked(value: str) -> bool:
     return "****" in str(value)
 
 
-def _parse_bool(v, default=False) -> bool:
-    """解析布尔值（GET /api/settings 辅助函数）。"""
-    if v is None:
-        return default
-    if isinstance(v, bool):
-        return v
-    if isinstance(v, str):
-        return v.strip().lower() in ("true", "1", "yes")
-    return bool(v)
+def _parse_bool(val, fallback=False) -> bool:
+    """解析布尔值（兼容字符串/布尔/None）"""
+    if val is None:
+        return fallback
+    if isinstance(val, bool):
+        return val
+    return str(val).lower() in ("true", "1", "yes")
 
 
 @app.get("/api/settings")
@@ -9523,35 +9606,35 @@ async def get_settings():
         db = await get_all_gateway_config()
 
         # --- 基础连接 ---
-        api_key_raw = db.get("cfg.API_KEY") or cfg.API_KEY
+        api_key_raw = db.get("API_KEY") or API_KEY
         embedding_key_raw = db.get("EMBEDDING_API_KEY") or _db_module.EMBEDDING_API_KEY
 
-        memory_key_raw = db.get("cfg.MEMORY_API_KEY") or cfg.MEMORY_API_KEY
+        memory_key_raw = db.get("MEMORY_API_KEY") or MEMORY_API_KEY
 
         settings = {
             # 基础连接
-            "cfg.API_BASE_URL":     db.get("cfg.API_BASE_URL") or str(cfg.API_BASE_URL),
-            "cfg.API_KEY":          _mask_key(api_key_raw),
-            "cfg.DEFAULT_MODEL":    db.get("cfg.DEFAULT_MODEL") or str(cfg.DEFAULT_MODEL),
-        "cfg.CHAT_TEMPERATURE": db.get("cfg.CHAT_TEMPERATURE") or str(cfg.CHAT_TEMPERATURE),
+            "API_BASE_URL":     db.get("API_BASE_URL") or str(API_BASE_URL),
+            "API_KEY":          _mask_key(api_key_raw),
+            "DEFAULT_MODEL":    db.get("DEFAULT_MODEL") or str(DEFAULT_MODEL),
+        "CHAT_TEMPERATURE": db.get("CHAT_TEMPERATURE") or str(CHAT_TEMPERATURE),
 
             # 记忆系统
-            # cfg.MEMORY_ENABLED 始终返回运行时值（环境变量），不读 DB（防脏数据导致开关显示错误）
-            "cfg.MEMORY_ENABLED":          cfg.MEMORY_ENABLED,
-            "cfg.MEMORY_API_KEY":          _mask_key(memory_key_raw),
-            "cfg.MEMORY_API_BASE_URL":     db.get("cfg.MEMORY_API_BASE_URL") or str(cfg.MEMORY_API_BASE_URL),
+            # MEMORY_ENABLED 始终返回运行时值（环境变量），不读 DB（防脏数据导致开关显示错误）
+            "MEMORY_ENABLED":          MEMORY_ENABLED,
+            "MEMORY_API_KEY":          _mask_key(memory_key_raw),
+            "MEMORY_API_BASE_URL":     db.get("MEMORY_API_BASE_URL") or str(MEMORY_API_BASE_URL),
             "MEMORY_MODEL":            db.get("MEMORY_MODEL") or os.environ.get("MEMORY_MODEL", ""),
 
             # 缓存分区
-            "cfg.CACHE_PARTITION_ENABLED": _parse_bool(db.get("cfg.CACHE_PARTITION_ENABLED"), cfg.CACHE_PARTITION_ENABLED),
-            "cfg.CACHE_PARTITION_X":       int(db.get("cfg.CACHE_PARTITION_X") or cfg.CACHE_PARTITION_X),
-            "cfg.CACHE_PARTITION_B_LIMIT": int(db.get("cfg.CACHE_PARTITION_B_LIMIT") or cfg.CACHE_PARTITION_B_LIMIT or 0),
-            "cfg.CACHE_PARTITION_EXTRACT_LIMIT": int(db.get("cfg.CACHE_PARTITION_EXTRACT_LIMIT") or cfg.CACHE_PARTITION_EXTRACT_LIMIT),
-            "cfg.CACHE_PARTITION_TRIGGER": db.get("cfg.CACHE_PARTITION_TRIGGER") or cfg.CACHE_PARTITION_TRIGGER,
-            "cfg.CACHE_PARTITION_WINDOW":  int(db.get("cfg.CACHE_PARTITION_WINDOW") or cfg.CACHE_PARTITION_WINDOW),
-            "cfg.CACHE_PARTITION_KEEP_A_TOOLS": _parse_bool(db.get("cfg.CACHE_PARTITION_KEEP_A_TOOLS"), cfg.CACHE_PARTITION_KEEP_A_TOOLS),
-            "cfg.TOOL_CHAIN_DEBUG":        _parse_bool(db.get("cfg.TOOL_CHAIN_DEBUG"), cfg.TOOL_CHAIN_DEBUG),
-            "cfg.CACHE_SUMMARY_MODEL":     db.get("cfg.CACHE_SUMMARY_MODEL") or str(cfg.CACHE_SUMMARY_MODEL),
+            "CACHE_PARTITION_ENABLED": _parse_bool(db.get("CACHE_PARTITION_ENABLED"), CACHE_PARTITION_ENABLED),
+            "CACHE_PARTITION_X":       int(db.get("CACHE_PARTITION_X") or CACHE_PARTITION_X),
+            "CACHE_PARTITION_B_LIMIT": int(db.get("CACHE_PARTITION_B_LIMIT") or CACHE_PARTITION_B_LIMIT or 0),
+            "CACHE_PARTITION_EXTRACT_LIMIT": int(db.get("CACHE_PARTITION_EXTRACT_LIMIT") or CACHE_PARTITION_EXTRACT_LIMIT),
+            "CACHE_PARTITION_TRIGGER": db.get("CACHE_PARTITION_TRIGGER") or CACHE_PARTITION_TRIGGER,
+            "CACHE_PARTITION_WINDOW":  int(db.get("CACHE_PARTITION_WINDOW") or CACHE_PARTITION_WINDOW),
+            "CACHE_PARTITION_KEEP_A_TOOLS": _parse_bool(db.get("CACHE_PARTITION_KEEP_A_TOOLS"), CACHE_PARTITION_KEEP_A_TOOLS),
+            "TOOL_CHAIN_DEBUG":        _parse_bool(db.get("TOOL_CHAIN_DEBUG"), TOOL_CHAIN_DEBUG),
+            "CACHE_SUMMARY_MODEL":     db.get("CACHE_SUMMARY_MODEL") or str(CACHE_SUMMARY_MODEL),
 
             # 向量搜索（开源版用 EMBEDDING_API_KEY + EMBEDDING_BASE_URL）
             "EMBEDDING_API_KEY":       _mask_key(embedding_key_raw),
@@ -9561,20 +9644,20 @@ async def get_settings():
 
 
             # 其他
-            "cfg.FORCE_STREAM":       _parse_bool(db.get("cfg.FORCE_STREAM"), cfg.FORCE_STREAM),
-            "cfg.PERF_DIAGNOSTIC_ENABLED": _parse_bool(db.get("cfg.PERF_DIAGNOSTIC_ENABLED"), cfg.PERF_DIAGNOSTIC_ENABLED),
-            "cfg.RESPONSE_TRANSFORM_ENABLED": _parse_bool(db.get("cfg.RESPONSE_TRANSFORM_ENABLED"), cfg.RESPONSE_TRANSFORM_ENABLED),
-            "cfg.RESPONSE_TRANSFORM_RULES": db.get("cfg.RESPONSE_TRANSFORM_RULES") or str(cfg.RESPONSE_TRANSFORM_RULES),
-            "cfg.REASONING_EFFORT":   db.get("cfg.REASONING_EFFORT") or str(cfg.REASONING_EFFORT),
-            "cfg.USER_NICKNAME":      db.get("cfg.USER_NICKNAME") or str(cfg.USER_NICKNAME),
-            "cfg.CHARACTER_NAME":      db.get("cfg.CHARACTER_NAME") or str(cfg.CHARACTER_NAME),
-            "cfg.MEMORY_PALACE_DEFAULT_LIMIT": int(db.get("cfg.MEMORY_PALACE_DEFAULT_LIMIT") or cfg.MEMORY_PALACE_DEFAULT_LIMIT),
-            "cfg.MEMORY_PALACE_INJECTION_DEPTH": int(db.get("cfg.MEMORY_PALACE_INJECTION_DEPTH") or cfg.MEMORY_PALACE_INJECTION_DEPTH),
-            "cfg.KEYWORD_CONTEXT_ENABLED": _parse_bool(db.get("cfg.KEYWORD_CONTEXT_ENABLED"), cfg.KEYWORD_CONTEXT_ENABLED),
-            "cfg.KEYWORD_CONTEXT_RULES": db.get("cfg.KEYWORD_CONTEXT_RULES") or str(cfg.KEYWORD_CONTEXT_RULES),
-            "cfg.CONTEXT_TEMPLATE_ENABLED": _parse_bool(db.get("cfg.CONTEXT_TEMPLATE_ENABLED"), cfg.CONTEXT_TEMPLATE_ENABLED),
-            "cfg.CONTEXT_TEMPLATE": db.get("cfg.CONTEXT_TEMPLATE") or str(cfg.CONTEXT_TEMPLATE or DEFAULT_CONTEXT_TEMPLATE),
-            "cfg.SPARSE_TIMESTAMP_ENABLED": _parse_bool(db.get("cfg.SPARSE_TIMESTAMP_ENABLED"), cfg.SPARSE_TIMESTAMP_ENABLED),
+            "FORCE_STREAM":       _parse_bool(db.get("FORCE_STREAM"), FORCE_STREAM),
+            "PERF_DIAGNOSTIC_ENABLED": _parse_bool(db.get("PERF_DIAGNOSTIC_ENABLED"), PERF_DIAGNOSTIC_ENABLED),
+            "RESPONSE_TRANSFORM_ENABLED": _parse_bool(db.get("RESPONSE_TRANSFORM_ENABLED"), RESPONSE_TRANSFORM_ENABLED),
+            "RESPONSE_TRANSFORM_RULES": db.get("RESPONSE_TRANSFORM_RULES") or str(RESPONSE_TRANSFORM_RULES),
+            "REASONING_EFFORT":   db.get("REASONING_EFFORT") or str(REASONING_EFFORT),
+            "USER_NICKNAME":      db.get("USER_NICKNAME") or str(USER_NICKNAME),
+            "CHARACTER_NAME":      db.get("CHARACTER_NAME") or str(CHARACTER_NAME),
+            "MEMORY_PALACE_DEFAULT_LIMIT": int(db.get("MEMORY_PALACE_DEFAULT_LIMIT") or MEMORY_PALACE_DEFAULT_LIMIT),
+            "MEMORY_PALACE_INJECTION_DEPTH": int(db.get("MEMORY_PALACE_INJECTION_DEPTH") or MEMORY_PALACE_INJECTION_DEPTH),
+            "KEYWORD_CONTEXT_ENABLED": _parse_bool(db.get("KEYWORD_CONTEXT_ENABLED"), KEYWORD_CONTEXT_ENABLED),
+            "KEYWORD_CONTEXT_RULES": db.get("KEYWORD_CONTEXT_RULES") or str(KEYWORD_CONTEXT_RULES),
+            "CONTEXT_TEMPLATE_ENABLED": _parse_bool(db.get("CONTEXT_TEMPLATE_ENABLED"), CONTEXT_TEMPLATE_ENABLED),
+            "CONTEXT_TEMPLATE": db.get("CONTEXT_TEMPLATE") or str(CONTEXT_TEMPLATE or DEFAULT_CONTEXT_TEMPLATE),
+            "SPARSE_TIMESTAMP_ENABLED": _parse_bool(db.get("SPARSE_TIMESTAMP_ENABLED"), SPARSE_TIMESTAMP_ENABLED),
 
             # System Prompt
             "systemPrompt": db.get("systemPrompt") or _DEFAULT_SYSTEM_PROMPT or "",
@@ -9597,15 +9680,15 @@ async def test_memory_model(request: Request):
     try:
         data = await request.json()
 
-        memory_api_base_url = str(data.get("cfg.MEMORY_API_BASE_URL") or cfg.MEMORY_API_BASE_URL or "").strip()
+        memory_api_base_url = str(data.get("MEMORY_API_BASE_URL") or MEMORY_API_BASE_URL or "").strip()
         memory_model = str(data.get("MEMORY_MODEL") or os.getenv("MEMORY_MODEL", "") or "anthropic/claude-haiku-4").strip()
-        memory_api_key_raw = str(data.get("cfg.MEMORY_API_KEY") or "").strip()
+        memory_api_key_raw = str(data.get("MEMORY_API_KEY") or "").strip()
         memory_api_key = get_memory_api_key() if (not memory_api_key_raw or _is_masked(memory_api_key_raw)) else memory_api_key_raw
 
         if not memory_api_base_url:
-            return {"ok": False, "error": "cfg.MEMORY_API_BASE_URL 为空，记忆模型不会回退到主 cfg.API_BASE_URL"}
+            return {"ok": False, "error": "MEMORY_API_BASE_URL 为空，记忆模型不会回退到主 API_BASE_URL"}
         if not memory_api_key:
-            return {"ok": False, "error": "cfg.MEMORY_API_KEY / cfg.API_KEY 为空"}
+            return {"ok": False, "error": "MEMORY_API_KEY / API_KEY 为空"}
         if not memory_model:
             return {"ok": False, "error": "MEMORY_MODEL 为空"}
 
@@ -9697,7 +9780,39 @@ async def save_settings(request: Request):
             updated.append(label or cfg_key)
             return True
 
-        # runtime_config.py 配置变量（通过 cfg 对象管理）
+        # main.py 全局变量映射（key → 类型转换函数）
+        _MAIN_VARS = {
+            "API_BASE_URL":          str,
+            "API_KEY":               str,
+            "DEFAULT_MODEL":         str,
+            "CHAT_TEMPERATURE":      str,
+            "MEMORY_API_KEY":        str,
+            "MEMORY_API_BASE_URL":   str,
+            "MEMORY_ENABLED":        lambda v: _parse_bool(v),
+            "CACHE_PARTITION_ENABLED": lambda v: _parse_bool(v),
+            "CACHE_PARTITION_X":     int,
+            "CACHE_PARTITION_B_LIMIT": int,
+            "CACHE_PARTITION_EXTRACT_LIMIT": int,
+            "CACHE_PARTITION_TRIGGER": str,
+            "CACHE_PARTITION_WINDOW": int,
+            "CACHE_PARTITION_KEEP_A_TOOLS": lambda v: _parse_bool(v),
+            "TOOL_CHAIN_DEBUG":      lambda v: _parse_bool(v),
+            "CACHE_SUMMARY_MODEL":   str,
+            "FORCE_STREAM":          lambda v: _parse_bool(v),
+            "PERF_DIAGNOSTIC_ENABLED":  lambda v: _parse_bool(v),
+            "RESPONSE_TRANSFORM_ENABLED": lambda v: _parse_bool(v),
+            "RESPONSE_TRANSFORM_RULES": str,
+            "REASONING_EFFORT":      str,
+            "USER_NICKNAME":         str,
+            "CHARACTER_NAME":         str,
+            "MEMORY_PALACE_DEFAULT_LIMIT": int,
+            "MEMORY_PALACE_INJECTION_DEPTH": int,
+            "KEYWORD_CONTEXT_ENABLED": lambda v: _parse_bool(v),
+            "KEYWORD_CONTEXT_RULES": str,
+            "CONTEXT_TEMPLATE_ENABLED": lambda v: _parse_bool(v),
+            "CONTEXT_TEMPLATE": str,
+            "SPARSE_TIMESTAMP_ENABLED": lambda v: _parse_bool(v),
+        }
 
         # database.py 全局变量映射（开源版用 EMBEDDING_API_KEY + EMBEDDING_BASE_URL）
         _DB_VARS = {
@@ -9711,7 +9826,7 @@ async def save_settings(request: Request):
         _ENV_ONLY = {"MEMORY_MODEL": str}
 
         # 打码字段
-        _MASKED_KEYS = {"cfg.API_KEY", "EMBEDDING_API_KEY", "cfg.MEMORY_API_KEY"}
+        _MASKED_KEYS = {"API_KEY", "EMBEDDING_API_KEY", "MEMORY_API_KEY"}
 
         for key, value in data.items():
             # --- 打码字段特殊处理 ---
@@ -9722,13 +9837,13 @@ async def save_settings(request: Request):
                     continue
                 if not str_val:
                     queue_write(key, "")
-                    if key.startswith('cfg.'):
-                        cfg.update(key.replace('cfg.', '', 1), "")
+                    if key in _MAIN_VARS:
+                        globals()[key] = ""
                     elif key in _DB_VARS:
                         setattr(_db_module, key, "")
-                    if key == "cfg.MEMORY_API_KEY":
+                    if key == "MEMORY_API_KEY":
                         import memory_extractor as _me_mod
-                        _me_mod.cfg.MEMORY_API_KEY = ""
+                        _me_mod.MEMORY_API_KEY = ""
                     os.environ[key] = ""
                     continue
 
@@ -9771,42 +9886,43 @@ async def save_settings(request: Request):
                 queue_write("modelPresets", presets_json)
                 continue
 
-            # --- activatePreset 特殊处理（激活某个预设 → 切换 cfg.DEFAULT_MODEL / URL / Key）---
+            # --- activatePreset 特殊处理（激活某个预设 → 切换 DEFAULT_MODEL / URL / Key）---
             if key == "activatePreset":
                 new_model = str(value)
-                cfg.DEFAULT_MODEL = new_model
-                queue_write("cfg.DEFAULT_MODEL", new_model, label=f"cfg.DEFAULT_MODEL→{new_model}")
+                globals()["DEFAULT_MODEL"] = new_model
+                queue_write("DEFAULT_MODEL", new_model, label=f"DEFAULT_MODEL→{new_model}")
                 continue
 
             if key == "activatePresetUrl":
                 if value:
-                    cfg.API_BASE_URL = str(value)
-                    queue_write("cfg.API_BASE_URL", str(value), label=f"cfg.API_BASE_URL→{value}")
+                    globals()["API_BASE_URL"] = str(value)
+                    queue_write("API_BASE_URL", str(value), label=f"API_BASE_URL→{value}")
                 continue
 
             if key == "activatePresetKey":
                 if value and not _is_masked(str(value)):
-                    cfg.API_KEY = str(value)
-                    queue_write("cfg.API_KEY", str(value), label="cfg.API_KEY→***")
+                    globals()["API_KEY"] = str(value)
+                    queue_write("API_KEY", str(value), label="API_KEY→***")
                 continue
 
 
-            # cfg.MEMORY_ENABLED 不允许从仪表盘修改，始终以环境变量为准
-            if key == "cfg.MEMORY_ENABLED":
+            # MEMORY_ENABLED 不允许从仪表盘修改，始终以环境变量为准
+            if key == "MEMORY_ENABLED":
                 skipped.append(key)
                 continue
 
             # --- 常规字段 ---
-            if key.startswith('cfg.'):
+            if key in _MAIN_VARS:
                 queue_write(key, str(value))
-                cfg.update(key.replace('cfg.', '', 1), value)
+                typed_value = _MAIN_VARS[key](value)
+                globals()[key] = typed_value
                 os.environ[key] = str(value)
-                if key == "cfg.MEMORY_API_KEY":
+                if key == "MEMORY_API_KEY":
                     import memory_extractor as _me_mod
-                    _me_mod.cfg.MEMORY_API_KEY = str(value)
-                if key == "cfg.MEMORY_API_BASE_URL":
+                    _me_mod.MEMORY_API_KEY = str(value)
+                if key == "MEMORY_API_BASE_URL":
                     import memory_extractor as _me_mod
-                    _me_mod.cfg.MEMORY_API_BASE_URL = str(value)
+                    _me_mod.MEMORY_API_BASE_URL = str(value)
 
             elif key in _DB_VARS:
                 queue_write(key, str(value))
@@ -9855,17 +9971,17 @@ if __name__ == "__main__":
     import uvicorn
     print(f"🚀 AI Memory Gateway 启动中... 端口 {PORT}")
     print(f"📝 人设长度：{len(SYSTEM_PROMPT)} 字符")
-    print(f"🤖 默认模型：{cfg.DEFAULT_MODEL}")
-    print(f"🔗 API 地址：{cfg.API_BASE_URL}")
-    print(f"🧠 记忆系统：{'开启' if cfg.MEMORY_ENABLED else '关闭'}")
-    if cfg.CACHE_PARTITION_ENABLED:
-        print(f"🔒 分区缓存：开启 (A区X={cfg.CACHE_PARTITION_X}, B区Y={_partition_b_limit(cfg.CACHE_PARTITION_X)}, 保留峰值={cfg.CACHE_PARTITION_X + _partition_b_limit(cfg.CACHE_PARTITION_X)}轮, session={PARTITION_SESSION_ID or '未设置'})")
-    if cfg.FORCE_STREAM:
+    print(f"🤖 默认模型：{DEFAULT_MODEL}")
+    print(f"🔗 API 地址：{API_BASE_URL}")
+    print(f"🧠 记忆系统：{'开启' if MEMORY_ENABLED else '关闭'}")
+    if CACHE_PARTITION_ENABLED:
+        print(f"🔒 分区缓存：开启 (A区X={CACHE_PARTITION_X}, B区Y={_partition_b_limit(CACHE_PARTITION_X)}, 保留峰值={CACHE_PARTITION_X + _partition_b_limit(CACHE_PARTITION_X)}轮, session={PARTITION_SESSION_ID or '未设置'})")
+    if FORCE_STREAM:
         print(f"⚡ 强制流式传输：开启")
-    if cfg.REASONING_EFFORT:
-        print(f"🧠 推理参数注入：{cfg.REASONING_EFFORT}")
-    if str(cfg.CHAT_TEMPERATURE).strip() != "":
-        print(f"🌡️ 聊天温度参数：{cfg.CHAT_TEMPERATURE}")
-    if cfg.RESPONSE_TRANSFORM_ENABLED:
+    if REASONING_EFFORT:
+        print(f"🧠 推理参数注入：{REASONING_EFFORT}")
+    if str(CHAT_TEMPERATURE).strip() != "":
+        print(f"🌡️ 聊天温度参数：{CHAT_TEMPERATURE}")
+    if RESPONSE_TRANSFORM_ENABLED:
         print("🔁 非流式响应转换：开启")
     uvicorn.run(app, host="0.0.0.0", port=PORT)

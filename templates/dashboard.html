@@ -1,0 +1,927 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Memory Gateway</title>
+    <link rel="stylesheet" href="/static/css/dashboard.css?v=4.6">
+</head>
+<body>
+<!-- 模型预设切换按钮（右上角固定） -->
+<div id="preset-switcher" style="position:fixed;top:12px;right:16px;z-index:9999;font-family:inherit;">
+  <button onclick="togglePresetPanel()" id="preset-toggle-btn" style="
+    padding:6px 14px;border-radius:8px;border:1px solid #e5e7eb;background:#fff;
+    font-size:13px;cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,0.08);
+    display:flex;align-items:center;gap:6px;color:#374151;">
+    <span id="preset-current-name">切换</span>
+    <span style="font-size:10px;">&#9660;</span>
+  </button>
+  <div id="preset-panel" style="
+    display:none;position:absolute;top:100%;right:0;margin-top:6px;
+    background:#fff;border:1px solid #e5e7eb;border-radius:10px;
+    box-shadow:0 4px 20px rgba(0,0,0,0.12);min-width:280px;max-width:360px;
+    overflow:hidden;">
+    <div id="preset-panel-list" style="max-height:300px;overflow-y:auto;padding:6px;"></div>
+    <div style="border-top:1px solid #f3f4f6;padding:8px;display:flex;gap:6px;align-items:center;">
+      <input type="text" id="preset-new-name" placeholder="预设名称" style="
+        flex:1;padding:6px 10px;border:1px solid #e5e7eb;border-radius:6px;font-size:12px;outline:none;">
+      <button onclick="addPresetFromCurrent()" style="
+        padding:6px 12px;border-radius:6px;border:none;background:#4f46e5;color:#fff;
+        font-size:12px;cursor:pointer;white-space:nowrap;">+ 新建</button>
+    </div>
+  </div>
+</div>
+
+    <div class="dashboard">
+        <!-- 侧边栏 -->
+        <aside class="sidebar">
+            <div class="sidebar-header">
+                <div class="logo"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#E75A7C" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9.5 2A2.5 2.5 0 0 1 12 4.5v15a2.5 2.5 0 0 1-4.96.44 2.5 2.5 0 0 1-2.96-3.08 3 3 0 0 1-.34-5.58 2.5 2.5 0 0 1 1.32-4.24 2.5 2.5 0 0 1 1.98-3A2.5 2.5 0 0 1 9.5 2Z"/><path d="M14.5 2A2.5 2.5 0 0 0 12 4.5v15a2.5 2.5 0 0 0 4.96.44 2.5 2.5 0 0 0 2.96-3.08 3 3 0 0 0 .34-5.58 2.5 2.5 0 0 0-1.32-4.24 2.5 2.5 0 0 0-1.98-3A2.5 2.5 0 0 0 14.5 2Z"/></svg></div>
+                <span class="logo-text">Memory Gateway</span>
+            </div>
+            <nav class="sidebar-nav">
+                <a href="#" class="nav-item" data-section="import">
+                    <span class="nav-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></svg></span>
+                    <span class="nav-label">导入记忆</span>
+                </a>
+                <a href="#" class="nav-item" data-section="export">
+                    <span class="nav-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" x2="12" y1="3" y2="15"/></svg></span>
+                    <span class="nav-label">导出备份</span>
+                </a>
+                <a href="#" class="nav-item" data-section="conversations">
+                    <span class="nav-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></span>
+                    <span class="nav-label">对话记录</span>
+                </a>
+                <a href="#" class="nav-item" data-section="daily-impressions">
+                    <span class="nav-icon">📔</span>
+                    <span class="nav-label">日印象</span>
+                </a>
+                <a href="#" class="nav-item" data-section="memory-palace">
+                    <span class="nav-icon">🏛️</span>
+                    <span class="nav-label">记忆宫殿</span>
+                </a>
+                <a href="#" class="nav-item" data-section="user-impression">
+                    <span class="nav-icon">🧭</span>
+                    <span class="nav-label">用户画像</span>
+                </a>
+                <a href="#" class="nav-item" data-section="threads">
+                    <span class="nav-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg></span>
+                    <span class="nav-label">对话线</span>
+                </a>
+                <a href="#" class="nav-item active" data-section="logs">
+                    <span class="nav-icon">📋</span>
+                    <span class="nav-label">后台日志</span>
+                </a>
+                <a href="#" class="nav-item" data-section="settings">
+                    <span class="nav-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><line x1="4" x2="4" y1="21" y2="14"/><line x1="4" x2="4" y1="10" y2="3"/><line x1="12" x2="12" y1="21" y2="12"/><line x1="12" x2="12" y1="8" y2="3"/><line x1="20" x2="20" y1="21" y2="16"/><line x1="20" x2="20" y1="12" y2="3"/><line x1="2" x2="6" y1="14" y2="14"/><line x1="10" x2="14" y1="8" y2="8"/><line x1="18" x2="22" y1="16" y2="16"/></svg></span>
+                    <span class="nav-label">设置</span>
+                </a>
+            </nav>
+            <div class="sidebar-footer">
+                <a href="https://github.com/garan0613/ai-memory-gateway" target="_blank" class="nav-item">
+                    <span class="nav-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M15 22v-4a4.8 4.8 0 0 0-1-3.5c3 0 6-2 6-5.5.08-1.25-.27-2.48-1-3.5.28-1.15.28-2.35 0-3.5 0 0-1 0-3 1.5-2.64-.5-5.36-.5-8 0C6 2 5 2 5 2c-.3 1.15-.3 2.35 0 3.5A5.403 5.403 0 0 0 4 9c0 3.5 3 5.5 6 5.5-.39.49-.68 1.05-.85 1.65-.17.6-.22 1.23-.15 1.85v4"/><path d="M9 18c-4.51 2-5-2-7-2"/></svg></span>
+                    <span class="nav-label">GitHub</span>
+                </a>
+            </div>
+        </aside>
+
+        <!-- 主内容区 -->
+        <main class="main-content">
+            <!-- 导入记忆 Section -->
+            <section id="section-import" class="section">
+                <div class="section-header">
+                    <h1>导入记忆</h1>
+                    <p class="section-desc">从文件或文本导入新的记忆</p>
+                </div>
+
+                <div class="card">
+                    <div class="tabs">
+                        <button class="tab active" data-tab="chat">聊天记录提取</button>
+                        <button class="tab" data-tab="json">日印象恢复</button>
+                        <button class="tab" data-tab="mp-import">记忆宫殿恢复</button>
+                    </div>
+
+                    <!-- 聊天记录提取 -->
+                    <div id="tab-chat" class="tab-panel active">
+                        <div class="form-group">
+                            <label class="form-label">上传聊天记录文件（.txt / .md / .json）</label>
+                            <input type="file" id="chatFile" accept=".txt,.md,.json" class="file-input">
+                        </div>
+                        <div class="divider"><span>或者直接粘贴</span></div>
+                        <div class="form-group">
+                            <textarea id="chatInput" class="textarea" rows="10" placeholder="粘贴聊天记录，支持格式：&#10;用户: 今天去了公园&#10;助手: 听起来很开心！&#10;用户: 是的，还遇到了一只柯基&#10;&#10;也可以直接粘贴纯文本，会全部当作用户发言"></textarea>
+                        </div>
+                        <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;">
+                            <button class="btn btn-secondary btn-lg" onclick="doExtractToMemoryPalaceFromChat()" id="btn-extract-chat-palace">提取到记忆宫殿</button>
+                        </div>
+                        <div id="chat-extract-result" style="margin-top:16px;display:none;">
+                            <h3 style="font-size:15px;margin-bottom:8px;">提取结果（可取消勾选不需要的）</h3>
+                            <div id="chat-extract-list"></div>
+                            <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:12px;">
+                                <button class="btn btn-secondary" onclick="doImportExtractedToPalace()">确认导入选中的记忆到宫殿</button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- JSON 导入 -->
+                    <div id="tab-json" class="tab-panel">
+                        <div class="form-group">
+                            <label class="form-label">上传从“导出日印象”功能保存的 .json 文件</label>
+                            <input type="file" id="jsonFile" accept=".json" class="file-input">
+                        </div>
+                        <div class="divider"><span>或者直接粘贴</span></div>
+                        <div class="form-group">
+                            <textarea id="jsonInput" class="textarea" rows="8" placeholder="粘贴导出的日印象 JSON"></textarea>
+                        </div>
+                        <button class="btn btn-secondary" onclick="previewJson()">开始导入</button>
+                        <div id="jsonPreview" class="preview-box"></div>
+                    </div>
+
+                    <!-- 记忆宫殿备份导入 -->
+                    <div id="tab-mp-import" class="tab-panel">
+                        <div class="form-group">
+                            <label class="form-label">上传从“导出记忆宫殿备份”保存的 .json 文件</label>
+                            <input type="file" id="mpImportFile" accept=".json" class="file-input">
+                        </div>
+                        <div class="divider"><span>或者直接粘贴</span></div>
+                        <div class="form-group">
+                            <textarea id="mpImportInput" class="textarea" rows="8" placeholder="粘贴导出的记忆宫殿备份 JSON"></textarea>
+                        </div>
+                        <button class="btn btn-secondary" onclick="previewMemoryPalaceImport()">开始导入</button>
+                        <div id="mpImportPreview" class="preview-box"></div>
+                    </div>
+                </div>
+
+                <div id="import-result" class="msg-container"></div>
+            </section>
+
+            <!-- 导出备份 Section -->
+            <section id="section-export" class="section">
+                <div class="section-header">
+                    <h1>导出备份</h1>
+                    <p class="section-desc">将记忆导出为 JSON 文件，用于备份或迁移</p>
+                </div>
+
+                <div class="card export-card">
+                    <div class="export-info">
+                        <div class="export-icon" style="font-size: 36px; color: var(--primary); display: flex; align-items: center;"><svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg></div>
+                        <div class="export-text">
+                            <h3>导出日印象</h3>
+                            <p>将所有日印象导出为 JSON 文件，包含日期、正文、标签、情绪等完整数据</p>
+                        </div>
+                    </div>
+                    <div class="export-stats" id="export-stats">
+                        正在统计...
+                    </div>
+                    <button class="btn btn-primary btn-lg" onclick="exportDailyImpressions()">下载日印象备份</button>
+                </div>
+
+                <div class="card export-card">
+                    <div class="export-info">
+                        <div class="export-icon" style="font-size: 36px; color: var(--primary); display: flex; align-items: center;"><svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 5a2 2 0 0 1 2-2h4l2 3h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M12 11v6"/><path d="m9 14 3 3 3-3"/></svg></div>
+                        <div class="export-text">
+                            <h3>导出记忆宫殿</h3>
+                            <p>导出新记忆系统数据，包含节点、向量、连接、事件盒与自动提取游标</p>
+                        </div>
+                    </div>
+                    <div class="export-stats" id="mp-export-stats">
+                        正在统计...
+                    </div>
+                    <button class="btn btn-primary btn-lg" onclick="exportMemoryPalace()">下载记忆宫殿备份</button>
+                </div>
+
+                <div class="card tips-card">
+                    <h4>小贴士</h4>
+                    <ul>
+                        <li>导出的 JSON 可以通过「导入记忆 → 日印象恢复」功能导入</li>
+                        <li>建议定期备份，以防数据丢失</li>
+                        <li>导出文件可用于迁移到其他部署实例</li>
+                    </ul>
+                </div>
+            </section>
+
+            <!-- 对话记录 Section -->
+            <section id="section-conversations" class="section">
+                <div class="section-header">
+                    <h1>对话记录</h1>
+                    <p class="section-desc">浏览、搜索和管理历史对话</p>
+                </div>
+
+                <!-- 搜索栏 -->
+                <div class="card" style="margin-bottom: 16px;">
+                    <div style="display: flex; gap: 8px;">
+                        <input type="text" id="conv-search-input" class="input" 
+                            placeholder="搜索对话内容..." 
+                            style="flex: 1;" 
+                            onkeydown="if(event.key==='Enter') searchConversations()">
+                        <button class="btn btn-primary" onclick="searchConversations()">搜索</button>
+                        <button class="btn" onclick="clearConvSearch()">清除</button>
+                    </div>
+                    <div id="conv-search-status" style="margin-top: 8px; color: var(--text-muted); font-size: 13px;"></div>
+                </div>
+
+                <!-- 对话列表 -->
+                <div class="card">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+                        <h4 id="conv-list-title">对话列表</h4>
+                        <span id="conv-list-count" style="color: var(--text-muted); font-size: 13px;"></span>
+                    </div>
+                    <div id="conv-list-container" style="min-height: 100px;">
+                        <div style="text-align: center; color: var(--text-muted); padding: 40px 0;">加载中...</div>
+                    </div>
+                    <!-- 分页 -->
+                    <div id="conv-pagination" style="display: flex; justify-content: center; align-items: center; gap: 12px; margin-top: 16px;"></div>
+                </div>
+
+                <!-- 对话详情（点击列表项后展开） -->
+                <div id="conv-detail-panel" class="card" style="display: none;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+                        <h4 id="conv-detail-title">对话详情</h4>
+                        <button class="btn btn-sm" onclick="closeConvDetail()">关闭</button>
+                    </div>
+                    <div id="conv-detail-messages" style="max-height: 600px; overflow-y: auto;"></div>
+                </div>
+
+                <!-- 导入导出折叠区 -->
+                <details style="margin-top: 16px;">
+                    <summary style="cursor: pointer; padding: 12px; background: var(--bg-card); border-radius: 8px; font-weight: 500;">导入 / 导出</summary>
+                    <div style="margin-top: 8px;">
+                        <div class="card export-card">
+                            <div class="export-info">
+                                <div class="export-icon" style="font-size: 36px; color: var(--primary); display: flex; align-items: center;"><svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></div>
+                                <div class="export-text">
+                                    <h3>导出对话记录</h3>
+                                    <p>将所有对话历史导出为 JSON 格式</p>
+                                </div>
+                            </div>
+                            <div class="export-stats" id="conv-export-stats">正在统计...</div>
+                            <button class="btn btn-primary btn-lg" onclick="exportConversations()">下载对话记录</button>
+                        </div>
+
+                        <div class="card">
+                            <h4 style="margin-bottom: 16px;">导入对话记录</h4>
+                            <div class="form-group">
+                                <label class="form-label">上传导出的 .json 文件</label>
+                                <input type="file" id="convJsonFile" accept=".json" class="file-input">
+                            </div>
+                            <div class="divider"><span>或者直接粘贴</span></div>
+                            <div class="form-group">
+                                <textarea id="convJsonInput" class="textarea" rows="6" placeholder="粘贴导出的对话记录 JSON"></textarea>
+                            </div>
+                            <button class="btn btn-primary" onclick="doConvImport()">导入对话记录</button>
+                            <div id="conv-import-result" class="msg-container" style="margin-top: 16px;"></div>
+                        </div>
+                    </div>
+                </details>
+            </section>
+
+            <!-- 对话线管理 Section -->
+
+            <!-- 日印象 Section -->
+            <section id="section-daily-impressions" class="section">
+                <div class="section-header">
+                    <h1 id="dailyPageTitle">日印象</h1>
+                    <p class="section-desc">按天查看由对话历史生成的日记式印象</p>
+                </div>
+
+                <div id="dailyPageOverviewStartCard" class="card toolbar-card" style="display:none;">
+                    <div class="toolbar">
+                        <label style="display:flex;align-items:center;gap:8px;color:var(--text-muted);font-size:13px;white-space:nowrap;">起始时间
+                            <input type="time" id="dailyPageOverviewStartTime" value="00:00" step="3600" style="width:92px;padding:8px;border:1px solid var(--border-color);border-radius:8px;background:#fff;">
+                        </label>
+                        <span style="color:var(--text-muted);font-size:12px;">用于生成日印象时选择材料窗口</span>
+                    </div>
+                </div>
+                <div id="dailyPageToolbarCard" class="card toolbar-card">
+                    <div class="toolbar">
+                        <input type="date" id="dailyPageDate" class="date-input">
+                        <label style="display:flex;align-items:center;gap:6px;color:var(--text-muted);font-size:13px;white-space:nowrap;">起始时间
+                            <input type="time" id="dailyPageStartTime" value="00:00" step="3600" style="width:92px;padding:8px;border:1px solid var(--border-color);border-radius:8px;background:#fff;">
+                        </label>
+                        <button class="btn" style="background:#fff;border-style:dashed;border-width:2px;border-radius:18px;padding:10px 20px;font-weight:900;box-shadow:0 6px 0 rgba(15,23,42,.08), inset 0 0 0 3px rgba(255,255,255,.92);border-color:#e8a7bb;color:#d94f7a;" onclick="generateDailyImpressionFromPage()">生成/更新当天</button>
+                        <button class="btn" style="background:#fff;border-style:dashed;border-width:2px;border-radius:18px;padding:10px 20px;font-weight:900;box-shadow:0 6px 0 rgba(15,23,42,.08), inset 0 0 0 3px rgba(255,255,255,.92);border-color:#9ca3af;color:#5f6670;" onclick="loadDailyImpressionsPage()">刷新列表</button>
+                    </div>
+                </div>
+
+                <div id="daily-page-msg" class="msg-container"></div>
+
+                <div id="dailyPageDetail" class="card" style="display:none;margin-top:16px;margin-bottom:16px;padding:18px;"></div>
+
+                <div id="dailyPageList" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:14px;align-items:stretch;">加载中...</div>
+            </section>
+
+
+            <!-- 记忆宫殿 Section -->
+            <section id="section-memory-palace" class="section">
+                <div class="section-header">
+                    <h1>记忆宫殿</h1>
+                    <p class="section-desc">七房间长期记忆系统。阶段 1：手动管理记忆节点，不影响旧碎片记忆。</p>
+                </div>
+
+                <div id="mp-msg" class="msg-container"></div>
+
+                <div id="mpRooms" class="mp-rooms-grid" style="display:grid;grid-template-columns:repeat(3,minmax(220px,1fr));min-width:760px;gap:14px;margin-bottom:16px;">
+                    加载中...
+                </div>
+
+                <div class="card toolbar-card">
+                    <div class="toolbar mp-room-actions" style="align-items:center;">
+                        <button type="button" id="mpCurrentRoomTitle" class="btn mp-room-tools-toggle" style="background:#fff;border-style:dashed;border-width:2px;border-radius:18px;padding:10px 20px;font-weight:900;box-shadow:0 6px 0 rgba(15,23,42,.08), inset 0 0 0 3px rgba(255,255,255,.92);border-color:#111827;color:#111827;" onclick="toggleMemoryPalaceTools()">全部房间 ▾</button>
+                        <button class="btn" style="background:#fff;border-style:dashed;border-width:2px;border-radius:18px;padding:10px 20px;font-weight:900;box-shadow:0 6px 0 rgba(15,23,42,.08), inset 0 0 0 3px rgba(255,255,255,.92);border-color:#d6a84f;color:#9a6a12;" onclick="openMemoryPalaceCreate()">新增记忆</button>
+                        <button id="mpModifyPinBtn" class="btn" style="background:#fff;border-style:dashed;border-width:2px;border-radius:18px;padding:10px 20px;font-weight:900;box-shadow:0 6px 0 rgba(15,23,42,.08), inset 0 0 0 3px rgba(255,255,255,.92);border-color:#991b1b;color:#991b1b;" onclick="modifyMemoryPalacePin()">修改便利贴</button>
+                        <button class="btn mp-advanced-action" style="display:none;background:#fff;border-style:dashed;border-width:2px;border-radius:18px;padding:10px 20px;font-weight:900;box-shadow:0 6px 0 rgba(15,23,42,.08), inset 0 0 0 3px rgba(255,255,255,.92);border-color:#b9a7e8;color:#6d4cc2;" onclick="runMemoryPalaceConsolidation()">巩固记忆</button>
+                        <button class="btn mp-advanced-action" style="display:none;background:#fff;border-style:dashed;border-width:2px;border-radius:18px;padding:10px 20px;font-weight:900;box-shadow:0 6px 0 rgba(15,23,42,.08), inset 0 0 0 3px rgba(255,255,255,.92);border-color:#15803d;color:#15803d;" onclick="runCognitiveDigestion()">认知消化</button>
+                        <div id="mpVectorMaintenanceWrap" class="mp-advanced-action" style="display:none;position:relative;">
+                            <button type="button" id="mpVectorMaintenanceBtn" class="btn" style="background:#fff7ed;border-style:dashed;border-width:2px;border-radius:18px;padding:10px 20px;font-weight:900;box-shadow:0 6px 0 rgba(120,53,15,.12), inset 0 0 0 3px rgba(255,255,255,.92);border-color:#9a3412;color:#7c2d12;" onclick="toggleMemoryPalaceVectorMenu(event)" style="background:#fff7ed;border-style:dashed;border-width:2px;border-radius:18px;padding:10px 20px;font-weight:900;box-shadow:0 6px 0 rgba(120,53,15,.12), inset 0 0 0 3px rgba(255,255,255,.92);border-color:#9a3412;color:#7c2d12;touch-action:manipulation;-webkit-tap-highlight-color:transparent;">向量维护 ⚙</button>
+                        </div>
+                    </div>
+                </div>
+
+                <div id="mpVectorMaintenanceMenu" style="display:none;position:absolute;z-index:9000;min-width:140px;max-width:160px;background:#fff;border:2px dashed #9a3412;border-radius:14px;box-shadow:0 12px 28px rgba(15,23,42,.14);padding:6px;">
+                    <button type="button" id="mpVectorStatsBtn" class="btn" style="width:100%;margin-bottom:4px;background:#fff;border:1px solid #fed7aa;border-radius:10px;padding:7px 10px;font-size:13px;font-weight:800;color:#6b3f22;" onclick="showMemoryPalaceVectorStats(); closeMemoryPalaceVectorMenu();">查看向量数</button>
+                    <button type="button" id="mpBackfillBtn" class="btn" style="width:100%;margin-bottom:4px;background:#fff;border:1px solid #fed7aa;border-radius:10px;padding:7px 10px;font-size:13px;font-weight:800;color:#7c5a3d;" onclick="backfillMemoryPalaceEmbeddings(); closeMemoryPalaceVectorMenu();">补全缺失向量</button>
+                    <button type="button" id="mpClearArchivedVectorsBtn" class="btn" style="width:100%;background:#fff1f2;border:1px solid #fecdd3;border-radius:10px;padding:7px 10px;font-size:13px;font-weight:900;color:#be123c;" onclick="clearArchivedMemoryPalaceVectors(); closeMemoryPalaceVectorMenu();">清除归档向量</button>
+                </div>
+
+                <div id="mpDigestPreview" style="display:none;margin-top:14px;"></div>
+
+                <div id="mpRecallDebugCard" class="card" style="display:none;margin-top:14px;padding:16px;">
+                    <div style="font-weight:800;margin-bottom:10px;">召回调试</div>
+                    <div style="display:grid;grid-template-columns:minmax(220px,1fr) 110px 160px auto;gap:10px;align-items:center;">
+                        <input id="mpDebugQuery" class="form-control" placeholder="输入测试问题，例如：上周我们聊了什么 / 我最近在担心什么">
+                        <input id="mpDebugLimit" class="form-control" type="number" min="1" max="30" value="5">
+                        <select id="mpDebugRoom" class="form-control">
+                            <option value="">全部房间</option>
+                            <option value="living_room">客厅</option>
+                            <option value="bedroom">卧室</option>
+                            <option value="study">书房</option>
+                            <option value="user_room">用户房间</option>
+                            <option value="self_room">自我房间</option>
+                            <option value="attic">阁楼</option>
+                            <option value="windowsill">窗台</option>
+                        </select>
+                        <button class="btn btn-secondary" onclick="debugRetrieveMemoryPalace()">调试召回</button>
+                    </div>
+                    <div id="mpDebugResult" style="display:none;margin-top:12px;"></div>
+                </div>
+
+                <div class="card" style="margin-top:14px;padding:16px;">
+                    <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:12px;">
+                        <div>
+                            <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;">
+                                <div style="font-weight:800;">事件盒</div>
+                                <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text-muted);cursor:pointer;">
+                                    <input type="checkbox" id="mpShowNodeIds">
+                                    显示ID
+                                </label>
+                            </div>
+                            <div style="font-size:12px;color:var(--text-muted);margin-top:2px;">查看同一事件下的记忆片段，当前为只读视图。</div>
+                        </div>
+                        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+                            <button class="btn btn-secondary" id="mpToggleEventBoxesBtn" onclick="toggleMemoryPalaceEventBoxes()">展开事件盒</button>
+                        </div>
+                    </div>
+                    <div id="mpEventBoxBody" style="display:none;">
+                        <div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end;margin-bottom:12px;">
+                            <button class="btn btn-secondary" onclick="compressMemoryPalaceEventBoxes()">压缩可压缩事件盒</button>
+                            <button class="btn btn-secondary" onclick="loadMemoryPalaceEventBoxes(true)">刷新事件盒</button>
+                        </div>
+                        <div style="display:grid;grid-template-columns:minmax(220px,320px) minmax(0,1fr);gap:14px;align-items:start;">
+                            <div id="mpEventBoxList" style="display:flex;flex-direction:column;gap:8px;max-height:520px;overflow:auto;">
+                            加载中...
+                        </div>
+                        <div id="mpEventBoxDetail" style="min-height:120px;">
+                            <div style="color:var(--text-muted);padding:16px;border:1px dashed var(--border-color);border-radius:10px;">选择一个事件盒查看详情。</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div id="mpEditor" class="card" style="display:none;margin-top:16px;padding:18px;"></div>
+
+                <div id="mpNodeList" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:14px;margin-top:14px;">
+                    加载中...
+                </div>
+            </section>
+
+            <!-- 用户画像 Section -->
+            <section id="section-user-impression" class="section">
+                <div class="section-header">
+                    <h1>用户画像</h1>
+                    <p class="section-desc">角色视角下对用户形成的长期观察笔记。生成结果会先预览，确认后才保存。</p>
+                </div>
+
+                <div id="ui-msg" class="msg-container"></div>
+
+                <div class="card toolbar-card">
+                    <div class="toolbar">
+                        <button class="btn" style="background:#fff;border-style:dashed;border-width:2px;border-radius:18px;padding:10px 20px;font-weight:900;box-shadow:0 6px 0 rgba(15,23,42,.08), inset 0 0 0 3px rgba(255,255,255,.92);border-color:#9ca3af;color:#5f6670;" onclick="loadUserImpression(true)">刷新</button>
+                        <button class="btn" style="background:#fff;border-style:dashed;border-width:2px;border-radius:18px;padding:10px 20px;font-weight:900;box-shadow:0 6px 0 rgba(15,23,42,.08), inset 0 0 0 3px rgba(255,255,255,.92);border-color:#64748b;color:#334155;" onclick="refreshUserActivityMeta()">统计活跃元数据</button>
+                        <button class="btn" style="background:#fff;border-style:dashed;border-width:2px;border-radius:18px;padding:10px 20px;font-weight:900;box-shadow:0 6px 0 rgba(15,23,42,.08), inset 0 0 0 3px rgba(255,255,255,.92);border-color:#e8a7bb;color:#d94f7a;" onclick="confirmGenerateUserImpressionPreview('initial')">生成画像</button>
+                        <button class="btn" style="background:#fff;border-style:dashed;border-width:2px;border-radius:18px;padding:10px 20px;font-weight:900;box-shadow:0 6px 0 rgba(15,23,42,.08), inset 0 0 0 3px rgba(255,255,255,.92);border-color:#1e3a8a;color:#1e3a8a;" onclick="confirmGenerateUserImpressionPreview('update')">追加/更新</button>
+                        <button class="btn" style="background:#fff;border-style:dashed;border-width:2px;border-radius:18px;padding:10px 20px;font-weight:900;box-shadow:0 6px 0 rgba(15,23,42,.08), inset 0 0 0 3px rgba(255,255,255,.92);border-color:#475569;color:#475569;" onclick="previewUserImpressionMaterials()">预览材料</button>
+                        <button class="btn" style="background:#fff;border-style:dashed;border-width:2px;border-radius:18px;padding:10px 20px;font-weight:900;box-shadow:0 6px 0 rgba(15,23,42,.08), inset 0 0 0 3px rgba(255,255,255,.92);border-color:#991b1b;color:#991b1b;" onclick="deleteUserImpression()">删除画像</button>
+                    </div>
+                    <div class="hint" style="margin-top:10px;">initial 会从零生成；update 会带入旧画像并读取更多近期聊天。两者都会先生成预览，不会自动覆盖。</div>
+                </div>
+
+                <div id="userActivityMetaCard" class="card" style="padding:18px;margin-bottom:14px;">活跃元数据未统计。</div>
+
+                <div id="uiEditorCard" style="display:none;"></div>
+
+                <div id="uiPreviewCard" class="card" style="display:none;padding:18px;">
+                    <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:12px;">
+                        <div>
+                            <div style="font-weight:800;">生成预览</div>
+                            <div id="uiPreviewMeta" style="font-size:12px;color:var(--text-muted);margin-top:2px;"></div>
+                        </div>
+                        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+                            <button class="btn btn-primary" onclick="confirmUserImpressionPreview()">确认保存</button>
+                            <button class="btn btn-secondary" onclick="clearUserImpressionPreview()">取消预览</button>
+                        </div>
+                    </div>
+                    <div id="uiPreviewContent"></div>
+                </div>
+
+                <div id="uiCurrentImpression" class="card" style="padding:18px;">加载中...</div>
+            </section>
+
+            <section id="section-threads" class="section">
+                <div class="section-header">
+                    <h1>对话线管理</h1>
+                    <p class="section-desc">管理分区缓存的对话线</p>
+                </div>
+                <div class="card" id="thread-status-card">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+                        <h4>当前活跃对话线</h4>
+                        <button class="btn btn-sm" onclick="loadThreads()">刷新</button>
+                    </div>
+                    <div id="thread-status" style="color: var(--text-muted);">加载中...</div>
+                </div>
+                <div class="card">
+                    <h4 style="margin-bottom: 12px;">新建对话线</h4>
+                    <div style="display: flex; gap: 8px; align-items: flex-end; flex-wrap: wrap;">
+                        <div style="flex: 1; min-width: 200px;">
+                            <label class="form-label" style="font-size: 13px;">对话线ID</label>
+                            <input type="text" id="new-thread-id" class="search-input" placeholder="例如: my-thread">
+                        </div>
+                        <button class="btn btn-primary" onclick="createThread()">创建</button>
+                    </div>
+                    <div id="thread-create-msg" class="msg-container" style="margin-top: 8px;"></div>
+                </div>
+                <div class="card">
+                    <h4 style="margin-bottom: 12px;">所有对话线</h4>
+                    <div id="thread-list" style="min-height: 60px;">
+                        <div style="text-align: center; color: var(--text-muted); padding: 20px 0;">加载中...</div>
+                    </div>
+                </div>
+                <div id="summaryModal" class="modal" style="display:none;">
+                    <div class="modal-content" style="max-width: 700px;">
+                        <h3 id="summary-modal-title">对话线记忆</h3>
+                        <div class="form-group">
+                            <textarea id="summary-editor" class="textarea" rows="16" style="font-size: 14px; line-height: 1.6;"></textarea>
+                        </div>
+                        <div style="display: flex; justify-content: space-between; align-items: center;">
+                            <span id="summary-char-count" style="color: var(--text-muted); font-size: 13px;"></span>
+                            <div class="modal-actions" style="display: flex; gap: 8px;">
+                                <button id="summary-close-btn" class="btn btn-secondary" onclick="closeSummaryModal()">关闭</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- 设置 Section -->
+            <section id="section-logs" class="section active">
+    <div class="section-header">
+        <h1>后台日志</h1>
+        <p class="section-desc">查看记忆提取、跳过原因和后台任务状态</p>
+    </div>
+    <div class="card" style="padding:18px; margin-bottom:16px; background:linear-gradient(135deg, rgba(231,90,124,.10), rgba(116,91,255,.08)); border:1px solid rgba(231,90,124,.18);">
+        <div style="display:flex; justify-content:space-between; gap:12px; align-items:center; flex-wrap:wrap;">
+            <div>
+                <div style="font-weight:700; font-size:16px; margin-bottom:4px;">记忆提取监控</div>
+                <div style="color:var(--text-muted); font-size:13px;">会显示最近 200 条后台日志；服务重启后会清空。</div>
+            </div>
+            <div style="display:flex; gap:8px; flex-wrap:wrap;">
+                <button class="btn btn-secondary" onclick="loadDashboardLogs()">刷新</button>
+                <button class="btn btn-secondary" onclick="toggleLastRequestBody()">查看上次请求体</button>
+                <button class="btn btn-danger" onclick="clearDashboardLogs()">清空</button>
+            </div>
+        </div>
+    </div>
+    <div id="last-request-body-panel" class="card" style="display:none; padding:14px 16px; margin-bottom:16px; border-left:4px solid var(--primary);">
+        <div style="display:flex; justify-content:space-between; gap:12px; align-items:center; margin-bottom:8px;">
+            <div>
+                <div style="font-weight:700; font-size:14px;">上次发送给上游模型的请求体</div>
+                <div id="last-request-body-meta" style="color:var(--text-muted); font-size:12px; margin-top:2px;"></div>
+            </div>
+            <button class="btn btn-sm" onclick="toggleLastRequestBody(false)">收起</button>
+        </div>
+        <pre id="last-request-body-content" style="max-height:520px; overflow:auto; white-space:pre-wrap; word-break:break-word; font-size:12px; line-height:1.55; background:rgba(15,23,42,.05); border:1px solid var(--border); border-radius:8px; padding:12px; margin:0;"></pre>
+    </div>
+    <div id="dashboard-log-list" style="display:flex; flex-direction:column; gap:10px;"></div>
+</section>
+
+<section id="section-settings" class="section">
+                <div class="section-header">
+                    <h2>设置</h2>
+                    <div id="settings-msg" class="msg-box" style="display:none;"></div>
+                </div>
+
+                <!-- 基础连接 -->
+                <div class="card settings-card">
+                    <h3 class="settings-group-title">基础连接</h3>
+                    <div class="settings-field">
+                        <label>API Base URL</label>
+                        <input type="text" id="set-API_BASE_URL" class="input" placeholder="https://openrouter.ai/api/v1/chat/completions">
+                    </div>
+                    <div class="settings-field">
+                        <label>API Key</label>
+                        <input type="text" id="set-API_KEY" class="input" placeholder="sk-or-...">
+                        <small class="form-hint" id="set-API_KEY-hint">打码显示，留空不改</small>
+                    </div>
+                    <div class="settings-field">
+                        <label>默认模型</label>
+                        <div class="combo-box" id="combo-DEFAULT_MODEL">
+                            <input type="text" id="set-DEFAULT_MODEL" class="combo-input" placeholder="搜索或输入模型名..." autocomplete="off">
+                            <div class="combo-dropdown" id="dropdown-DEFAULT_MODEL"></div>
+                        </div>
+                        <small class="form-hint"><span id="model-count-hint"></span> <a href="#" onclick="loadModelList();return false;" style="color:var(--primary);">刷新列表</a></small>
+                    </div>
+                    
+                    <div class="settings-field">
+                        <label>温度参数 (CHAT_TEMPERATURE)</label>
+                        <input type="number" id="set-CHAT_TEMPERATURE" class="input" min="0" max="2" step="0.01" placeholder="留空则不覆盖客户端">
+                        <small class="form-hint">主聊天请求的 temperature；留空时沿用客户端原请求，填写后会覆盖发送给上游的温度。</small>
+                    </div>
+                </div>
+
+                <!-- 记忆系统 -->
+                <div class="card settings-card">
+                    <h3 class="settings-group-title">记忆系统</h3>
+                    <div class="settings-field settings-toggle-row">
+                        <label>启用记忆</label>
+                        <label class="toggle"><input type="checkbox" id="set-MEMORY_ENABLED"><span class="toggle-slider"></span></label>
+                    </div>
+                    <div class="settings-field">
+                        <label>记忆提取 / 整理模型</label>
+                        <div class="combo-box" id="combo-MEMORY_MODEL">
+                            <input type="text" id="set-MEMORY_MODEL" class="combo-input" placeholder="搜索或输入模型名（留空用默认）" autocomplete="off">
+                            <div class="combo-dropdown" id="dropdown-MEMORY_MODEL"></div>
+                        </div>
+                    </div>
+                    <div class="settings-field">
+                        <label>记忆模型 API Key (MEMORY_API_KEY)</label>
+                        <input type="text" id="set-MEMORY_API_KEY" class="input" placeholder="sk-...">
+                        <small class="form-hint" id="set-MEMORY_API_KEY-hint">不设则使用主 API Key，适用于中转站不同模型需要不同 Key 的场景</small>
+                    </div>
+                    <div class="settings-field">
+                        <label>记忆模型 API Base URL (MEMORY_API_BASE_URL)</label>
+                        <input type="text" id="set-MEMORY_API_BASE_URL" class="input" placeholder="https://openrouter.ai/api/v1/chat/completions">
+                        <small class="form-hint">记忆提取/评分/摘要/整理专用接口地址；留空则跳过，不会回退到主 API Base URL</small>
+                    </div>
+                    <div class="settings-field">
+                        <button type="button" class="btn btn-secondary" id="test-memory-model-btn" onclick="testMemoryModel()">测试记忆模型</button>
+                        <small class="form-hint" id="test-memory-model-result">会使用上方当前填写的记忆模型 URL / Key / 模型名发送一次测试请求</small>
+                    </div>
+                    <div class="settings-field">
+                        <label>记忆宫殿默认注入数量 (MEMORY_PALACE_DEFAULT_LIMIT)</label>
+                        <input type="number" id="set-MEMORY_PALACE_DEFAULT_LIMIT" class="input" min="1" max="30" value="5">
+                        <small class="form-hint">影响 &#123;&#123;memory_palace&#125;&#125; 默认条数；&#123;&#123;memory_palace:10&#125;&#125; 这种显式数量仍以变量为准。</small>
+                    </div>
+                    <div class="settings-field">
+                        <label>记忆宫殿注入深度 (MEMORY_PALACE_INJECTION_DEPTH)</label>
+                        <input type="number" id="set-MEMORY_PALACE_INJECTION_DEPTH" class="input" min="0" max="50" value="0">
+                        <small class="form-hint">0 表示保持现状，挂在最新消息后；1 表示往上找一条普通对话消息后插入；如果历史不够深，则仍挂在最新消息后。</small>
+                    </div>
+                    <div class="settings-field settings-toggle-row">
+                        <label>启用关键词触发上下文 (KEYWORD_CONTEXT_ENABLED)</label>
+                        <label class="toggle"><input type="checkbox" id="set-KEYWORD_CONTEXT_ENABLED"><span class="toggle-slider"></span></label>
+                    </div>
+                    <div class="settings-field">
+                        <label>关键词触发规则 (KEYWORD_CONTEXT_RULES)</label>
+                        <input type="hidden" id="set-KEYWORD_CONTEXT_RULES">
+                        <div id="keyword-rule-editor" class="keyword-rule-editor"></div>
+                        <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:10px;">
+                            <button type="button" class="btn btn-sm btn-secondary" onclick="addKeywordRule()">+ 添加规则</button>
+                            <button type="button" class="btn btn-sm btn-secondary" onclick="testKeywordRules()">测试命中</button>
+                        </div>
+                        <input type="text" id="keyword-rule-test-input" class="input" placeholder="输入一句用户消息，用来测试会命中哪些规则" style="margin-top:8px;">
+                        <small class="form-hint" id="keyword-rule-test-result">规则会保存为 JSON；命中后仅本轮追加 system 消息，不写入历史。</small>
+                    </div>
+                    <div class="settings-field settings-toggle-row">
+                        <label>启用上下文模板 (CONTEXT_TEMPLATE_ENABLED)</label>
+                        <label class="toggle"><input type="checkbox" id="set-CONTEXT_TEMPLATE_ENABLED"><span class="toggle-slider"></span></label>
+                    </div>
+                    <div class="settings-field">
+                        <label>上下文模板 (CONTEXT_TEMPLATE)</label>
+                        <textarea id="set-CONTEXT_TEMPLATE" class="input" rows="10" spellcheck="false"></textarea>
+                        <small class="form-hint">开启后用户消息之后的多条 system 会按此模板合并成一条。可用变量：&#123;&#123;env&#125;&#125; 环境状态、&#123;&#123;keyword&#125;&#125; 关键词命中内容、&#123;&#123;hot_news&#125;&#125; 热点新闻、&#123;&#123;operit_memory&#125;&#125; Operit 原生记忆、&#123;&#123;memory_palace&#125;&#125; 记忆宫殿召回（仅注入深度为 0 时并入，深度大于 0 仍独立注入）。变量无内容时整行删除，模板里的其他文字照常发送；模板留空则不注入。</small>
+                    </div>
+                </div>
+
+                <!-- 缓存分区 -->
+                <div class="card settings-card">
+                    <h3 class="settings-group-title">缓存分区</h3>
+                    <div class="settings-field settings-toggle-row">
+                        <label>启用缓存分区</label>
+                        <label class="toggle"><input type="checkbox" id="set-CACHE_PARTITION_ENABLED"><span class="toggle-slider"></span></label>
+                    </div>
+                    <div class="settings-field">
+                        <div class="settings-toggle-row">
+                            <label>保留 A 区工具调用</label>
+                            <label class="toggle"><input type="checkbox" id="set-CACHE_PARTITION_KEEP_A_TOOLS"><span class="toggle-slider"></span></label>
+                        </div>
+                        <small class="form-hint">开启后 A 区不再剥离 tool/tool_calls；更稳但会增加上下文长度。</small>
+                    </div>
+                    <div class="settings-field">
+                        <div class="settings-toggle-row">
+                            <label>A 区稀疏时间戳</label>
+                            <label class="toggle"><input type="checkbox" id="set-SPARSE_TIMESTAMP_ENABLED"><span class="toggle-slider"></span></label>
+                        </div>
+                        <small class="form-hint"><code>SPARSE_TIMESTAMP_ENABLED</code> — 仅 A 区生效。不再逐条硬打时间戳，改为按间隔补：首条与跨天打 <code>[07-29 周三 18:17]</code>，同天间隔满 15 分钟打 <code>[18:17]</code>，满 6 小时再加一行「距上次对话约 N 小时」。时间戳与正文之间空一行；已带 Operit 附件时间戳的消息不重复打戳。关闭时沿用每条 user 都打紧凑戳的旧行为。</small>
+                    </div>
+                    <div class="settings-field">
+                        <div class="settings-toggle-row">
+                            <label>工具链诊断日志</label>
+                            <label class="toggle"><input type="checkbox" id="set-TOOL_CHAIN_DEBUG"><span class="toggle-slider"></span></label>
+                        </div>
+                        <small class="form-hint">开启后在后台日志输出 tool_calls/tool_result 的结构快照；只记录结构和短片段，不记录完整工具结果。</small>
+                    </div>
+                    <div class="settings-field">
+                        <label>轮转周期 (CACHE_PARTITION_X)</label>
+                        <input type="number" id="set-CACHE_PARTITION_X" class="input" min="5" max="100">
+                        <small class="form-hint">A 区长度，也是每次轮转挤出上下文、交给记忆提取的批量。默认 15。</small>
+                    </div>
+                    <div class="settings-field">
+                        <label>B 区上限 (CACHE_PARTITION_B_LIMIT)</label>
+                        <input type="number" id="set-CACHE_PARTITION_B_LIMIT" class="input" min="0" max="200">
+                        <small class="form-hint">B 区攒到 Y 轮就触发一次轮转，切掉最旧的 X 轮交给记忆提取。上下文保留轮数在 Y 到 X+Y-1 之间波动。例：X=15、Y=26 → 保留 26–40 轮，每次挤出 15 轮。填 0 表示沿用旧行为（Y = X）。仅轮次触发模式（<code>CACHE_PARTITION_TRIGGER=rounds</code>）生效。</small>
+                    </div>
+                    <div class="settings-field">
+                        <label>自动提取最新消息上限 (CACHE_PARTITION_EXTRACT_LIMIT)</label>
+                        <input type="number" id="set-CACHE_PARTITION_EXTRACT_LIMIT" class="input" min="1" max="1000">
+                        <small class="form-hint">cursor 过滤后只取最新 N 条送入记忆提取模型；更旧积压直接跳过，不分批追历史。默认 120。</small>
+                    </div>
+                    <div class="settings-field">
+                        <label>Embedding API Key</label>
+                        <input type="text" id="set-EMBEDDING_API_KEY" class="input" placeholder="sk-...">
+                        <small class="form-hint" id="set-EMBEDDING_API_KEY-hint">打码显示，留空不改</small>
+                    </div>
+                    <div class="settings-field">
+                        <label>Embedding Base URL</label>
+                        <input type="text" id="set-EMBEDDING_BASE_URL" class="input" placeholder="https://api.openai.com/v1">
+                    </div>
+                    <div class="settings-field">
+                        <label>Embedding 模型</label>
+                        <input type="text" id="set-EMBEDDING_MODEL" class="input" placeholder="text-embedding-3-small">
+                    </div>
+                    <div class="settings-field">
+                        <label>Embedding 维度</label>
+                        <input type="number" id="set-EMBEDDING_DIM" class="input" min="64" max="4096">
+                    </div>
+                </div>
+
+                <!-- 其他 -->
+                <div class="card settings-card">
+                    <h3 class="settings-group-title">其他</h3>
+                    <div class="settings-field settings-toggle-row">
+                        <label>强制流式传输 (FORCE_STREAM)</label>
+                        <label class="toggle"><input type="checkbox" id="set-FORCE_STREAM"><span class="toggle-slider"></span></label>
+                    </div>
+                    <div class="settings-field">
+                        <label>推理强度 (REASONING_EFFORT)</label>
+                        <select id="set-REASONING_EFFORT" class="input">
+                            <option value="">不设置</option>
+                            <option value="low">low</option>
+                            <option value="medium">medium</option>
+                            <option value="high">high</option>
+                        </select>
+                    </div>
+                    <div class="settings-field">
+                        <label>用户昵称 (USER_NICKNAME)</label>
+                        <input type="text" id="set-USER_NICKNAME" class="input" placeholder="留空则使用：用户">
+                        <small class="form-hint">记忆宫殿自动提取时，会用这个称呼写入记忆。</small>
+                    </div>
+                    <div class="settings-field">
+                        <label>角色名称 (CHARACTER_NAME)</label>
+                        <input type="text" id="set-CHARACTER_NAME" class="input" placeholder="留空则使用：澈">
+                        <small class="form-hint">用户画像等角色视角任务会用这个名字，例如“你就是「角色名」”。</small>
+                    </div>
+                    <div class="settings-field settings-toggle-row">
+                        <label>启用性能诊断日志</label>
+                        <label class="toggle"><input type="checkbox" id="set-PERF_DIAGNOSTIC_ENABLED"><span class="toggle-slider"></span></label>
+                    </div>
+                    <div class="settings-field settings-toggle-row">
+                        <label>启用非流式响应转换</label>
+                        <label class="toggle"><input type="checkbox" id="set-RESPONSE_TRANSFORM_ENABLED"><span class="toggle-slider"></span></label>
+                    </div>
+                    <div class="settings-field">
+                        <label>响应转换规则 (RESPONSE_TRANSFORM_RULES)</label>
+                        <textarea id="set-RESPONSE_TRANSFORM_RULES" class="textarea" rows="6" placeholder="\\[语音::(.+?)\\] => &lt;hcard type='voice'&gt;$1&lt;/hcard&gt;"></textarea>
+                        <small class="form-hint">仅非流式响应生效；一行一条，格式：正则 =&gt; 替换。替换里可用 $1、$2 等捕获组。</small>
+                    </div>
+                    <div class="settings-field">
+                        <label>图片归档到 R2 (IMAGE_ARCHIVE_ENABLED)</label>
+                        <div id="imgArchiveStatus" style="font-size:13px;line-height:1.7;">读取中...</div>
+                        <small class="form-hint">只读展示，请在部署环境变量中配置。需同时开启缓存分区。图片上传 Cloudflare R2，数据库只存引用；消息离开缓存区或被删除时图片会自动清理。</small>
+                    </div>
+                </div>
+
+                <!-- System Prompt -->
+                <div class="card settings-card">
+                    <h3 class="settings-group-title">System Prompt</h3>
+                    <div class="settings-field">
+                        <textarea id="set-systemPrompt" class="textarea" rows="12" placeholder="留空则使用 system_prompt.txt 的默认内容"></textarea>
+                        <small class="form-hint" id="prompt-char-count"></small>
+                    </div>
+                </div>
+
+                <!-- 日印象提示词 -->
+                <div class="card settings-card">
+                    <h3 class="settings-group-title">日印象提示词</h3>
+                    <p style="font-size:12px;color:#888;margin:4px 0 8px;">根据当天对话历史生成日印象时使用。需包含 {conversation} 占位符；兼容旧 {fragments} 占位符。留空使用默认。</p>
+                    <textarea id="set-dailyImpressionPrompt" class="textarea" rows="14" placeholder="留空则使用默认日印象提示词"></textarea>
+                </div>
+
+                <!-- 保存按钮 -->
+                <div style="text-align:center; padding:24px 0 40px;">
+                    <button class="btn btn-primary btn-lg" onclick="saveSettings()" id="save-settings-btn" style="min-width:200px;">保存设置</button>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <script src="/static/js/dashboard.js?v=7.13"></script>
+<script src="/static/js/daily_impressions.js?v=1.5"></script>
+<script>
+    // --- 模型预设管理（右上角切换面板） ---
+    let _modelPresets = [];
+    let _presetPanelOpen = false;
+    let _activePresetIndex = -1;
+
+    function togglePresetPanel() {
+      _presetPanelOpen = !_presetPanelOpen;
+      document.getElementById('preset-panel').style.display = _presetPanelOpen ? 'block' : 'none';
+      if (_presetPanelOpen) renderPresetPanel();
+    }
+
+    // 点击面板外关闭
+    document.addEventListener('click', (e) => {
+      const switcher = document.getElementById('preset-switcher');
+      if (switcher && !switcher.contains(e.target) && _presetPanelOpen) {
+        _presetPanelOpen = false;
+        document.getElementById('preset-panel').style.display = 'none';
+      }
+    });
+
+    function renderPresetPanel() {
+      const list = document.getElementById('preset-panel-list');
+      if (!list) return;
+      if (_modelPresets.length === 0) {
+        list.innerHTML = '<div style="padding:12px;text-align:center;color:#9ca3af;font-size:13px;">还没有预设，在下方输入名称点 + 新建</div>';
+        return;
+      }
+      list.innerHTML = _modelPresets.map((p, i) => {
+        const isActive = i === _activePresetIndex;
+        const sub = p.apiBaseUrl ? '<div style="font-size:11px;opacity:0.6;margin-top:2px;">' + p.apiBaseUrl + '</div>' : '';
+        return '<div onclick="activatePreset(' + i + ')" style="'
+          + 'padding:10px 12px;cursor:pointer;border-radius:8px;margin-bottom:4px;'
+          + (isActive ? 'background:#eef2ff;border:1px solid #4f46e5;' : 'background:#fafafa;border:1px solid transparent;')
+          + 'display:flex;justify-content:space-between;align-items:center;'
+          + '">'
+          + '<div><div style="font-size:13px;font-weight:500;' + (isActive ? 'color:#4f46e5;' : 'color:#374151;') + '">'
+          + p.name + '</div>'
+          + '<div style="font-size:11px;color:#6b7280;margin-top:2px;">' + p.model + '</div>'
+          + sub + '</div>'
+          + '<span onclick="event.stopPropagation();removePreset(' + i + ')" style="'
+          + 'padding:4px 8px;border-radius:4px;font-size:11px;color:#ef4444;cursor:pointer;'
+          + 'opacity:0.6;hover:opacity:1;">删除</span>'
+          + '</div>';
+      }).join('');
+    }
+
+    function presetKeyLooksMasked(v) {
+      v = String(v || '').trim();
+      return !!v && (v.includes('***') || v.includes('•••') || v.includes('****'));
+    }
+
+    function presetKeyIsUsable(v) {
+      v = String(v || '').trim();
+      return !!v && !presetKeyLooksMasked(v);
+    }
+
+    function activePresetStorageKey(preset) {
+      return 'mgw_api_key_v2_' + encodeURIComponent((preset.name || '') + '|' + (preset.apiBaseUrl || '') + '|' + (preset.model || ''));
+    }
+
+    function sanitizeModelPresets(presets) {
+      let changed = false;
+      const cleaned = (presets || []).map(p => {
+        const cp = Object.assign({}, p || {});
+        if (presetKeyLooksMasked(cp.apiKey)) {
+          delete cp.apiKey;
+          changed = true;
+        }
+        return cp;
+      });
+      return {presets: cleaned, changed};
+    }
+
+    function activatePreset(idx) {
+      const preset = _modelPresets[idx];
+      if (!preset) return;
+      // 填充设置页字段。Key 只来自当前预设自身，避免把上一个预设的 key 串到新预设。
+      const modelEl = document.getElementById('set-DEFAULT_MODEL');
+      if (modelEl) modelEl.value = preset.model;
+      const urlEl = document.getElementById('set-API_BASE_URL');
+      if (urlEl && preset.apiBaseUrl) urlEl.value = preset.apiBaseUrl;
+      const keyEl = document.getElementById('set-API_KEY');
+      const storedRaw = localStorage.getItem(activePresetStorageKey(preset)) || '';
+      const storedKey = presetKeyIsUsable(storedRaw) ? storedRaw : '';
+      if (storedRaw && !storedKey) localStorage.removeItem(activePresetStorageKey(preset));
+      const realPresetKey = presetKeyIsUsable(preset.apiKey) ? String(preset.apiKey || '').trim() : '';
+      const effectiveKey = realPresetKey || storedKey;
+      const shouldPersistStoredKey = !!effectiveKey && !preset.apiKey;
+      if (keyEl && effectiveKey) keyEl.value = effectiveKey;
+      if (shouldPersistStoredKey) {
+        preset.apiKey = effectiveKey;
+      }
+      _activePresetIndex = idx;
+
+      // 立即激活；没有真实 key 时不发送 activatePresetKey，避免空值覆盖/触发重填。
+      const body = {activatePreset: preset.model, activatePresetUrl: preset.apiBaseUrl || ''};
+      if (effectiveKey) body.activatePresetKey = effectiveKey;
+      fetch('/api/settings', {
+        method: 'PUT',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify(body)
+      }).then(r => r.json()).then(d => {
+        if (typeof showToast === 'function') showToast('已切换: ' + preset.name);
+        document.getElementById('preset-current-name').textContent = preset.name;
+        if (shouldPersistStoredKey) savePresetsToServer();
+        renderPresetPanel();
+      });
+      // 关闭面板
+      _presetPanelOpen = false;
+      document.getElementById('preset-panel').style.display = 'none';
+    }
+
+    function addPresetFromCurrent() {
+      const nameInput = document.getElementById('preset-new-name');
+      const name = (nameInput || {}).value ? nameInput.value.trim() : '';
+      if (!name) { if (typeof showToast === 'function') showToast('请输入预设名称'); return; }
+      const model = (document.getElementById('set-DEFAULT_MODEL') || {}).value || '';
+      const apiBaseUrl = (document.getElementById('set-API_BASE_URL') || {}).value || '';
+      const apiKey = (document.getElementById('set-API_KEY') || {}).value || '';
+      const preset = {name, model};
+      if (apiBaseUrl) preset.apiBaseUrl = apiBaseUrl;
+      if (presetKeyIsUsable(apiKey)) {
+        preset.apiKey = apiKey;
+        localStorage.setItem(activePresetStorageKey(preset), apiKey);
+      }
+      _modelPresets.push(preset);
+      nameInput.value = '';
+      savePresetsToServer();
+      renderPresetPanel();
+      if (typeof showToast === 'function') showToast('已添加预设: ' + name);
+    }
+
+    function removePreset(idx) {
+      _modelPresets.splice(idx, 1);
+      savePresetsToServer();
+      renderPresetPanel();
+    }
+
+    function savePresetsToServer() {
+      fetch('/api/settings', {
+        method: 'PUT',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({modelPresets: _modelPresets})
+      });
+    }
+
+    // 加载预设
+    document.addEventListener('DOMContentLoaded', () => {
+      setTimeout(() => {
+        fetch('/api/settings').then(r=>r.json()).then(data => {
+          const presets = (data.settings || data).modelPresets;
+          if (presets && presets.length) {
+            const sanitized = sanitizeModelPresets(presets);
+            _modelPresets = sanitized.presets;
+            if (sanitized.changed) savePresetsToServer();
+            // 显示当前激活的预设名：模型 + API_BASE_URL 同时匹配，避免同模型多预设一起高亮。
+            const currentModel = (document.getElementById('set-DEFAULT_MODEL') || {}).value || '';
+            const currentUrl = (document.getElementById('set-API_BASE_URL') || {}).value || '';
+            _activePresetIndex = _modelPresets.findIndex(p => p.model === currentModel && (p.apiBaseUrl || '') === currentUrl);
+            if (_activePresetIndex < 0) _activePresetIndex = _modelPresets.findIndex(p => p.model === currentModel);
+            if (_activePresetIndex >= 0) document.getElementById('preset-current-name').textContent = _modelPresets[_activePresetIndex].name;
+          }
+        });
+      }, 600);
+    });
+
+    </script>
+    <script src="/static/js/memory_palace.js?v=5.6"></script>
+</body>
+</html>

@@ -762,6 +762,36 @@ async function compressMemoryPalaceEventBoxes() {
     }
 }
 
+async function repairMemoryPalaceEventBoxMembership() {
+    if (!confirm('检查并修复事件盒成员数据：把 summary 节点从 live/archived 列表里摘出来，清掉指向别的盒的跨盒引用。不会删除任何记忆。继续吗？')) return;
+    try {
+        mpMsg('正在检查事件盒成员数据...');
+        const resp = await fetch('/api/memory-palace/event-boxes/repair-membership', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({})
+        });
+        const data = await resp.json();
+        if (data.error || data.status === 'error') throw new Error(data.error || '修复失败');
+        const n = Number(data.fixed || 0);
+        if (n === 0) {
+            mpMsg('事件盒成员数据检查完成：没有发现需要修复的盒', 'success');
+        } else {
+            const detail = (data.details || []).map(d => {
+                const parts = [];
+                const sum = [...(d.removed_summary_from_live || []), ...(d.removed_summary_from_archived || [])];
+                if (sum.length) parts.push('摘出 summary ' + sum.length + ' 条');
+                if ((d.removed_cross_box_members || []).length) parts.push('清跨盒 ' + d.removed_cross_box_members.length + ' 条');
+                return (d.box_name || d.box_id) + '(' + (parts.join('、') || '无') + ')';
+            }).join('｜');
+            mpMsg('事件盒成员数据修复完成：修了 ' + n + ' 个盒 —— ' + detail, 'success');
+        }
+        await loadMemoryPalaceEventBoxes(true);
+    } catch (e) {
+        mpMsg('事件盒成员数据修复失败：' + e.message, 'error');
+    }
+}
+
 async function selectMemoryPalaceEventBox(id) {
     _mpCurrentEventBoxId = id || null;
     renderMemoryPalaceEventBoxes();

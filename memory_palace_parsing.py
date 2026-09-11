@@ -599,6 +599,90 @@ def _memory_palace_event_link_shadow_report(
     return [header] + lines
 
 
+def memory_palace_summary_has_reasoning_leak(content: str) -> bool:
+    """检测模型把「怎么算字数 / 怎么压缩」的过程误塞进了整合回忆正文。
+
+    典型污染长这样：Paragraph 1: 31 chars / Total: 280 / Still too long。
+    JSON 合法、长度也没超限，但语义上根本不是回忆。主要兜 Gemini 之类
+    把未标记的 reasoning 混进 content 的中转。
+
+    只凭一个英文短语就拒会误伤真实对话（比如聊天里真的在讨论字数），
+    所以要求至少命中两种信号；显式 think 标签可以直接判定。
+    """
+    text = str(content or "").strip()
+    if not text:
+        return False
+    if re.search(r"<(?:think|thinking|thought)>", text, re.I):
+        return True
+    signals = [
+        r"\bparagraph\s*\d+\s*:\s*\d+\s*(?:chars?|characters?)\b",
+        r"\btotal\s*:\s*[\d\s+]+\s*(?:chars?|characters?)\b",
+        r"\bstill\s+too\s+long\b",
+        r"\bneed\s+to\s+get\s+under\s+\d+\b",
+        r"\blet(?:'|\u2019)s\s+(?:count|condense|compress|shorten)\b",
+        r"(?:^|\n)\s*(?:analysis|reasoning)\s*:",
+    ]
+    hits = sum(1 for p in signals if re.search(p, text, re.I))
+    return hits >= 2
+
+
+def recover_memory_palace_summary_fields(raw: str) -> dict:
+    """字段级兜底解析：content 里含未转义的半角双引号时按 schema 逐个抠字段。
+
+    中文输出高发——模型在正文里写了 "某某"，标准 json.loads 直接挂。
+    提示词里已经要求用「」，但模型不总听。
+
+    策略：content 抠到下一个顶层键（name/tags/room/importance/mood）出现之前
+    为止，这样能正确跳过中间所有裸引号。任何关键字段失败就返回空 dict，
+    让上层走原本的失败路径。
+    """
+    text = str(raw or "")
+    if not text.strip():
+        return {}
+    text = re.sub(r"^```(?:json|JSON)?\s*\n?", "", text, flags=re.M)
+    text = re.sub(r"\n?```\s*$", "", text, flags=re.M).strip()
+
+    head = re.search(r'"content"\s*:\s*"', text)
+    if not head:
+        return {}
+    value_start = head.end()
+    tail = re.search(r'"\s*,\s*"(?:name|tags|room|importance|mood)"\s*:', text[value_start:])
+    if not tail:
+        return {}
+    raw_content = text[value_start:value_start + tail.start()]
+
+    # 还原 JSON 字符串转义。\\ 先用占位符暂存，避免 \" 被拆成 \ + \"。
+    # 残留的裸 " 保留不动：走到这里说明模型就是塞了未转义引号，
+    # 最终 summary 是普通字符串，留着无害。
+    placeholder = "\u0001"
+    content = (raw_content
+               .replace("\\\\", placeholder)
+               .replace("\\n", "\n")
+               .replace("\\t", "\t")
+               .replace("\\r", "\r")
+               .replace('\\"', '"')
+               .replace(placeholder, "\\"))
+    if not content.strip():
+        return {}
+
+    out = {"content": content}
+    for key in ("name", "room", "mood"):
+        m = re.search(r'"%s"\s*:\s*"([^"]*)"' % key, text)
+        if m:
+            out[key] = m.group(1).strip()
+    m = re.search(r'"importance"\s*:\s*(-?\d+(?:\.\d+)?)', text)
+    if m:
+        try:
+            out["importance"] = int(float(m.group(1)))
+        except Exception:
+            pass
+    m = re.search(r'"tags"\s*:\s*\[([^\]]*)\]', text)
+    if m:
+        tags = [t.strip().strip('"').strip("'") for t in m.group(1).split(",")]
+        out["tags"] = [t for t in tags if t]
+    return out
+
+
 def _memory_palace_parse_summary_json(text: str) -> dict:
     try:
         data = json.loads(str(text or ""))
@@ -609,4 +693,9 @@ def _memory_palace_parse_summary_json(text: str) -> dict:
     parsed = safe_parse_memory_palace_json_array(text)
     if isinstance(parsed, list) and parsed and isinstance(parsed[0], dict):
         return parsed[0]
+    # 标准解析和数组解析都失败 → 按 schema 逐字段抠（content 内含裸引号的情况）
+    recovered = recover_memory_palace_summary_fields(text)
+    if recovered.get("content"):
+        print("🗜️ 事件盒 summary JSON 解析失败，字段级兜底成功（疑似 content 内含未转义半角引号）")
+        return recovered
     return {}

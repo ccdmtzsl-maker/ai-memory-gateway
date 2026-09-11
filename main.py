@@ -74,6 +74,8 @@ from memory_palace_parsing import (
     _memory_palace_split_event_links_by_target,
     _memory_palace_strip_ref_internals,
     _merge_text_tags,
+    memory_palace_summary_has_reasoning_leak,
+    recover_memory_palace_summary_fields,
     _normalize_memory_palace_item,
     parse_memory_palace_corrections,
     parse_memory_palace_event_links,
@@ -327,7 +329,7 @@ DEFAULT_CONTEXT_TEMPLATE = (
     "{{memory_palace}}"
 )
 MEMORY_PALACE_EVENT_BOX_COMPRESS_THRESHOLD = int(os.getenv("MEMORY_PALACE_EVENT_BOX_COMPRESS_THRESHOLD", "4"))
-MEMORY_PALACE_EVENT_BOX_LIVE_HARD_CAP = int(os.getenv("MEMORY_PALACE_EVENT_BOX_LIVE_HARD_CAP", "16"))
+MEMORY_PALACE_EVENT_BOX_LIVE_HARD_CAP = int(os.getenv("MEMORY_PALACE_EVENT_BOX_LIVE_HARD_CAP", "15"))
 # 自动提取的事件盒建盒模式：
 #   related = 只采纳 relatedTo（往既有记忆上挂），默认
 #   all     = relatedTo + sameAs 都建（和手动导入一致）
@@ -335,7 +337,15 @@ MEMORY_PALACE_EVENT_BOX_LIVE_HARD_CAP = int(os.getenv("MEMORY_PALACE_EVENT_BOX_L
 # 默认 related：sameAs 是批内两条新记忆互相配对，一次提取就能凭空开新盒，
 # 而压缩阈值只有 4 条活节点，盒子涨太快会频繁触发 LLM 压缩。
 MEMORY_PALACE_AUTO_EVENT_BOX_MODE = str(os.getenv("MEMORY_PALACE_AUTO_EVENT_BOX_MODE", "related") or "related").strip().lower()
-MEMORY_PALACE_EVENT_BOX_SEAL_THRESHOLD = int(os.getenv("MEMORY_PALACE_EVENT_BOX_SEAL_THRESHOLD", "6"))
+# 封盒阈值＝盒内事件总数（archived + live 的条数），不是压缩次数。
+# 原来按压缩次数判定，等于「压了 6 次就封」，和盒里到底装了多少件事无关：
+# 每次只压 4 条的盒 24 条就封，每次压 15 条的盒 90 条才封。
+MEMORY_PALACE_EVENT_BOX_SEAL_THRESHOLD = int(os.getenv("MEMORY_PALACE_EVENT_BOX_SEAL_THRESHOLD", "12"))
+# summary 字数：目标区间用来引导提示词，硬上限用来兜底。目标上界低于硬上限，
+# 是给「模型数不准字数」留缓冲——瞄着上界写、稍微超一点也不会被砍出「……」。
+MEMORY_PALACE_SUMMARY_TARGET_MIN_CHARS = int(os.getenv("MEMORY_PALACE_SUMMARY_TARGET_MIN_CHARS", "400"))
+MEMORY_PALACE_SUMMARY_TARGET_MAX_CHARS = int(os.getenv("MEMORY_PALACE_SUMMARY_TARGET_MAX_CHARS", "700"))
+MEMORY_PALACE_SUMMARY_HARD_MAX_CHARS = int(os.getenv("MEMORY_PALACE_SUMMARY_HARD_MAX_CHARS", "900"))
 
 # 记忆模型专用 API 地址。留空时不会自动回退到主 API_BASE_URL，由调用方决定是否跳过。
 MEMORY_API_BASE_URL = os.getenv("MEMORY_API_BASE_URL", "")
@@ -7363,6 +7373,114 @@ async def api_memory_palace_update_event_box(box_id: str, request: Request):
         return {"status": "error", "error": str(e), "updated": 0}
 
 
+@app.post("/api/memory-palace/event-boxes/repair-membership")
+async def api_memory_palace_repair_event_box_membership(request: Request):
+    """一次性修复历史错数据：把 summary 节点从各盒的 live/archived 数组里摘出来，
+    并清掉指向别的盒的跨盒引用。
+
+    修的是两类历史残留（新代码已经不会再产生）：
+
+      (a) live_memory_ids 里混着 summary 节点 id。压缩时数组长度达阈值、
+          但实查节点数不达标（SQL 带 is_box_summary = FALSE），静默跳过 →
+          界面永远显示「压缩 0 个」。而 remaining_live 只在压缩成功时才会
+          剔掉 summary，于是形成死锁：压不动 → 清不掉 → 继续压不动。
+      (b) 同一个 summary 既是 A.summary_node_id、又在 B 的数组里，
+          详情接口按盒数组取节点且不校验归属，两个盒都会显示它。
+
+    只动盒的成员数组和节点的 event_box_id，不删记忆、不改 summary 正文。
+    """
+    if not MEMORY_ENABLED:
+        return {"error": "记忆系统未启用"}
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    character_id = data.get("character_id") or "default"
+    try:
+        pool = await get_pool()
+        fixed_boxes = []
+        async with pool.acquire() as conn:
+            boxes = await conn.fetch("""
+                SELECT id, name, summary_node_id, live_memory_ids, archived_memory_ids
+                FROM memory_palace_event_boxes
+                WHERE character_id = $1
+            """, character_id)
+            summary_ids = set()
+            rows = await conn.fetch("""
+                SELECT id FROM memory_palace_nodes
+                WHERE character_id = $1 AND COALESCE(is_box_summary, FALSE) = TRUE
+            """, character_id)
+            summary_ids = {str(r["id"]) for r in rows}
+
+            for row in boxes:
+                box = dict(row)
+                box_id = str(box.get("id") or "")
+                own_summary = str(box.get("summary_node_id") or "")
+                live = [str(x) for x in (box.get("live_memory_ids") or []) if x]
+                arch = [str(x) for x in (box.get("archived_memory_ids") or []) if x]
+
+                # ① 任何 summary 节点都不该待在成员池里
+                bad_live = [x for x in live if x in summary_ids]
+                bad_arch = [x for x in arch if x in summary_ids]
+                # ② 本盒 summary_node_id 也不该重复登记在池里
+                new_live = [x for x in live if x not in summary_ids]
+                new_arch = [x for x in arch if x not in summary_ids]
+
+                # ③ 成员的 event_box_id 指向别的盒 → 从本盒摘掉（归属以节点为准）
+                cross = []
+                if new_live or new_arch:
+                    members = list(dict.fromkeys([*new_live, *new_arch]))
+                    owned = await conn.fetch("""
+                        SELECT id, event_box_id FROM memory_palace_nodes
+                        WHERE character_id = $1 AND id = ANY($2::text[])
+                    """, character_id, members)
+                    owner_by_id = {str(r["id"]): (r["event_box_id"] or "") for r in owned}
+                    for mid in members:
+                        owner = owner_by_id.get(mid)
+                        if owner is None:
+                            # 节点已不存在
+                            cross.append(mid)
+                        elif owner and owner != box_id:
+                            cross.append(mid)
+                    if cross:
+                        new_live = [x for x in new_live if x not in cross]
+                        new_arch = [x for x in new_arch if x not in cross]
+
+                if not bad_live and not bad_arch and not cross:
+                    continue
+
+                await conn.execute("""
+                    UPDATE memory_palace_event_boxes
+                    SET live_memory_ids = $3::text[], archived_memory_ids = $4::text[], updated_at = NOW()
+                    WHERE character_id = $1 AND id = $2
+                """, character_id, box_id, new_live, new_arch)
+
+                # 被摘掉的 summary 如果本来就属于这个盒，把归属修回来（它是本盒的 summary）
+                if own_summary and own_summary in (bad_live + bad_arch):
+                    await conn.execute("""
+                        UPDATE memory_palace_nodes
+                        SET event_box_id = $3, is_box_summary = TRUE, archived = FALSE, updated_at = NOW()
+                        WHERE character_id = $1 AND id = $2
+                    """, character_id, own_summary, box_id)
+
+                fixed_boxes.append({
+                    "box_id": box_id,
+                    "box_name": str(box.get("name") or ""),
+                    "removed_summary_from_live": bad_live,
+                    "removed_summary_from_archived": bad_arch,
+                    "removed_cross_box_members": cross,
+                    "live_before": len(live),
+                    "live_after": len(new_live),
+                })
+                print(f"🧹 事件盒成员修复 {box_id}：live {len(live)}→{len(new_live)}"
+                      + (f"，摘出 summary {bad_live + bad_arch}" if (bad_live or bad_arch) else "")
+                      + (f"，摘出跨盒成员 {cross}" if cross else ""))
+
+        return {"status": "ok", "fixed": len(fixed_boxes), "details": fixed_boxes}
+    except Exception as e:
+        return {"status": "error", "error": str(e), "fixed": 0}
+
+
 @app.post("/api/memory-palace/event-boxes/{box_id}/unbind-live")
 async def api_memory_palace_unbind_event_box_live(box_id: str, request: Request):
     if not MEMORY_ENABLED:
@@ -8040,81 +8158,290 @@ async def apply_memory_palace_corrections(corrections: list, character_id: str =
     return changed
 
 
+async def _merge_memory_palace_event_boxes(conn, boxes: list, character_id: str = "default") -> dict:
+    """把多个 open 盒合并成一个主盒，返回主盒。
+
+    对齐 SullyOS 的 mergeBoxes：一条新记忆同时关联到多个盒里的成员时，
+    说明这几个盒讲的是同一件事，应该并成一个，而不是任选其一。
+
+    主盒选取：compression_count 多者优先（沉淀更久），并列则 created_at 早者。
+
+    被并盒的 summary 会「降级」成主盒的普通活节点（is_box_summary=FALSE），
+    而不是丢弃——它是那段回忆的浓缩，仍有召回价值。不降级直接搬走会让
+    一个节点同时是 A 盒的 summary_node_id 和 B 盒的 live 成员，两个盒都显示它。
+    """
+    if not boxes:
+        raise ValueError("_merge_memory_palace_event_boxes: empty input")
+    if len(boxes) == 1:
+        return boxes[0]
+
+    def _merge_sort_key(b):
+        return (-int(b.get("compression_count") or 0), str(b.get("created_at") or ""))
+
+    ordered = sorted(boxes, key=_merge_sort_key)
+    primary = dict(ordered[0])
+    others = ordered[1:]
+
+    live_ids = [str(x) for x in (primary.get("live_memory_ids") or []) if x]
+    archived_ids = [str(x) for x in (primary.get("archived_memory_ids") or []) if x]
+    primary_id = primary.get("id")
+
+    for other in others:
+        other_id = other.get("id")
+        if not other_id or other_id == primary_id:
+            continue
+
+        # 1) 被并盒的 summary → 降级为主盒的普通活节点
+        other_summary = other.get("summary_node_id")
+        if other_summary:
+            await conn.execute("""
+                UPDATE memory_palace_nodes
+                SET is_box_summary = FALSE, archived = FALSE, event_box_id = $3, updated_at = NOW()
+                WHERE character_id = $1 AND id = $2
+            """, character_id, other_summary, primary_id)
+            if other_summary not in live_ids:
+                live_ids.append(other_summary)
+            print(f"🔀 EventBox 合并：{other_id} 的 summary {other_summary} 降级为 {primary_id} 的活节点")
+
+        # 2) 被并盒的 archived 成员
+        for aid in [str(x) for x in (other.get("archived_memory_ids") or []) if x]:
+            if aid not in archived_ids:
+                archived_ids.append(aid)
+
+        # 3) 被并盒的 live 成员
+        for lid in [str(x) for x in (other.get("live_memory_ids") or []) if x]:
+            if lid not in live_ids:
+                live_ids.append(lid)
+
+        # 4) 成员节点归属指向主盒
+        moved = list(dict.fromkeys([*(other.get("live_memory_ids") or []), *(other.get("archived_memory_ids") or [])]))
+        moved = [str(x) for x in moved if x]
+        if moved:
+            await conn.execute("""
+                UPDATE memory_palace_nodes
+                SET event_box_id = $3, updated_at = NOW()
+                WHERE character_id = $1 AND id = ANY($2::text[])
+            """, character_id, moved, primary_id)
+
+        # 5) 删掉被并盒。先摘掉 summary_node_id，避免外键 ON DELETE SET NULL
+        #    把刚降级的节点的归属清掉。
+        await conn.execute("""
+            UPDATE memory_palace_event_boxes
+            SET summary_node_id = NULL, live_memory_ids = '{}'::text[], archived_memory_ids = '{}'::text[]
+            WHERE character_id = $1 AND id = $2
+        """, character_id, other_id)
+        await conn.execute(
+            "DELETE FROM memory_palace_event_boxes WHERE character_id = $1 AND id = $2",
+            character_id, other_id,
+        )
+        print(f"🔀 EventBox 合并 {other_id} → {primary_id}")
+
+    # 一个节点不能既是 summary 又在 live 池里
+    summary_id = primary.get("summary_node_id")
+    if summary_id:
+        live_ids = [x for x in live_ids if x != summary_id]
+        archived_ids = [x for x in archived_ids if x != summary_id]
+
+    await conn.execute("""
+        UPDATE memory_palace_event_boxes
+        SET live_memory_ids = $3::text[], archived_memory_ids = $4::text[], updated_at = NOW()
+        WHERE character_id = $1 AND id = $2
+    """, character_id, primary_id, live_ids, archived_ids)
+
+    primary["live_memory_ids"] = live_ids
+    primary["archived_memory_ids"] = archived_ids
+    return primary
+
+
+async def _add_memories_to_memory_palace_event_box(conn, box: dict, node_ids: list, by_id: dict, character_id: str = "default") -> list:
+    """把一批节点加进盒，返回真正新增的 id。
+
+    对齐 SullyOS 的 addMemoriesToBox。四道关卡，缺一道就会出现
+    「同一个 summary 同时挂在两个盒上」或「live 池里混进 summary」：
+
+      ① 已在本盒（live / archived / summary_node_id）的 id 直接跳过；
+      ② 已属于【其它】盒的节点跳过——不管那个盒是否封盒。原来只在
+         「那个盒已封盒且该节点是 existing」时才跳过，节点属于另一个
+         未封盒时照样被抢走，于是两个盒的数组里都留着它；
+      ③ summary 节点（is_box_summary=TRUE）不进任何池。它由
+         summary_node_id 单独管理。混进 live_memory_ids 的后果是压缩时
+         数组长度达阈值、但实查节点数不达标（SQL 带 is_box_summary=FALSE），
+         静默跳过 → 界面上永远显示「压缩 0 个」；
+      ④ 已归档的节点进 archived 池，不进 live 池。
+    """
+    box_id = box.get("id")
+    live_ids = [str(x) for x in (box.get("live_memory_ids") or []) if x]
+    archived_ids = [str(x) for x in (box.get("archived_memory_ids") or []) if x]
+    summary_id = box.get("summary_node_id")
+
+    in_box = set(live_ids) | set(archived_ids)
+    if summary_id:
+        in_box.add(str(summary_id))
+
+    added = []
+    reassign = []
+    for nid in node_ids:
+        nid = str(nid or "").strip()
+        if not nid or nid in in_box:
+            continue
+        node = by_id.get(nid)
+        if node is None:
+            continue
+        node_box_id = node.get("event_box_id")
+        if node_box_id and node_box_id != box_id:
+            print(f"⏭️ EventBox {box_id} 跳过 {nid}：已属于其它盒 {node_box_id}")
+            continue
+        if node.get("is_box_summary"):
+            print(f"⏭️ EventBox {box_id} 跳过 summary 节点 {nid}：summary 不进任何池")
+            continue
+        reassign.append(nid)
+        if node.get("archived"):
+            archived_ids.append(nid)
+        else:
+            live_ids.append(nid)
+        in_box.add(nid)
+        added.append(nid)
+
+    if reassign:
+        await conn.execute("""
+            UPDATE memory_palace_nodes
+            SET event_box_id = $3, updated_at = NOW()
+            WHERE character_id = $1 AND id = ANY($2::text[])
+        """, character_id, reassign, box_id)
+
+    box["live_memory_ids"] = live_ids
+    box["archived_memory_ids"] = archived_ids
+    return added
+
+
 async def bind_memory_palace_event_boxes(event_links: list, event_hints: dict, character_id: str = "default") -> int:
-    """把 relatedTo/sameAs 关联收纳进 EventBox。sealed/满员盒会开延续新盒。"""
+    """把 relatedTo/sameAs 关联收纳进 EventBox。sealed/满员盒会开延续新盒。
+
+    按 newMemoryId 分组处理：一条新记忆关联到多条旧记忆时，这些旧记忆所在的
+    盒要【一次性全部收集】再决定去向。原来是逐条 link 独立处理，每次只看
+    两个节点的两个盒，永远看不到全局，因此永远触发不了多盒合并。
+    """
     if not event_links:
         return 0
+
+    # 按 newMemoryId 分组
+    grouped = {}
+    for link in event_links:
+        new_id = str((link or {}).get("newMemoryId") or "").strip()
+        existing_id = str((link or {}).get("existingMemoryId") or "").strip()
+        if not new_id or not existing_id or new_id == existing_id:
+            continue
+        bucket = grouped.setdefault(new_id, [])
+        if existing_id not in bucket:
+            bucket.append(existing_id)
+
+    if not grouped:
+        return 0
+
     touched = set()
+    hard_cap = max(2, int(MEMORY_PALACE_EVENT_BOX_LIVE_HARD_CAP or 15))
     pool = await get_pool()
     async with pool.acquire() as conn:
-        for link in event_links:
-            new_id = str(link.get("newMemoryId") or "").strip()
-            existing_id = str(link.get("existingMemoryId") or "").strip()
-            if not new_id or not existing_id or new_id == existing_id:
-                continue
+        for new_id, existing_ids in grouped.items():
+            wanted = list(dict.fromkeys([new_id, *existing_ids]))
+            # is_box_summary / archived 必须查出来，否则③④两道关卡无从判断
             nodes = await conn.fetch("""
-                SELECT id, event_box_id, content, tags
+                SELECT id, event_box_id, content, tags, is_box_summary, archived
                 FROM memory_palace_nodes
                 WHERE character_id = $1 AND id = ANY($2::text[])
-            """, character_id, [new_id, existing_id])
-            by_id = {r["id"]: r for r in nodes}
-            if new_id not in by_id or existing_id not in by_id:
+            """, character_id, wanted)
+            by_id = {r["id"]: dict(r) for r in nodes}
+            if new_id not in by_id:
                 continue
+            existing_present = [e for e in existing_ids if e in by_id]
+            if not existing_present:
+                continue
+
             hint = event_hints.get(new_id) or {}
+
+            # 收集全部相关盒（新节点自己的 + 每个 existing 的）
             candidate_ids = []
-            for nid in (existing_id, new_id):
+            for nid in [new_id, *existing_present]:
                 bid = by_id[nid].get("event_box_id")
                 if bid and bid not in candidate_ids:
                     candidate_ids.append(bid)
+
             boxes = []
             if candidate_ids:
                 box_rows = await conn.fetch("""
                     SELECT id, name, tags, live_memory_ids, archived_memory_ids, summary_node_id,
-                           compression_count, sealed, updated_at, last_compressed_at
+                           compression_count, sealed, created_at, updated_at, last_compressed_at
                     FROM memory_palace_event_boxes
                     WHERE character_id = $1 AND id = ANY($2::text[])
                 """, character_id, candidate_ids)
                 boxes = [dict(r) for r in box_rows]
+
             open_boxes = []
-            closed_boxes = []
-            hard_cap = max(2, int(MEMORY_PALACE_EVENT_BOX_LIVE_HARD_CAP or 16))
-            for box in boxes:
-                live_count = len(box.get("live_memory_ids") or [])
-                if box.get("sealed") or live_count >= hard_cap:
-                    closed_boxes.append(box)
+            sealed_boxes = []
+            overflow_boxes = []
+            for b in boxes:
+                live_count = len([x for x in (b.get("live_memory_ids") or []) if x])
+                if b.get("sealed"):
+                    sealed_boxes.append(b)
+                elif live_count >= hard_cap:
+                    overflow_boxes.append(b)
                 else:
-                    open_boxes.append(box)
-            if open_boxes:
-                box_id = open_boxes[0]["id"]
-                box = open_boxes[0]
-            else:
+                    open_boxes.append(b)
+
+            if not open_boxes:
+                # 全部相关盒都封盒/满员（或本来没盒）→ 新建
+                prev_pool = [*sealed_boxes, *overflow_boxes]
                 predecessor = None
-                if closed_boxes:
+                if prev_pool:
                     def _box_sort_key(b):
                         return str(b.get("last_compressed_at") or b.get("updated_at") or "")
-                    predecessor = sorted(closed_boxes, key=_box_sort_key, reverse=True)[0]
+                    predecessor = sorted(prev_pool, key=_box_sort_key, reverse=True)[0]
                 box_id = f"eb_{int(datetime.now(timezone.utc).timestamp() * 1000)}_{uuid.uuid4().hex[:6]}"
-                name = hint.get("eventName") or (predecessor or {}).get("name") or str(by_id[existing_id].get("content") or by_id[new_id].get("content") or "未命名事件")[:24]
-                tags = _merge_text_tags(hint.get("eventTags") or [], (predecessor or {}).get("tags"), by_id[existing_id].get("tags"), by_id[new_id].get("tags"))
+                first_existing = existing_present[0]
+                name = str(
+                    hint.get("eventName")
+                    or (predecessor or {}).get("name")
+                    or by_id[first_existing].get("content")
+                    or by_id[new_id].get("content")
+                    or "未命名事件"
+                )[:24]
+                tags = _merge_text_tags(
+                    hint.get("eventTags") or [],
+                    (predecessor or {}).get("tags"),
+                    by_id[first_existing].get("tags"),
+                    by_id[new_id].get("tags"),
+                )
                 await conn.execute("""
                     INSERT INTO memory_palace_event_boxes (id, character_id, name, tags, predecessor_box_id, live_memory_ids, archived_memory_ids, sealed, created_at, updated_at)
-                    VALUES ($1, $2, $3, $4, $5, $6::text[], '{}'::text[], FALSE, NOW(), NOW())
+                    VALUES ($1, $2, $3, $4, $5, '{}'::text[], '{}'::text[], FALSE, NOW(), NOW())
                     ON CONFLICT (id) DO NOTHING
-                """, box_id, character_id, name, tags, (predecessor or {}).get("id"), [new_id],)
+                """, box_id, character_id, name, tags, (predecessor or {}).get("id"))
                 if predecessor:
                     reason = "已封盒" if predecessor.get("sealed") else f"活节点达硬上限 {hard_cap}"
                     print(f"📦 EventBox 前任 {predecessor.get('id')} {reason}，{box_id} 作为延续新盒")
-                box = {"id": box_id, "live_memory_ids": [new_id], "tags": tags, "name": name}
-            live_ids = list((box or {}).get("live_memory_ids") or [])
-            closed_ids = {b.get("id") for b in closed_boxes}
-            target_node_ids = []
-            for nid in (existing_id, new_id):
-                node_box_id = by_id[nid].get("event_box_id")
-                if node_box_id in closed_ids and nid == existing_id:
+                box = {
+                    "id": box_id, "name": name, "tags": tags,
+                    "live_memory_ids": [], "archived_memory_ids": [], "summary_node_id": None,
+                }
+            elif len(open_boxes) == 1:
+                box = open_boxes[0]
+                box_id = box["id"]
+            else:
+                box = await _merge_memory_palace_event_boxes(conn, open_boxes, character_id=character_id)
+                box_id = box["id"]
+
+            # 已封盒里的 existing 不跟着搬走（那段事件已经定稿）
+            sealed_ids = {b.get("id") for b in sealed_boxes}
+            add_ids = [new_id]
+            for e in existing_present:
+                if by_id[e].get("event_box_id") in sealed_ids:
                     continue
-                target_node_ids.append(nid)
-                if nid not in live_ids:
-                    live_ids.append(nid)
+                add_ids.append(e)
+
+            added = await _add_memories_to_memory_palace_event_box(
+                conn, box, add_ids, by_id, character_id=character_id,
+            )
+
             # A node should belong to one active EventBox only. Remove these nodes from other boxes first.
             #
             # 必须限定「真的装着这些节点的盒子」。之前只写 id <> $2，等于每次绑一条
@@ -8122,35 +8449,44 @@ async def bind_memory_palace_event_boxes(event_links: list, event_hints: dict, c
             # 不含该节点的盒子是空操作，但 updated_at = NOW() 照样生效。列表接口按
             # updated_at DESC 排序并显示这个时间，于是仪表盘上所有盒子的日期会被
             # 抹平成同一天，也看不出哪个盒子最近真的有新片段。
-            if target_node_ids:
+            if added:
                 await conn.execute("""
                     UPDATE memory_palace_event_boxes
-                    SET live_memory_ids = array_remove(array_remove(live_memory_ids, $3), $4),
-                        archived_memory_ids = array_remove(array_remove(archived_memory_ids, $3), $4),
+                    SET live_memory_ids = (
+                            SELECT COALESCE(array_agg(x), '{}'::text[])
+                            FROM unnest(live_memory_ids) AS x
+                            WHERE x <> ALL($3::text[])
+                        ),
+                        archived_memory_ids = (
+                            SELECT COALESCE(array_agg(x), '{}'::text[])
+                            FROM unnest(archived_memory_ids) AS x
+                            WHERE x <> ALL($3::text[])
+                        ),
                         updated_at = NOW()
                     WHERE character_id = $1 AND id <> $2
                       AND (
-                          live_memory_ids && $5::text[]
-                          OR archived_memory_ids && $5::text[]
+                          live_memory_ids && $3::text[]
+                          OR archived_memory_ids && $3::text[]
                       )
-                """, character_id, box_id, target_node_ids[0], target_node_ids[1] if len(target_node_ids) > 1 else target_node_ids[0], list(dict.fromkeys(target_node_ids)))
-            tags = _merge_text_tags((box or {}).get("tags"), hint.get("eventTags") or [], by_id[existing_id].get("tags"), by_id[new_id].get("tags"))
-            name = (box or {}).get("name") or hint.get("eventName") or "未命名事件"
+                """, character_id, box_id, added)
+
+            first_existing = existing_present[0]
+            tags = _merge_text_tags(
+                box.get("tags"),
+                hint.get("eventTags") or [],
+                by_id[first_existing].get("tags"),
+                by_id[new_id].get("tags"),
+            )
+            name = box.get("name") or hint.get("eventName") or "未命名事件"
             if hint.get("eventName") and name == "未命名事件":
                 name = hint.get("eventName")
             await conn.execute("""
                 UPDATE memory_palace_event_boxes
-                SET live_memory_ids = $2::text[], tags = $3, name = $4, updated_at = NOW()
+                SET live_memory_ids = $2::text[], archived_memory_ids = $6::text[],
+                    tags = $3, name = $4, updated_at = NOW()
                 WHERE id = $1 AND character_id = $5
-            """, box_id, live_ids, tags, name, character_id)
-            update_ids = [new_id]
-            if by_id[existing_id].get("event_box_id") not in closed_ids:
-                update_ids.append(existing_id)
-            await conn.execute("""
-                UPDATE memory_palace_nodes
-                SET event_box_id = $3, updated_at = NOW()
-                WHERE character_id = $1 AND id = ANY($2::text[])
-            """, character_id, list(dict.fromkeys(update_ids)), box_id)
+            """, box_id, box.get("live_memory_ids") or [], tags, name, character_id,
+                 box.get("archived_memory_ids") or [])
             touched.add(box_id)
     return len(touched)
 
@@ -8363,7 +8699,7 @@ async def call_memory_palace_event_box_summarizer(box: dict, live_nodes: list, c
         "",
         "**要求（严格遵守）**：",
         f"1. **第一人称**（用「我」），从 {character_name} 的视角写。{user_nickname} 用名字直接称呼。",
-        "2. **字数目标 300-600 字，绝对上限 800 字**。紧凑、务实、不口水。",
+        f"2. **字数目标 {MEMORY_PALACE_SUMMARY_TARGET_MIN_CHARS}-{MEMORY_PALACE_SUMMARY_TARGET_MAX_CHARS} 字，绝对上限 {MEMORY_PALACE_SUMMARY_HARD_MAX_CHARS} 字**。紧凑、务实、不口水。",
         "3. **只保留关键信息**：具体人物、动作、对象、场景、转折、情绪。**去掉所有语气填充、修辞铺陈、重复感慨**（如「真是的」、「怎么说呢」、「不过话说回来」等）。事实先行。",
         "4. **带时间点但不冗余**：每件事标一次日期就够（「3 月 20 日…4 月 5 日…」），不要每句都重复时间。",
         "5. **连贯但简洁**：不套「起因/经过/结果」模板，但要让读者能按顺序看懂事情怎么发展的。",
@@ -8380,7 +8716,7 @@ async def call_memory_palace_event_box_summarizer(box: dict, live_nodes: list, c
         f"- mood：{mood_options}",
         "",
         "严格 JSON，不要 markdown 包裹（content 里的引用一律用「」《》，不要用 \"）：",
-        '{"content":"（紧凑的第一人称回忆，300-600 字）","name":"...","tags":["...","..."],"room":"...","importance":7,"mood":"..."}',
+        '{"content":"（紧凑的第一人称回忆，' + f'{MEMORY_PALACE_SUMMARY_TARGET_MIN_CHARS}-{MEMORY_PALACE_SUMMARY_TARGET_MAX_CHARS}' + ' 字）","name":"...","tags":["...","..."],"room":"...","importance":7,"mood":"..."}',
     ])
     headers = {"Content-Type": "application/json"}
     if memory_api_key:
@@ -8405,7 +8741,63 @@ async def call_memory_palace_event_box_summarizer(box: dict, live_nodes: list, c
     if not str(item.get("content") or "").strip():
         # 原始内容直接塞进异常，供上层拼进前端提示
         raise MemoryPalaceSummaryParseError(str(raw_text))
+
+    content = str(item.get("content") or "")
+    hard_max = max(200, int(MEMORY_PALACE_SUMMARY_HARD_MAX_CHARS or 900))
+    if len(content) > hard_max:
+        # 超硬上限先让模型自己压回目标区间（不丢信息），压不动才硬截断。
+        # 直接截断会把最后一句话砍成半截，向量化的时候尾部语义是残的。
+        print(f"🗜️ 事件盒 summary {len(content)} 字超过硬上限 {hard_max}，尝试二次压缩")
+        shorter = await _recompress_memory_palace_summary(
+            content,
+            base_url=base_url,
+            headers=headers,
+            memory_model=memory_model,
+            character_name=character_name,
+        )
+        if shorter and len(shorter) <= hard_max:
+            content = shorter
+        else:
+            content = content[:hard_max].rstrip() + "…"
+            print(f"🗜️ 二次压缩未达标，硬截断到 {hard_max} 字")
+        item["content"] = content
+
+    if memory_palace_summary_has_reasoning_leak(content):
+        # JSON 合法、长度也没超限，但正文里混着「Paragraph 1: 31 chars」这类
+        # 字数计算过程，语义上不是回忆。拒绝保存，活节点保留，下次可重试。
+        print("🧹 事件盒 summary 混入字数计算/推理过程，已拒绝保存")
+        raise MemoryPalaceSummaryParseError(str(raw_text))
     return item
+
+
+async def _recompress_memory_palace_summary(text: str, base_url: str, headers: dict, memory_model: str, character_name: str) -> str:
+    """让模型把过长的整合回忆压回目标字数（纯文本输出，不走 JSON）。失败返回空串。"""
+    target = max(200, int(MEMORY_PALACE_SUMMARY_TARGET_MAX_CHARS or 700))
+    prompt = "\n".join([
+        f"你是 {character_name}。下面这段第一人称回忆写得太长了。",
+        f"请在**不丢关键信息**（具体人物、地点、事件、转折、情绪）的前提下，把它压缩到 {target} 字以内。",
+        "要求：保持第一人称（「我」）、连贯通顺；只删语气填充和重复铺陈，不删事实；",
+        "引用一律用「」《》或单引号，不要用半角双引号。",
+        "直接输出压缩后的回忆正文，不要解释、不要 JSON、不要 markdown 包裹。",
+    ])
+    body = {
+        "model": memory_model,
+        "messages": [{"role": "system", "content": prompt}, {"role": "user", "content": str(text or "")}],
+        "temperature": 0.3,
+        "max_tokens": 4000,
+    }
+    try:
+        async with httpx.AsyncClient(timeout=90.0) as client:
+            resp = await client.post(base_url, headers=headers, json=body)
+            resp.raise_for_status()
+            data = resp.json()
+        reply = str(data.get("choices", [{}])[0].get("message", {}).get("content", "") or "").strip()
+    except Exception as e:
+        print(f"⚠️ 事件盒 summary 二次压缩失败: {e}")
+        return ""
+    cleaned = re.sub(r"^```[a-zA-Z]*\n?", "", reply)
+    cleaned = re.sub(r"\n?```$", "", cleaned).strip()
+    return cleaned
 
 async def maybe_compress_memory_palace_event_boxes(box_ids=None, character_id: str = "default", threshold: int = None, failures: list = None) -> int:
     """压缩达到阈值的事件盒，返回成功压缩的个数。
@@ -8574,7 +8966,9 @@ async def maybe_compress_memory_palace_event_boxes(box_ids=None, character_id: s
                 remaining_live = [x for x in live_ids if x not in compressed_ids and x != summary_id]
                 await conn.execute("UPDATE memory_palace_nodes SET archived=TRUE, updated_at=NOW() WHERE character_id=$1 AND id=ANY($2::text[])", character_id, compressed_ids)
                 next_compression_count = int(box.get("compression_count") or 0) + 1
-                should_seal = next_compression_count >= max(1, int(MEMORY_PALACE_EVENT_BOX_SEAL_THRESHOLD or 6))
+                # 封盒看的是盒里装了多少件事（archived + 剩余 live），不是压了几次。
+                total_events = len(archived_ids) + len(remaining_live)
+                should_seal = bool(box.get("sealed")) or total_events >= max(1, int(MEMORY_PALACE_EVENT_BOX_SEAL_THRESHOLD or 12))
                 await conn.execute("""
                     UPDATE memory_palace_event_boxes
                     SET name=$3,tags=$4,summary_node_id=$5,live_memory_ids=$6::text[],archived_memory_ids=$7::text[],
@@ -8587,7 +8981,7 @@ async def maybe_compress_memory_palace_event_boxes(box_ids=None, character_id: s
             except Exception as e:
                 print(f"⚠️ 事件盒 summary embedding 失败 {summary_id}: {e}")
             compressed += 1
-            print(f"🗜️ 事件盒压缩完成 {box.get('id')}：{len(live_nodes)} 条" + (" + 旧summary" if old_summary else "") + f" → summary {summary_id} room={room}" + ("，已封盒" if should_seal else ""))
+            print(f"🗜️ 事件盒压缩完成 {box.get('id')}：{len(live_nodes)} 条" + (" + 旧summary" if old_summary else "") + f" → summary {summary_id} room={room}" + (f"，事件数 {total_events} 达阈值，已封盒" if should_seal else ""))
         finally:
             if lock_acquired:
                 try:

@@ -599,33 +599,6 @@ def _memory_palace_event_link_shadow_report(
     return [header] + lines
 
 
-def memory_palace_summary_has_reasoning_leak(content: str) -> bool:
-    """检测模型把「怎么算字数 / 怎么压缩」的过程误塞进了整合回忆正文。
-
-    典型污染长这样：Paragraph 1: 31 chars / Total: 280 / Still too long。
-    JSON 合法、长度也没超限，但语义上根本不是回忆。主要兜 Gemini 之类
-    把未标记的 reasoning 混进 content 的中转。
-
-    只凭一个英文短语就拒会误伤真实对话（比如聊天里真的在讨论字数），
-    所以要求至少命中两种信号；显式 think 标签可以直接判定。
-    """
-    text = str(content or "").strip()
-    if not text:
-        return False
-    if re.search(r"<(?:think|thinking|thought)>", text, re.I):
-        return True
-    signals = [
-        r"\bparagraph\s*\d+\s*:\s*\d+\s*(?:chars?|characters?)\b",
-        r"\btotal\s*:\s*[\d\s+]+\s*(?:chars?|characters?)\b",
-        r"\bstill\s+too\s+long\b",
-        r"\bneed\s+to\s+get\s+under\s+\d+\b",
-        r"\blet(?:'|\u2019)s\s+(?:count|condense|compress|shorten)\b",
-        r"(?:^|\n)\s*(?:analysis|reasoning)\s*:",
-    ]
-    hits = sum(1 for p in signals if re.search(p, text, re.I))
-    return hits >= 2
-
-
 def recover_memory_palace_summary_fields(raw: str) -> dict:
     """字段级兜底解析：content 里含未转义的半角双引号时按 schema 逐个抠字段。
 

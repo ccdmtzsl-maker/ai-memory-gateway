@@ -74,7 +74,6 @@ from memory_palace_parsing import (
     _memory_palace_split_event_links_by_target,
     _memory_palace_strip_ref_internals,
     _merge_text_tags,
-    memory_palace_summary_has_reasoning_leak,
     recover_memory_palace_summary_fields,
     _normalize_memory_palace_item,
     parse_memory_palace_corrections,
@@ -337,14 +336,18 @@ MEMORY_PALACE_EVENT_BOX_LIVE_HARD_CAP = int(os.getenv("MEMORY_PALACE_EVENT_BOX_L
 # 默认 related：sameAs 是批内两条新记忆互相配对，一次提取就能凭空开新盒，
 # 而压缩阈值只有 4 条活节点，盒子涨太快会频繁触发 LLM 压缩。
 MEMORY_PALACE_AUTO_EVENT_BOX_MODE = str(os.getenv("MEMORY_PALACE_AUTO_EVENT_BOX_MODE", "related") or "related").strip().lower()
-# 封盒阈值＝盒内事件总数（archived + live 的条数），不是压缩次数。
-# 原来按压缩次数判定，等于「压了 6 次就封」，和盒里到底装了多少件事无关：
-# 每次只压 4 条的盒 24 条就封，每次压 15 条的盒 90 条才封。
-MEMORY_PALACE_EVENT_BOX_SEAL_THRESHOLD = int(os.getenv("MEMORY_PALACE_EVENT_BOX_SEAL_THRESHOLD", "12"))
+# 封盒阈值＝压缩次数。压满这么多次就封盒，之后的相关记忆另开延续新盒。
+# （SullyOS 原版按「事件总数 archived+live」判定，这里按压缩次数——
+#  一个盒能沉淀的轮数更直观，且不受每轮压几条影响。）
+MEMORY_PALACE_EVENT_BOX_SEAL_THRESHOLD = int(os.getenv("MEMORY_PALACE_EVENT_BOX_SEAL_THRESHOLD", "6"))
 # summary 字数：目标区间用来引导提示词，硬上限用来兜底。目标上界低于硬上限，
 # 是给「模型数不准字数」留缓冲——瞄着上界写、稍微超一点也不会被砍出「……」。
-MEMORY_PALACE_SUMMARY_TARGET_MIN_CHARS = int(os.getenv("MEMORY_PALACE_SUMMARY_TARGET_MIN_CHARS", "400"))
-MEMORY_PALACE_SUMMARY_TARGET_MAX_CHARS = int(os.getenv("MEMORY_PALACE_SUMMARY_TARGET_MAX_CHARS", "700"))
+MEMORY_PALACE_SUMMARY_TARGET_MIN_CHARS = int(os.getenv("MEMORY_PALACE_SUMMARY_TARGET_MIN_CHARS", "300"))
+MEMORY_PALACE_SUMMARY_TARGET_MAX_CHARS = int(os.getenv("MEMORY_PALACE_SUMMARY_TARGET_MAX_CHARS", "600"))
+# 提示词里告诉模型的「绝对上限」。写得比真正介入的 HARD_MAX 低，
+# 是给「模型数不准字数」留缓冲：它瞄着 800 写、稍微超一点也不会被砍。
+MEMORY_PALACE_SUMMARY_PROMPT_MAX_CHARS = int(os.getenv("MEMORY_PALACE_SUMMARY_PROMPT_MAX_CHARS", "800"))
+# 代码真正介入的硬上限：超过这个值才触发二次压缩，压不动才截断。
 MEMORY_PALACE_SUMMARY_HARD_MAX_CHARS = int(os.getenv("MEMORY_PALACE_SUMMARY_HARD_MAX_CHARS", "900"))
 
 # 记忆模型专用 API 地址。留空时不会自动回退到主 API_BASE_URL，由调用方决定是否跳过。
@@ -8699,7 +8702,7 @@ async def call_memory_palace_event_box_summarizer(box: dict, live_nodes: list, c
         "",
         "**要求（严格遵守）**：",
         f"1. **第一人称**（用「我」），从 {character_name} 的视角写。{user_nickname} 用名字直接称呼。",
-        f"2. **字数目标 {MEMORY_PALACE_SUMMARY_TARGET_MIN_CHARS}-{MEMORY_PALACE_SUMMARY_TARGET_MAX_CHARS} 字，绝对上限 {MEMORY_PALACE_SUMMARY_HARD_MAX_CHARS} 字**。紧凑、务实、不口水。",
+        f"2. **字数目标 {MEMORY_PALACE_SUMMARY_TARGET_MIN_CHARS}-{MEMORY_PALACE_SUMMARY_TARGET_MAX_CHARS} 字，绝对上限 {MEMORY_PALACE_SUMMARY_PROMPT_MAX_CHARS} 字**。紧凑、务实、不口水。",
         "3. **只保留关键信息**：具体人物、动作、对象、场景、转折、情绪。**去掉所有语气填充、修辞铺陈、重复感慨**（如「真是的」、「怎么说呢」、「不过话说回来」等）。事实先行。",
         "4. **带时间点但不冗余**：每件事标一次日期就够（「3 月 20 日…4 月 5 日…」），不要每句都重复时间。",
         "5. **连贯但简洁**：不套「起因/经过/结果」模板，但要让读者能按顺序看懂事情怎么发展的。",
@@ -8762,17 +8765,12 @@ async def call_memory_palace_event_box_summarizer(box: dict, live_nodes: list, c
             print(f"🗜️ 二次压缩未达标，硬截断到 {hard_max} 字")
         item["content"] = content
 
-    if memory_palace_summary_has_reasoning_leak(content):
-        # JSON 合法、长度也没超限，但正文里混着「Paragraph 1: 31 chars」这类
-        # 字数计算过程，语义上不是回忆。拒绝保存，活节点保留，下次可重试。
-        print("🧹 事件盒 summary 混入字数计算/推理过程，已拒绝保存")
-        raise MemoryPalaceSummaryParseError(str(raw_text))
     return item
 
 
 async def _recompress_memory_palace_summary(text: str, base_url: str, headers: dict, memory_model: str, character_name: str) -> str:
     """让模型把过长的整合回忆压回目标字数（纯文本输出，不走 JSON）。失败返回空串。"""
-    target = max(200, int(MEMORY_PALACE_SUMMARY_TARGET_MAX_CHARS or 700))
+    target = max(200, int(MEMORY_PALACE_SUMMARY_TARGET_MAX_CHARS or 600))
     prompt = "\n".join([
         f"你是 {character_name}。下面这段第一人称回忆写得太长了。",
         f"请在**不丢关键信息**（具体人物、地点、事件、转折、情绪）的前提下，把它压缩到 {target} 字以内。",
@@ -8966,9 +8964,8 @@ async def maybe_compress_memory_palace_event_boxes(box_ids=None, character_id: s
                 remaining_live = [x for x in live_ids if x not in compressed_ids and x != summary_id]
                 await conn.execute("UPDATE memory_palace_nodes SET archived=TRUE, updated_at=NOW() WHERE character_id=$1 AND id=ANY($2::text[])", character_id, compressed_ids)
                 next_compression_count = int(box.get("compression_count") or 0) + 1
-                # 封盒看的是盒里装了多少件事（archived + 剩余 live），不是压了几次。
-                total_events = len(archived_ids) + len(remaining_live)
-                should_seal = bool(box.get("sealed")) or total_events >= max(1, int(MEMORY_PALACE_EVENT_BOX_SEAL_THRESHOLD or 12))
+                # 封盒按压缩次数判定。已封的盒保持封，不因任何原因倒退回未封。
+                should_seal = bool(box.get("sealed")) or next_compression_count >= max(1, int(MEMORY_PALACE_EVENT_BOX_SEAL_THRESHOLD or 6))
                 await conn.execute("""
                     UPDATE memory_palace_event_boxes
                     SET name=$3,tags=$4,summary_node_id=$5,live_memory_ids=$6::text[],archived_memory_ids=$7::text[],
@@ -8981,7 +8978,7 @@ async def maybe_compress_memory_palace_event_boxes(box_ids=None, character_id: s
             except Exception as e:
                 print(f"⚠️ 事件盒 summary embedding 失败 {summary_id}: {e}")
             compressed += 1
-            print(f"🗜️ 事件盒压缩完成 {box.get('id')}：{len(live_nodes)} 条" + (" + 旧summary" if old_summary else "") + f" → summary {summary_id} room={room}" + (f"，事件数 {total_events} 达阈值，已封盒" if should_seal else ""))
+            print(f"🗜️ 事件盒压缩完成 {box.get('id')}：{len(live_nodes)} 条" + (" + 旧summary" if old_summary else "") + f" → summary {summary_id} room={room}" + (f"，压缩次数 {next_compression_count} 达阈值，已封盒" if should_seal else ""))
         finally:
             if lock_acquired:
                 try:

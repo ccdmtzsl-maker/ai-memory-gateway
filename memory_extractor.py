@@ -29,14 +29,12 @@ MEMORY_API_KEY = os.getenv("MEMORY_API_KEY", "")
 MEMORY_MODEL = os.getenv("MEMORY_MODEL", "anthropic/claude-haiku-4")
 
 # 最近一次提取状态，供主流程判断是否移动“提取书签”
-LAST_EXTRACTION_DEBUG = {"status": "idle"}
 
 def get_memory_api_key() -> str:
     return MEMORY_API_KEY or API_KEY
 
 def get_memory_api_base_url() -> str:
     return MEMORY_API_BASE_URL
-
 
 def _parse_json_array_from_text(text: str):
     """Parse a JSON array from model output that may contain extra prose or fences."""
@@ -139,7 +137,6 @@ def _parse_json_array_from_text(text: str):
 
     raise json.JSONDecodeError("No valid memory JSON found in model output", cleaned, 0)
 
-
 EXTRACTION_PROMPT = """你是信息提取专家，负责从对话中识别并提取值得长期记住的关键信息。
 
 # 提取重点
@@ -202,7 +199,6 @@ def set_extraction_prompt(new_prompt: str):
         EXTRACTION_PROMPT = _DEFAULT_EXTRACTION_PROMPT
         print(f"📝 记忆提取提示词已恢复默认")
 
-
 async def extract_memories(messages: List[Dict[str, str]], existing_memories: List[str] = None) -> List[Dict]:
     """
     从对话消息中提取记忆
@@ -214,21 +210,19 @@ async def extract_memories(messages: List[Dict[str, str]], existing_memories: Li
     返回：
         记忆列表，格式 [{"content": "...", "importance": N}, ...]
     """
-    global LAST_EXTRACTION_DEBUG
-    LAST_EXTRACTION_DEBUG = {"status": "start", "model": MEMORY_MODEL, "base_url": get_memory_api_base_url()}
 
     if not get_memory_api_key():
-        LAST_EXTRACTION_DEBUG = {"status": "skipped_no_key", "message": "API_KEY / MEMORY_API_KEY 未设置", "model": MEMORY_MODEL, "base_url": get_memory_api_base_url()}
+
         print("⚠️  API_KEY / MEMORY_API_KEY 未设置，跳过记忆提取")
         return []
 
     if not get_memory_api_base_url():
-        LAST_EXTRACTION_DEBUG = {"status": "skipped_no_base_url", "message": "MEMORY_API_BASE_URL 未设置", "model": MEMORY_MODEL, "base_url": get_memory_api_base_url()}
+
         print("⚠️  MEMORY_API_BASE_URL 未设置，跳过记忆提取（不会回退到主 API_BASE_URL）")
         return []
 
     if not messages:
-        LAST_EXTRACTION_DEBUG = {"status": "empty_input", "message": "没有输入消息", "model": MEMORY_MODEL, "base_url": get_memory_api_base_url()}
+
         return []
 
     # 把对话格式化成文本
@@ -242,7 +236,7 @@ async def extract_memories(messages: List[Dict[str, str]], existing_memories: Li
             conversation_text += f"澈: {content}\n"
 
     if not conversation_text.strip():
-        LAST_EXTRACTION_DEBUG = {"status": "empty_input", "message": "输入消息没有 user/assistant 文本", "model": MEMORY_MODEL, "base_url": get_memory_api_base_url()}
+
         return []
 
     # 格式化已有记忆
@@ -277,7 +271,7 @@ async def extract_memories(messages: List[Dict[str, str]], existing_memories: Li
             )
 
             if response.status_code != 200:
-                LAST_EXTRACTION_DEBUG = {"status": "http_error", "http_status": response.status_code, "message": response.text[:500], "model": MEMORY_MODEL, "base_url": get_memory_api_base_url()}
+
                 print(f"⚠️  记忆提取请求失败: {response.status_code} {response.text[:500]}")
                 return []
 
@@ -290,12 +284,12 @@ async def extract_memories(messages: List[Dict[str, str]], existing_memories: Li
             try:
                 memories = _parse_json_array_from_text(text)
             except json.JSONDecodeError as e:
-                LAST_EXTRACTION_DEBUG = {"status": "json_error", "message": str(e), "raw_preview": text[:300], "model": MEMORY_MODEL, "base_url": get_memory_api_base_url()}
+
                 print(f"⚠️  记忆提取结果解析失败: {e}; raw={text[:300]}")
                 return []
 
             if not isinstance(memories, list):
-                LAST_EXTRACTION_DEBUG = {"status": "json_error", "message": "返回JSON不是数组", "model": MEMORY_MODEL, "base_url": get_memory_api_base_url()}
+
                 return []
 
             # 验证格式
@@ -314,19 +308,17 @@ async def extract_memories(messages: List[Dict[str, str]], existing_memories: Li
                         "importance": temperature,
                     })
 
-            LAST_EXTRACTION_DEBUG = {"status": "parsed", "http_status": 200, "count": len(valid_memories), "model": MEMORY_MODEL, "base_url": get_memory_api_base_url()}
             print(f"📝 从对话中提取了 {len(valid_memories)} 条新记忆（已对比 {len(existing_memories or [])} 条已有记忆）")
             return valid_memories
 
     except json.JSONDecodeError as e:
-        LAST_EXTRACTION_DEBUG = {"status": "json_error", "message": str(e), "model": MEMORY_MODEL, "base_url": get_memory_api_base_url()}
+
         print(f"⚠️  记忆提取结果解析失败: {e}")
         return []
     except Exception as e:
-        LAST_EXTRACTION_DEBUG = {"status": "exception", "message": str(e), "model": MEMORY_MODEL, "base_url": get_memory_api_base_url()}
+
         print(f"⚠️  记忆提取出错: {e}")
         return []
-
 
 SCORING_PROMPT = """你是记忆重要性评分专家。请对以下记忆条目逐条评分。
 
@@ -345,7 +337,6 @@ SCORING_PROMPT = """你是记忆重要性评分专家。请对以下记忆条目
 [{{"content": "原文", "importance": 评分数字}}]
 
 只返回 JSON，不要其他文字。"""
-
 
 async def score_memories(texts: List[str]) -> List[Dict]:
     """对纯文本记忆条目批量评分"""

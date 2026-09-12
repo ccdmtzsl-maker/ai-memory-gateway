@@ -2853,9 +2853,21 @@ async function generateUserImpressionPreview(mode) {
             body: JSON.stringify({character_id:'default', mode: mode || 'initial'}),
             signal: controller.signal
         });
-        const data = await resp.json();
         if (requestId !== _userImpressionPreviewRequestId || controller.signal.aborted) return;
-        if (data.status !== 'ok') throw new Error(data.error || '生成失败');
+        
+        let data;
+        try {
+            data = await resp.json();
+        } catch (jsonErr) {
+            // 解析 JSON 失败，可能是超时/网络错误导致的非 JSON 响应
+            throw new Error('服务器响应格式错误（可能是超时或网络中断）');
+        }
+        
+        if (!resp.ok || data.status !== 'ok') {
+            const errMsg = data.error || `HTTP ${resp.status} 错误`;
+            throw new Error(errMsg);
+        }
+        
         _userImpressionPreview = data;
         _userImpressionPreviewAbortController = null;
         _userImpressionGenerating = false;
@@ -2876,7 +2888,14 @@ async function generateUserImpressionPreview(mode) {
         }
         _userImpressionPreviewAbortController = null;
         _userImpressionGenerating = false;
-        if (content) content.innerHTML = '<div class="msg-box msg-error">生成失败：' + uiEsc(e.message) + '</div>';
+        
+        let errMsg = e.message || '未知错误';
+        // 网络/超时错误通常是 TypeError: Failed to fetch
+        if (e.name === 'TypeError' && (errMsg.includes('fetch') || errMsg.includes('network'))) {
+            errMsg = '生成超时或网络中断（后端限制5分钟，请稍后重试）';
+        }
+        if (content) content.innerHTML = '<div class="msg-box msg-error">生成失败：' + uiEsc(errMsg) + '</div>';
+        if (meta) meta.textContent = '生成失败';
     }
 }
 

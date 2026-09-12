@@ -80,7 +80,7 @@ _MEMORY_PALACE_BM25_WEIGHT = 0.15
 # 语义不相关就直接出局，不参与后面的分数竞争。
 # 暂时关掉：这个 embedding 模型对中文的余弦相似度基线本来就在 0.45-0.55，
 # 绝对阈值 0.3 一条都挡不住（不相关的记忆照样 0.50+），先设 0.0 观察真实分布。
-_MEMORY_PALACE_VECTOR_MIN_SIM = 0.0
+_MEMORY_PALACE_VECTOR_MIN_SIM = 0.39
 
 
 # 每条搜索路的候选池上限。闸门筛掉不相关的之后，向量路和 BM25 路各取前 N 条。

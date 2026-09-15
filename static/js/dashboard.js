@@ -1200,7 +1200,7 @@ let _convMemoryPalacePreviewRunning = false;
 function convMpPanel(){let p=document.getElementById('conv-memory-preview-panel');if(!p){const c=document.getElementById('conv-list-container');p=document.createElement('div');p.id='conv-memory-preview-panel';p.className='card';p.style.marginTop='12px';p.style.display='none';c.parentNode.insertBefore(p,c);}return p;}
 // 预览面板顶部的提示条。加载中、出错都只替换这一条，不动面板里已有的
 // 预览结果——并发提取被拒时如果直接清空面板，用户会以为上一次也失败了。
-function convMpNotice(text, kind) {
+function convMpNotice(text, kind, ttlMs) {
     const p = convMpPanel();
     p.style.display = '';
     let n = document.getElementById('conv-mp-notice');
@@ -1216,11 +1216,23 @@ function convMpNotice(text, kind) {
     n.style.cssText = 'padding:10px 12px;margin-bottom:10px;border-radius:8px;line-height:1.7;' +
         'color:' + color + ';background:' + bg + ';font-size:13px;';
     n.textContent = text || '';
+    if (n._convMpNoticeTimer) clearTimeout(n._convMpNoticeTimer);
+    n._convMpNoticeToken = (n._convMpNoticeToken || 0) + 1;
+    if (ttlMs && ttlMs > 0) {
+        const token = n._convMpNoticeToken;
+        n._convMpNoticeTimer = setTimeout(() => {
+            const cur = document.getElementById('conv-mp-notice');
+            if (cur === n && n._convMpNoticeToken === token && n.parentNode) {
+                n.parentNode.removeChild(n);
+            }
+        }, ttlMs);
+    }
     return n;
 }
 
 function convMpClearNotice() {
     const n = document.getElementById('conv-mp-notice');
+    if (n && n._convMpNoticeTimer) clearTimeout(n._convMpNoticeTimer);
     if (n && n.parentNode) n.parentNode.removeChild(n);
 }
 
@@ -1244,7 +1256,13 @@ async function previewMemoryPalaceFromSelectedConversations() {
         });
         const d = await r.json();
         if (d.error || d.status === 'error') {
-            convMpNotice('提取失败：' + (d.error || '未知错误'), 'error');
+            const err = d.error || '未知错误';
+            // 并发锁提示只短暂展示，不占住预览结果区；普通预览失败提示保持原样。
+            if (String(err).indexOf('这些对话正在提取记忆，请等待上一次请求完成') === 0) {
+                convMpNotice('提取失败：' + err, 'error', 5000);
+            } else {
+                convMpNotice('提取失败：' + err, 'error');
+            }
             return;
         }
         convMpClearNotice();

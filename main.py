@@ -6491,6 +6491,50 @@ async def collect_user_activity_meta(character_id: str = "default", force: bool 
             days.append(d.isoformat())
         else:
             days.append(str(d))
+    day_count_map = {}
+    for r in day_rows:
+        d = r["day"]
+        iso = d.isoformat() if hasattr(d, "isoformat") else str(d)
+        day_count_map[iso] = int(r["count"] or 0)
+
+    today_local = datetime.now(local_tz).date()
+    recent_7_total = 0
+    previous_7_total = 0
+    for offset in range(0, 7):
+        recent_7_total += day_count_map.get((today_local - timedelta(days=offset)).isoformat(), 0)
+    for offset in range(7, 14):
+        previous_7_total += day_count_map.get((today_local - timedelta(days=offset)).isoformat(), 0)
+
+    if recent_7_total <= 0:
+        trend_code = "silent_period"
+        trend_label = "静默期"
+    elif previous_7_total <= 0:
+        trend_code = "warming_fast"
+        trend_label = "明显回暖"
+    else:
+        ratio = recent_7_total / max(previous_7_total, 1)
+        if ratio >= 1.8:
+            trend_code = "warming_fast"
+            trend_label = "明显回暖"
+        elif ratio >= 1.2:
+            trend_code = "warming"
+            trend_label = "微微升温"
+        elif ratio >= 0.8:
+            trend_code = "stable"
+            trend_label = "气温稳定"
+        elif ratio >= 0.4:
+            trend_code = "cooling"
+            trend_label = "转凉"
+        else:
+            trend_code = "cooling_fast"
+            trend_label = "明显降温"
+    trend_14 = {
+        "code": trend_code,
+        "label": trend_label,
+        "recent_7_total": recent_7_total,
+        "previous_7_total": previous_7_total,
+    }
+
     day_set = set(days)
     longest_streak = 0
     current_streak = 0
@@ -6568,6 +6612,7 @@ async def collect_user_activity_meta(character_id: str = "default", force: bool 
             "last_user_at_text": _local_text(last_user_at),
             "periods": period_items,
             "top_hours": top_hours,
+            "trend_14": trend_14,
             "longest_streak_90": longest_streak,
             "longest_gap_90": longest_gap,
         },
@@ -6600,6 +6645,12 @@ def format_user_activity_meta_for_prompt_data(meta: dict) -> str:
         f"- 活跃天数：近30天 {activity.get('active_days_30') or 0} / 30；近90天 {activity.get('active_days_90') or 0} / 90；全量 {activity.get('active_days_all') or 0}",
         f"- 近90天最长连续活跃：{activity.get('longest_streak_90') or 0} 天；最长沉默：{activity.get('longest_gap_90') or 0} 天",
     ]
+    trend = activity.get("trend_14") or {}
+    if trend:
+        lines.append(
+            f"- 近7天互动趋势：{trend.get('label') or '未知'}"
+            f"（近7天 {trend.get('recent_7_total') or 0} 条 / 前7天 {trend.get('previous_7_total') or 0} 条）"
+        )
     period_lines = []
     for item in activity.get("periods") or []:
         period_lines.append(f"{item.get('label')} {item.get('percent') or 0}%({item.get('count') or 0})")

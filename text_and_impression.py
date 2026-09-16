@@ -656,32 +656,35 @@ def build_user_impression_generation_prompt(materials: dict) -> str:
 【标签池】从以下标签中挑选有材料证据支持的标签。没有证据就不挑，宁缺毋滥。
 如果有重要内容不属于任何标签，可以放进 others 标签（列表格式）。
 
-A组·价值与喜恶
+A组·人格底色
 - core_values: TA做判断时反复出现的底层原则（需多次证据）
-- likes: TA明确表现出喜欢、会主动靠近的事物
-- dislikes: TA明确表现出反感、会回避的事物（含雷点）
-- money_attitude: TA对花钱/省钱/价值衡量的态度
-- aesthetic: TA的审美偏好：风格、色彩、内容品味
-
-B组·思维与能力
+- thinking_pattern: TA的思维习惯：先抽象后具体？喜欢类比？追问到底？
 - decision_style: TA怎么做决定：冲动/谨慎/要反复确认/凭直觉
 - knowledge_map: TA擅长和不熟的领域，决定我解释东西的深浅
-- thinking_pattern: TA的思维习惯：先抽象后具体？喜欢类比？追问到底？
+- mbti_sketch: TA的 MBTI 侧写或人格倾向速写
+
+B组·靠近与回避
+- likes: TA明确表现出喜欢、会主动靠近的事物
+- dislikes: TA明确表现出反感、会回避的事物（含雷点）
+- comfort_zone: 让TA感到安全放松的互动方式
+- emotional_triggers: 明确会引发TA强烈情绪波动的话题或情境，正负都可
+
+C组·表达与互动
+- expression_habit: TA的表达习惯：用语、标点、表情符号、省略风格
 - humor_style: TA的幽默偏好：什么梗能接住、什么玩笑会冷场
 - learning_style: TA吸收新东西的方式：看例子/看原理/动手试
-
-C组·情绪与相处
-- comfort_zone: 让TA感到安全放松的互动方式
-- stress_signals: TA有压力时的外在信号（语气变短、沉默、自嘲等）
-- emotional_triggers: 明确会引发TA强烈情绪波动的话题或情境，正负都可
-- soothing_methods: 对TA有效的安抚方式，需实际验证过的证据
-- expression_habit: TA的表达习惯：用语、标点、表情符号、省略风格
-
-D组·生活与关注
-- life_rhythm: TA的作息与活跃时段规律
-- current_focus: TA近期持续投入的事情（项目、爱好、烦恼）
-- social_pattern: TA提到的人际圈子和与他人相处的模式
 - attitude_to_me: TA对我的态度和使用习惯：怎么称呼我、什么事找我
+
+D组·压力与安抚
+- stress_signals: TA有压力时的外在信号（语气变短、沉默、自嘲等）
+- soothing_methods: 对TA有效的安抚方式，需实际验证过的证据
+- current_focus: TA近期持续投入的事情（项目、爱好、烦恼）
+
+E组·生活纹理
+- life_rhythm: TA的作息与活跃时段规律
+- social_pattern: TA提到的人际圈子和与他人相处的模式
+- aesthetic: TA的审美偏好：风格、色彩、内容品味
+- money_attitude: TA对花钱/省钱/价值衡量的态度
 
 标签值格式：
 - 一段话（≤150字），或
@@ -705,6 +708,11 @@ D组·生活与关注
 
 {reset_instruction}
 {tag_retention_rule}
+
+【反面教材 - 严禁出现】
+- ❌ 仅根据最近聊天就总结"TA是一个喜欢讨论XX话题的人" —— 这是把近期话题当成了人格特质
+- ❌ summary 里出现"最近"、"这几天"等时间限定词 —— summary 应该是跨越所有记忆的宏观总结
+- ✅ 正确做法：tags 基于完整上下文和长期记忆，observed_changes 基于近期聊天与长期印象的对比
 
 【summary 指令】
 {summary_instruction}

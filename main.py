@@ -860,18 +860,26 @@ async def format_user_impression_for_prompt(character_id: str = "default") -> st
         "others": "其他",
     }
 
-    # 分组结构：组名 -> 组内标签（按重要性排序），复用标签池分组
+    # 分组结构：组名 -> 组内标签（按画像感重排，不新增字段）
     TAG_GROUPS = [
-        ("价值与喜恶", ["likes", "dislikes", "core_values", "money_attitude", "aesthetic"]),
-        ("思维与能力", ["decision_style", "knowledge_map", "thinking_pattern", "humor_style", "learning_style", "mbti_sketch"]),
-        ("情绪与相处", ["comfort_zone", "stress_signals", "emotional_triggers", "soothing_methods", "expression_habit"]),
-        ("生活与关注", ["current_focus", "attitude_to_me", "life_rhythm", "social_pattern"]),
+        ("人格底色", ["core_values", "thinking_pattern", "decision_style", "knowledge_map", "mbti_sketch"]),
+        ("靠近与回避", ["likes", "dislikes", "comfort_zone", "emotional_triggers"]),
+        ("表达与互动", ["expression_habit", "humor_style", "learning_style", "attitude_to_me"]),
+        ("压力与安抚", ["stress_signals", "soothing_methods", "current_focus"]),
+        ("生活纹理", ["life_rhythm", "social_pattern", "aesthetic", "money_attitude"]),
     ]
 
-    def _format_value(v):
-        if isinstance(v, list):
-            return ", ".join(str(x).strip() for x in v if str(x or "").strip())
-        return str(v).strip()
+    def _append_tag_lines(target, label, value):
+        if isinstance(value, list):
+            items = [str(x).strip() for x in value if str(x or "").strip()]
+            if not items:
+                return
+            target.append(f"- {label}:")
+            target.extend(f"  - {item}" for item in items)
+            return
+        formatted = str(value).strip()
+        if formatted:
+            target.append(f"- {label}: {formatted}")
 
     lines = [
         f"### [私密档案: 我眼中的{user_name}] (Private Impression)",
@@ -887,9 +895,7 @@ async def format_user_impression_for_prompt(character_id: str = "default") -> st
         for key in group_keys:
             if key not in tags:
                 continue
-            formatted = _format_value(tags[key])
-            if formatted:
-                group_lines.append(f"- {TAG_LABELS.get(key, key)}: {formatted}")
+            _append_tag_lines(group_lines, TAG_LABELS.get(key, key), tags[key])
         if group_lines:
             lines.append("")
             lines.append(f"【{group_name}】")
@@ -898,8 +904,8 @@ async def format_user_impression_for_prompt(character_id: str = "default") -> st
     # 其他（白名单外内容）单独成组放最后
     others = tags.get("others")
     if others:
-        others_list = others if isinstance(others, list) else [others]
-        other_lines = [f"- {str(x).strip()}" for x in others_list if str(x or "").strip()]
+        other_lines = []
+        _append_tag_lines(other_lines, TAG_LABELS.get("others", "其他"), others)
         if other_lines:
             lines.append("")
             lines.append("【其他】")

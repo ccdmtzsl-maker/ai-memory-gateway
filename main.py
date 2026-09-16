@@ -856,13 +856,12 @@ async def format_user_impression_for_prompt(character_id: str = "default") -> st
         "current_focus": "近期关注",
         "social_pattern": "社交模式",
         "attitude_to_me": "对我的态度",
-        "mbti_sketch": "MBTI侧写",
         "others": "其他",
     }
 
     # 分组结构：组名 -> 组内标签（按画像感重排，不新增字段）
     TAG_GROUPS = [
-        ("人格底色", ["core_values", "thinking_pattern", "decision_style", "knowledge_map", "mbti_sketch"]),
+        ("人格底色", ["core_values", "thinking_pattern", "decision_style", "knowledge_map"]),
         ("靠近与回避", ["likes", "dislikes", "comfort_zone", "emotional_triggers"]),
         ("表达与互动", ["expression_habit", "humor_style", "learning_style", "attitude_to_me"]),
         ("压力与安抚", ["stress_signals", "soothing_methods", "current_focus"]),

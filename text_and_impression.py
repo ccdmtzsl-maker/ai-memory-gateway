@@ -661,7 +661,6 @@ A组·人格底色
 - thinking_pattern: TA的思维习惯：先抽象后具体？喜欢类比？追问到底？
 - decision_style: TA怎么做决定：冲动/谨慎/要反复确认/凭直觉
 - knowledge_map: TA擅长和不熟的领域，决定我解释东西的深浅
-- mbti_sketch: TA的 MBTI 侧写或人格倾向速写
 
 B组·靠近与回避
 - likes: TA明确表现出喜欢、会主动靠近的事物

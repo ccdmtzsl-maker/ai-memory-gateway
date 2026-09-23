@@ -2207,6 +2207,9 @@ async function saveSettings() {
             const msg = `已更新 ${data.updated?.length || 0} 项` +
                         (data.skipped?.length ? `，跳过 ${data.skipped.length} 项（未修改）` : '');
             showSettingsMsg('success', msg);
+            _memoryActiveConfig.MEMORY_MODEL = payload.MEMORY_MODEL || '';
+            _memoryActiveConfig.MEMORY_API_BASE_URL = payload.MEMORY_API_BASE_URL || '';
+            renderMemoryPresets();
         }
     } catch (e) {
         showSettingsMsg('error', '保存失败: ' + e.message);
@@ -2246,7 +2249,7 @@ async function testMemoryModel() {
         if (result) result.textContent = '❌ 请求失败：' + e.message;
         showSettingsMsg('error', '测试请求失败: ' + e.message);
     } finally {
-        if (btn) { btn.disabled = false; btn.textContent = '测试记忆模型'; }
+        if (btn) { btn.disabled = false; btn.textContent = '测试连接'; }
     }
 }
 

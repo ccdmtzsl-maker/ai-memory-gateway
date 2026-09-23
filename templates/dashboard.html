@@ -559,23 +559,23 @@
 
                 <!-- 记忆系统 -->
                 <div class="card settings-card">
-                    <h3 class="settings-group-title">记忆系统</h3>
-                    <div class="settings-field">
-                        <label for="memory-preset-select">记忆模型预设</label>
-                        <select id="memory-preset-select" class="input"><option value="">请选择预设</option></select>
-                        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px;">
-                            <button type="button" class="btn btn-secondary" onclick="activateMemoryPreset()">应用预设</button>
-                            <button type="button" class="btn btn-secondary" onclick="removeMemoryPreset()">删除预设</button>
+                    <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;">
+                        <h3 class="settings-group-title">记忆模型</h3>
+                        <small id="memory-model-status" style="color:var(--text-muted);">加载中</small>
+                        <input type="checkbox" id="set-MEMORY_ENABLED" hidden disabled>
+                    </div>
+                    <details class="memory-config-editor">
+                        <summary style="display:flex;align-items:center;justify-content:space-between;gap:16px;cursor:pointer;padding:12px 0;list-style:none;">
+                            <strong id="memory-model-current" style="overflow-wrap:anywhere;">加载中…</strong>
+                            <span style="color:var(--primary);font-size:13px;white-space:nowrap;">编辑配置 ▾</span>
+                        </summary>
+                        <div style="border-top:1px solid var(--border-color);padding-top:16px;">
+                            <div style="font-size:13px;color:var(--text-muted);margin-bottom:8px;">选择配置</div>
+                            <div id="memory-preset-list"></div>
+                            <small id="memory-preset-result" class="form-hint" role="status" aria-live="polite"></small>
                         </div>
-                        <input id="memory-preset-name" class="input" placeholder="新预设名称" style="margin-top:8px;">
-                        <button type="button" class="btn btn-secondary" style="margin-top:8px;" onclick="saveMemoryPreset()">将下方配置保存为预设</button>
-                        <small class="form-hint">保存记忆模型、接口地址和填写的真实密钥；打码密钥不保存，未保存密钥的预设应用时沿用当前密钥。</small>
-                        <small id="memory-preset-result" class="form-hint" role="status"></small>
-                    </div>
-                    <div class="settings-field settings-toggle-row">
-                        <label>启用记忆</label>
-                        <label class="toggle"><input type="checkbox" id="set-MEMORY_ENABLED"><span class="toggle-slider"></span></label>
-                    </div>
+                        <details style="margin:16px 0;">
+                            <summary style="cursor:pointer;padding:12px 0;font-weight:600;">详情</summary>
                     <div class="settings-field">
                         <label>记忆提取 / 整理模型</label>
                         <div class="combo-box" id="combo-MEMORY_MODEL">
@@ -584,19 +584,24 @@
                         </div>
                     </div>
                     <div class="settings-field">
-                        <label>记忆模型 API Key (MEMORY_API_KEY)</label>
+                        <label>API 密钥</label>
                         <input type="text" id="set-MEMORY_API_KEY" class="input" placeholder="sk-...">
                         <small class="form-hint" id="set-MEMORY_API_KEY-hint">不设则使用主 API Key，适用于中转站不同模型需要不同 Key 的场景</small>
                     </div>
                     <div class="settings-field">
-                        <label>记忆模型 API Base URL (MEMORY_API_BASE_URL)</label>
+                        <label>接口地址</label>
                         <input type="text" id="set-MEMORY_API_BASE_URL" class="input" placeholder="https://openrouter.ai/api/v1/chat/completions">
                         <small class="form-hint">记忆提取/评分/摘要/整理专用接口地址；留空则跳过，不会回退到主 API Base URL</small>
                     </div>
                     <div class="settings-field">
-                        <button type="button" class="btn btn-secondary" id="test-memory-model-btn" onclick="testMemoryModel()">测试记忆模型</button>
-                        <small class="form-hint" id="test-memory-model-result">会使用上方当前填写的记忆模型 URL / Key / 模型名发送一次测试请求</small>
+                        <div style="display:flex;justify-content:space-between;gap:12px;border-top:1px solid var(--border-color);padding-top:14px;">
+                            <button type="button" id="test-memory-model-btn" onclick="testMemoryModel()" style="background:transparent;border:0;color:var(--text-muted);padding:8px 0;cursor:pointer;font:inherit;">测试连接</button>
+                            <button type="button" onclick="saveMemoryPreset()" style="background:transparent;border:0;color:var(--primary);padding:8px 0;cursor:pointer;font:inherit;">＋ 新增配置</button>
+                        </div>
+                        <small class="form-hint" id="test-memory-model-result" role="status"></small>
                     </div>
+                        </details>
+                    </details>
                     <div class="settings-field">
                         <label>记忆宫殿默认注入数量 (MEMORY_PALACE_DEFAULT_LIMIT)</label>
                         <input type="number" id="set-MEMORY_PALACE_DEFAULT_LIMIT" class="input" min="1" max="30" value="5">

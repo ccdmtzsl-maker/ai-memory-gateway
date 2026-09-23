@@ -1953,12 +1953,102 @@ function _togglePartitionWindow(trigger) {
     if (el) el.style.display = trigger === 'time' ? '' : 'none';
 }
 
+let _memoryModelPresets = [];
+let _memoryPresetBusy = false;
+
+function renderMemoryPresets(selected = '') {
+    const select = document.getElementById('memory-preset-select');
+    if (!select) return;
+    select.replaceChildren(new Option('请选择预设', ''));
+    _memoryModelPresets.forEach((p, i) => {
+        select.add(new Option(p.name + ' · ' + p.model, String(i)));
+    });
+    select.value = selected;
+}
+
+async function memoryPresetRequest(body) {
+    const response = await fetch('/api/settings', {
+        method: 'PUT',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(body)
+    });
+    const data = await response.json();
+    if (!response.ok || data.error || data.status === 'error') {
+        throw new Error(data.error || '保存失败');
+    }
+    return data;
+}
+
+async function runMemoryPresetAction(action) {
+    if (_memoryPresetBusy) return;
+    _memoryPresetBusy = true;
+    const result = document.getElementById('memory-preset-result');
+    try {
+        if (result) result.textContent = '处理中…';
+        const message = await action();
+        if (result) result.textContent = message;
+    } catch (error) {
+        if (result) result.textContent = '操作失败：' + error.message;
+    } finally {
+        _memoryPresetBusy = false;
+    }
+}
+
+async function saveMemoryPreset() {
+    return runMemoryPresetAction(async () => {
+        const nameInput = document.getElementById('memory-preset-name');
+        const name = nameInput.value.trim();
+        const model = document.getElementById('set-MEMORY_MODEL').value.trim();
+        const apiBaseUrl = document.getElementById('set-MEMORY_API_BASE_URL').value.trim();
+        const apiKey = document.getElementById('set-MEMORY_API_KEY').value.trim();
+        if (!name || !model || !apiBaseUrl) throw new Error('请填写预设名称、模型名和接口地址');
+        if (_memoryModelPresets.some(p => p.name === name)) throw new Error('预设名称已存在，请使用不同名称');
+        const preset = {name, model, apiBaseUrl};
+        if (apiKey && !/\*{3}|•{3}/.test(apiKey)) preset.apiKey = apiKey;
+        const next = [..._memoryModelPresets, preset];
+        await memoryPresetRequest({memoryModelPresets: next});
+        _memoryModelPresets = next;
+        renderMemoryPresets(String(next.length - 1));
+        nameInput.value = '';
+        return '已保存预设：' + name;
+    });
+}
+
+async function activateMemoryPreset() {
+    return runMemoryPresetAction(async () => {
+        const selected = document.getElementById('memory-preset-select').value;
+        const preset = selected === '' ? null : _memoryModelPresets[Number(selected)];
+        if (!preset) throw new Error('请先选择预设');
+        const body = {MEMORY_MODEL: preset.model, MEMORY_API_BASE_URL: preset.apiBaseUrl || ''};
+        if (preset.apiKey && !/\*{3}|•{3}/.test(preset.apiKey)) body.MEMORY_API_KEY = preset.apiKey;
+        await memoryPresetRequest(body);
+        document.getElementById('set-MEMORY_MODEL').value = body.MEMORY_MODEL;
+        document.getElementById('set-MEMORY_API_BASE_URL').value = body.MEMORY_API_BASE_URL;
+        if (body.MEMORY_API_KEY) document.getElementById('set-MEMORY_API_KEY').value = body.MEMORY_API_KEY;
+        return '已应用记忆预设：' + preset.name;
+    });
+}
+
+async function removeMemoryPreset() {
+    return runMemoryPresetAction(async () => {
+        const selected = document.getElementById('memory-preset-select').value;
+        if (selected === '') throw new Error('请先选择预设');
+        const next = _memoryModelPresets.filter((p, i) => i !== Number(selected));
+        await memoryPresetRequest({memoryModelPresets: next});
+        _memoryModelPresets = next;
+        renderMemoryPresets();
+        return '已删除预设，当前生效的模型配置保持不变';
+    });
+}
+
 async function loadSettings() {
     try {
         const resp = await fetch('/api/settings');
         const data = await resp.json();
         if (data.error) { showSettingsMsg('error', '加载失败: ' + data.error); return; }
         const s = data.settings;
+        _memoryModelPresets = Array.isArray(s.memoryModelPresets) ? s.memoryModelPresets : [];
+        renderMemoryPresets();
 
         // 字符串字段
         _SETTINGS_FIELDS.str.forEach(k => {

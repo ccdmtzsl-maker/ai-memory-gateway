@@ -8,17 +8,13 @@
     <style>
         .memory-notebook {
             position:relative; isolation:isolate; margin:18px 0 28px;
-            padding:18px 22px 18px 38px; border:1px solid #e6ccd3;
+            padding:18px 22px; border:1px solid #e6ccd3;
             border-radius:8px 18px 18px 8px;
             background:repeating-linear-gradient(to bottom,transparent 0,transparent 31px,rgba(185,159,168,.10) 31px,rgba(185,159,168,.10) 32px),#fffdfb;
             box-shadow:4px 4px 0 #f6e8ed,5px 5px 0 #e8d4db,0 6px 18px rgba(110,78,88,.05);
             color:#554c50;
         }
-        .memory-notebook::before {
-            content:""; position:absolute; left:9px; top:18px; bottom:18px; width:13px;
-            background:radial-gradient(ellipse at center,#fffdfb 0 3px,#c5b1b7 3.5px 5px,transparent 5.5px) center top/13px 30px repeat-y;
-            pointer-events:none;
-        }
+
         .memory-notebook::after {
             content:""; position:absolute; left:29px; top:0; bottom:0;
             border-left:1px solid rgba(208,155,173,.25); pointer-events:none;
@@ -56,8 +52,8 @@
         .memory-notebook #test-memory-model-result:empty { display:none; }
         @media(max-width:520px) {
             .memory-notebook { padding:14px 12px 14px 32px; }
-            .memory-notebook::before { left:5px; }
-            .memory-notebook::after { left:23px; }
+
+            .memory-notebook::after { left:14px; }
             .memory-notebook-model { gap:7px; }
             .memory-notebook .memory-notebook-heading { gap:8px; }
             .memory-notebook #memory-model-current { font-size:14px; }

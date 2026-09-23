@@ -584,14 +584,14 @@
                         </div>
                     </div>
                     <div class="settings-field">
-                        <label>API 密钥</label>
-                        <input type="text" id="set-MEMORY_API_KEY" class="input" placeholder="sk-...">
-                        <small class="form-hint" id="set-MEMORY_API_KEY-hint">不设则使用主 API Key，适用于中转站不同模型需要不同 Key 的场景</small>
-                    </div>
-                    <div class="settings-field">
                         <label>接口地址</label>
                         <input type="text" id="set-MEMORY_API_BASE_URL" class="input" placeholder="https://openrouter.ai/api/v1/chat/completions">
-                        <small class="form-hint">记忆提取/评分/摘要/整理专用接口地址；留空则跳过，不会回退到主 API Base URL</small>
+                        <small class="form-hint">记忆模型专用接口，留空不使用对话模型接口。</small>
+                    </div>
+                    <div class="settings-field">
+                        <label>API 密钥</label>
+                        <input type="text" id="set-MEMORY_API_KEY" class="input" placeholder="sk-...">
+                        <small class="form-hint" id="set-MEMORY_API_KEY-hint">未配置独立密钥时使用主 API Key。</small>
                     </div>
                     <div class="settings-field">
                         <div style="display:flex;justify-content:space-between;gap:12px;border-top:1px solid var(--border-color);padding-top:14px;">

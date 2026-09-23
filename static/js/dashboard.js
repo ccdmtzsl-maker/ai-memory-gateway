@@ -1956,14 +1956,45 @@ function _togglePartitionWindow(trigger) {
 let _memoryModelPresets = [];
 let _memoryPresetBusy = false;
 
-function renderMemoryPresets(selected = '') {
-    const select = document.getElementById('memory-preset-select');
-    if (!select) return;
-    select.replaceChildren(new Option('请选择预设', ''));
+let _memoryActiveConfig = {};
+function renderMemoryPresets() {
+    const list = document.getElementById('memory-preset-list');
+    if (!list) return;
+    document.getElementById('memory-model-current').textContent = _memoryActiveConfig.MEMORY_MODEL || '默认记忆模型';
+    document.getElementById('memory-model-status').textContent = _memoryActiveConfig.MEMORY_ENABLED ? '已启用' : '未启用';
+    list.replaceChildren();
+    if (!_memoryModelPresets.length) {
+        const empty = document.createElement('div');
+        empty.textContent = '暂无配置，可展开「详情」新增。';
+        empty.style.cssText = 'font-size:13px;color:var(--text-muted);padding:12px 0;';
+        list.appendChild(empty);
+    }
     _memoryModelPresets.forEach((p, i) => {
-        select.add(new Option(p.name + ' · ' + p.model, String(i)));
+        const active = p.model === _memoryActiveConfig.MEMORY_MODEL &&
+            (p.apiBaseUrl || '') === (_memoryActiveConfig.MEMORY_API_BASE_URL || '');
+        const row = document.createElement('div');
+        row.style.cssText = 'display:flex;align-items:center;gap:12px;padding:12px 0;border-bottom:1px solid var(--border-color);';
+        const choose = document.createElement('button');
+        choose.type = 'button';
+        choose.setAttribute('aria-pressed', String(active));
+        choose.style.cssText = 'flex:1;min-width:0;text-align:left;border:0;background:transparent;color:var(--text-primary);font:inherit;cursor:pointer;padding:4px 0;';
+        const title = document.createElement('div');
+        title.textContent = (active ? '✓  ' : '') + p.model;
+        title.style.cssText = 'font-weight:600;overflow-wrap:anywhere;';
+        const url = document.createElement('div');
+        url.textContent = p.apiBaseUrl || '未设置接口地址';
+        url.style.cssText = 'font-size:12px;color:var(--text-muted);margin-top:5px;overflow-wrap:anywhere;';
+        choose.append(title, url);
+        choose.onclick = () => activateMemoryPreset(i);
+        const remove = document.createElement('button');
+        remove.type = 'button';
+        remove.textContent = '删除';
+        remove.setAttribute('aria-label', '删除配置 ' + p.model);
+        remove.style.cssText = 'flex-shrink:0;border:1px solid var(--border-color);background:transparent;color:var(--text-muted);border-radius:6px;padding:4px 10px;cursor:pointer;';
+        remove.onclick = () => removeMemoryPreset(i);
+        row.append(choose, remove);
+        list.appendChild(row);
     });
-    select.value = selected;
 }
 
 async function memoryPresetRequest(body) {
@@ -1996,44 +2027,48 @@ async function runMemoryPresetAction(action) {
 
 async function saveMemoryPreset() {
     return runMemoryPresetAction(async () => {
-        const nameInput = document.getElementById('memory-preset-name');
-        const name = nameInput.value.trim();
         const model = document.getElementById('set-MEMORY_MODEL').value.trim();
+        const name = model;
         const apiBaseUrl = document.getElementById('set-MEMORY_API_BASE_URL').value.trim();
         const apiKey = document.getElementById('set-MEMORY_API_KEY').value.trim();
-        if (!name || !model || !apiBaseUrl) throw new Error('请填写预设名称、模型名和接口地址');
-        if (_memoryModelPresets.some(p => p.name === name)) throw new Error('预设名称已存在，请使用不同名称');
+        if (!model || !apiBaseUrl) throw new Error('请填写模型名和接口地址');
+        if (_memoryModelPresets.some(p => p.model === model && p.apiBaseUrl === apiBaseUrl)) throw new Error('相同模型和接口的配置已存在');
         const preset = {name, model, apiBaseUrl};
         if (apiKey && !/\*{3}|•{3}/.test(apiKey)) preset.apiKey = apiKey;
         const next = [..._memoryModelPresets, preset];
         await memoryPresetRequest({memoryModelPresets: next});
         _memoryModelPresets = next;
         renderMemoryPresets(String(next.length - 1));
-        nameInput.value = '';
+        // Keep the form available for further editing.
         return '已保存预设：' + name;
     });
 }
 
-async function activateMemoryPreset() {
+async function activateMemoryPreset(index) {
     return runMemoryPresetAction(async () => {
-        const selected = document.getElementById('memory-preset-select').value;
-        const preset = selected === '' ? null : _memoryModelPresets[Number(selected)];
+        const preset = _memoryModelPresets[index];
         if (!preset) throw new Error('请先选择预设');
         const body = {MEMORY_MODEL: preset.model, MEMORY_API_BASE_URL: preset.apiBaseUrl || ''};
         if (preset.apiKey && !/\*{3}|•{3}/.test(preset.apiKey)) body.MEMORY_API_KEY = preset.apiKey;
         await memoryPresetRequest(body);
         document.getElementById('set-MEMORY_MODEL').value = body.MEMORY_MODEL;
         document.getElementById('set-MEMORY_API_BASE_URL').value = body.MEMORY_API_BASE_URL;
-        if (body.MEMORY_API_KEY) document.getElementById('set-MEMORY_API_KEY').value = body.MEMORY_API_KEY;
-        return '已应用记忆预设：' + preset.name;
+        if (body.MEMORY_API_KEY) {
+            const key = body.MEMORY_API_KEY;
+            const masked = key.length > 8 ? key.slice(0, 4) + '****' + key.slice(-4) : '****';
+            document.getElementById('set-MEMORY_API_KEY').value = masked;
+            document.getElementById('set-MEMORY_API_KEY-hint').textContent = '当前: ' + masked;
+        }
+        Object.assign(_memoryActiveConfig, body);
+        renderMemoryPresets();
+        return '已应用配置：' + preset.model;
     });
 }
 
-async function removeMemoryPreset() {
+async function removeMemoryPreset(index) {
     return runMemoryPresetAction(async () => {
-        const selected = document.getElementById('memory-preset-select').value;
-        if (selected === '') throw new Error('请先选择预设');
-        const next = _memoryModelPresets.filter((p, i) => i !== Number(selected));
+        if (!_memoryModelPresets[index]) throw new Error('配置不存在');
+        const next = _memoryModelPresets.filter((p, i) => i !== index);
         await memoryPresetRequest({memoryModelPresets: next});
         _memoryModelPresets = next;
         renderMemoryPresets();
@@ -2048,6 +2083,7 @@ async function loadSettings() {
         if (data.error) { showSettingsMsg('error', '加载失败: ' + data.error); return; }
         const s = data.settings;
         _memoryModelPresets = Array.isArray(s.memoryModelPresets) ? s.memoryModelPresets : [];
+        _memoryActiveConfig = Object.assign({}, s);
         renderMemoryPresets();
 
         // 字符串字段

@@ -5577,11 +5577,11 @@ async def generate_daily_impression_for_date(impression_date, start_hour: int = 
     conversation_text = "\n\n".join(session_blocks)
     prompt = (await get_daily_impression_prompt()).replace("{conversation}", conversation_text).replace("{fragments}", conversation_text)
 
-    impression_api_url = API_BASE_URL
-    impression_model = DEFAULT_MODEL
-    impression_api_key = API_KEY
+    impression_api_url = await get_runtime_memory_api_base_url()
+    impression_model = await get_runtime_memory_model()
+    impression_api_key = await get_runtime_memory_api_key()
     if not impression_api_url or not impression_model:
-        return {"status": "error", "error": "请先配置对话模型和 API 地址"}
+        return {"status": "error", "error": "请先配置记忆模型和记忆模型 API 地址"}
     try:
         async with httpx.AsyncClient(timeout=120.0) as client:
             response = await client.post(

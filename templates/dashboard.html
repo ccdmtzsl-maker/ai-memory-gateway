@@ -5,6 +5,66 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Memory Gateway</title>
     <link rel="stylesheet" href="/static/css/dashboard.css?v=4.6">
+    <style>
+        .memory-notebook {
+            position:relative; isolation:isolate; margin:18px 0 28px;
+            padding:18px 22px 18px 38px; border:1px solid #e6ccd3;
+            border-radius:8px 18px 18px 8px;
+            background:repeating-linear-gradient(to bottom,transparent 0,transparent 31px,rgba(185,159,168,.10) 31px,rgba(185,159,168,.10) 32px),#fffdfb;
+            box-shadow:4px 4px 0 #f6e8ed,5px 5px 0 #e8d4db,0 6px 18px rgba(110,78,88,.05);
+            color:#554c50;
+        }
+        .memory-notebook::before {
+            content:""; position:absolute; left:9px; top:18px; bottom:18px; width:13px;
+            background:radial-gradient(ellipse at center,#fffdfb 0 3px,#c5b1b7 3.5px 5px,transparent 5.5px) center top/13px 30px repeat-y;
+            pointer-events:none;
+        }
+        .memory-notebook::after {
+            content:""; position:absolute; left:29px; top:0; bottom:0;
+            border-left:1px solid rgba(208,155,173,.25); pointer-events:none;
+        }
+        .memory-notebook .memory-notebook-heading {
+            display:flex; align-items:center; justify-content:space-between; gap:16px;
+            padding:8px 0; margin:0; cursor:pointer; list-style:none;
+        }
+        .memory-notebook-model { display:flex; align-items:baseline; gap:12px; min-width:0; }
+        .memory-notebook .memory-notebook-label { font-size:14px; font-weight:400; white-space:nowrap; color:#8d737d; }
+        .memory-notebook #memory-model-current { font-size:16px; font-weight:600; overflow-wrap:anywhere; min-width:0; }
+        .memory-notebook-edit { white-space:nowrap; font-size:12px; color:#b87f92; }
+        .memory-notebook-arrow { display:inline-block; transition:transform .15s; }
+        .memory-config-editor[open] > summary .memory-notebook-arrow,
+        .memory-notebook-details[open] > summary .memory-notebook-arrow { transform:rotate(180deg); }
+        .memory-notebook-details { margin:14px 0 0; }
+        .memory-notebook .memory-notebook-bubble {
+            display:inline-flex; align-items:center; gap:9px; list-style:none; cursor:pointer;
+            padding:6px 15px; margin:0 0 14px; font-size:12px; font-weight:400;
+            border:1px solid rgba(184,127,146,.35); border-radius:999px;
+            background:transparent; color:#967383;
+        }
+        .memory-notebook summary::-webkit-details-marker { display:none; }
+        .memory-notebook summary:focus-visible,.memory-notebook button:focus-visible {
+            outline:2px solid #b87f92; outline-offset:4px;
+        }
+        .memory-notebook .settings-field { margin-bottom:14px; }
+        .memory-notebook .settings-field > label { font-size:13px; margin-bottom:6px; }
+        .memory-notebook .input,.memory-notebook .combo-input {
+            background:rgba(255,255,255,.93); border:1px solid #e4d9dc;
+            border-radius:10px; font-size:14px; padding:10px 12px;
+        }
+        .memory-notebook .form-hint { font-size:11px; line-height:1.6; }
+        .memory-notebook #memory-preset-result:empty,
+        .memory-notebook #test-memory-model-result:empty { display:none; }
+        @media(max-width:520px) {
+            .memory-notebook { padding:14px 12px 14px 32px; }
+            .memory-notebook::before { left:5px; }
+            .memory-notebook::after { left:23px; }
+            .memory-notebook-model { gap:7px; }
+            .memory-notebook .memory-notebook-heading { gap:8px; }
+            .memory-notebook #memory-model-current { font-size:14px; }
+            .memory-notebook .memory-notebook-label { font-size:12px; }
+            .memory-notebook-edit { font-size:11px; }
+        }
+    </style>
 </head>
 <body>
 <!-- 模型预设切换按钮（右上角固定） -->
@@ -559,23 +619,29 @@
 
                 <!-- 记忆系统 -->
                 <div class="card settings-card">
-                    <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;">
-                        <h3 class="settings-group-title">记忆模型</h3>
-                        <small id="memory-model-status" style="color:var(--text-muted);">加载中</small>
-                        <input type="checkbox" id="set-MEMORY_ENABLED" hidden disabled>
+                    <div class="settings-field settings-toggle-row">
+                        <label for="set-MEMORY_ENABLED">启用记忆</label>
+                        <div style="display:flex;align-items:center;gap:10px;">
+                            <small id="memory-model-status" style="color:var(--text-muted);">加载中</small>
+                            <label class="toggle" title="沿用环境变量 MEMORY_ENABLED 控制">
+                                <input type="checkbox" id="set-MEMORY_ENABLED" aria-label="启用记忆">
+                                <span class="toggle-slider"></span>
+                            </label>
+                        </div>
                     </div>
+                    <section class="memory-notebook" aria-label="记忆模型配置">
                     <details class="memory-config-editor">
-                        <summary style="display:flex;align-items:center;justify-content:space-between;gap:16px;cursor:pointer;padding:12px 0;list-style:none;">
-                            <strong id="memory-model-current" style="overflow-wrap:anywhere;">加载中…</strong>
-                            <span style="color:var(--primary);font-size:13px;white-space:nowrap;">编辑配置 ▾</span>
+                        <summary class="memory-notebook-heading">
+                            <span class="memory-notebook-model"><span class="memory-notebook-label">记忆模型</span><strong id="memory-model-current">加载中…</strong></span>
+                            <span class="memory-notebook-edit">编辑配置 <span class="memory-notebook-arrow">▾</span></span>
                         </summary>
                         <div style="border-top:1px solid var(--border-color);padding-top:16px;">
                             <div style="font-size:13px;color:var(--text-muted);margin-bottom:8px;">选择配置</div>
                             <div id="memory-preset-list"></div>
                             <small id="memory-preset-result" class="form-hint" role="status" aria-live="polite"></small>
                         </div>
-                        <details style="margin:16px 0;">
-                            <summary style="cursor:pointer;padding:12px 0;font-weight:600;">详情</summary>
+                        <details class="memory-notebook-details">
+                            <summary class="memory-notebook-bubble">详情 <span class="memory-notebook-arrow">▾</span></summary>
                     <div class="settings-field">
                         <label>记忆提取 / 整理模型</label>
                         <div class="combo-box" id="combo-MEMORY_MODEL">
@@ -602,6 +668,7 @@
                     </div>
                         </details>
                     </details>
+                    </section>
                     <div class="settings-field">
                         <label>记忆宫殿默认注入数量 (MEMORY_PALACE_DEFAULT_LIMIT)</label>
                         <input type="number" id="set-MEMORY_PALACE_DEFAULT_LIMIT" class="input" min="1" max="30" value="5">

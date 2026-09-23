@@ -10674,6 +10674,7 @@ async def get_settings():
             "extractionPrompt": db.get("extractionPrompt") or _DEFAULT_EXTRACTION_PROMPT or "",
             "dailyImpressionPrompt": db.get("dailyImpressionPrompt") or _DEFAULT_DAILY_IMPRESSION_PROMPT or "",
             "modelPresets": json.loads(db.get("modelPresets") or "[]"),
+            "memoryModelPresets": json.loads(db.get("memoryModelPresets") or "[]"),
         }
 
         return {"status": "ok", "settings": settings}

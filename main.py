@@ -5577,17 +5577,17 @@ async def generate_daily_impression_for_date(impression_date, start_hour: int = 
     conversation_text = "\n\n".join(session_blocks)
     prompt = (await get_daily_impression_prompt()).replace("{conversation}", conversation_text).replace("{fragments}", conversation_text)
 
-    memory_api_base_url = await get_runtime_memory_api_base_url()
-    if not memory_api_base_url:
-        return {"status": "error", "error": "MEMORY_API_BASE_URL 未设置，无法生成日印象"}
-
-    impression_model = os.getenv("MEMORY_MODEL", "anthropic/claude-haiku-4")
+    impression_api_url = API_BASE_URL
+    impression_model = DEFAULT_MODEL
+    impression_api_key = API_KEY
+    if not impression_api_url or not impression_model:
+        return {"status": "error", "error": "请先配置对话模型和 API 地址"}
     try:
         async with httpx.AsyncClient(timeout=120.0) as client:
             response = await client.post(
-                memory_api_base_url,
+                impression_api_url,
                 headers={
-                    "Authorization": f"Bearer {get_memory_api_key()}",
+                    "Authorization": f"Bearer {impression_api_key}",
                     "Content-Type": "application/json",
                 },
                 json={
@@ -10878,7 +10878,7 @@ async def save_settings(request: Request):
                 continue
 
             # --- modelPresets 特殊处理 ---
-            if key == "modelPresets":
+            if key in ("modelPresets", "memoryModelPresets"):
                 presets_value = value
                 if isinstance(presets_value, list):
                     cleaned_presets = []
@@ -10892,7 +10892,7 @@ async def save_settings(request: Request):
                     presets_json = json.dumps(cleaned_presets, ensure_ascii=False)
                 else:
                     presets_json = str(presets_value)
-                queue_write("modelPresets", presets_json)
+                queue_write(key, presets_json)
                 continue
 
             # --- activatePreset 特殊处理（激活某个预设 → 切换 DEFAULT_MODEL / URL / Key）---

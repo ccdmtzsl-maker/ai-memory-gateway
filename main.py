@@ -1747,9 +1747,11 @@ async def retrieve_memory_palace_rows_for_prompt(query: str = "", limit: int = 5
     limit = max(1, min(int(limit or 5), 30))
     await clear_expired_memory_palace_pins(character_id)
     rows = await _memory_palace_fetch_rows(room=room, character_id=character_id)
+    _log(f"读节点{len(rows)}条")
     # 一轮检索会分成好几路（每个用户消息片段一路 + 上下文一路）。切词只跟
     # 记忆本身有关、跟查什么无关，所以整轮只切一次，所有路共用。
     bm25_index = _memory_palace_build_bm25_index(rows)
+    _log(f"BM25索引{len(rows)}节点")
     merged = {}
     spikes, context_query, fallback_query = _memory_palace_split_last_turn_queries(recent_messages or [])
     if not spikes and query:
@@ -1762,6 +1764,7 @@ async def retrieve_memory_palace_rows_for_prompt(query: str = "", limit: int = 5
         batch_texts = [fallback_query or query]
     try:
         batch_embeds = await compute_memory_palace_embeddings(batch_texts)
+        _log(f"批量向量化{len(batch_texts)}段")
     except Exception as e:
         print(f"⚠️ Memory Palace 批量向量化失败，改为逐条: {e}")
         batch_embeds = [None] * len(batch_texts)
@@ -1869,9 +1872,11 @@ async def retrieve_memory_palace_rows_for_prompt(query: str = "", limit: int = 5
                     [(item["id"],) for item in final_rows]
                 )
             await _memory_palace_strengthen_coactivated([item["id"] for item in final_rows], character_id=character_id)
+            _log("访问统计+共激活")
         except Exception as e:
             print(f"⚠️ Memory Palace access stats update failed: {e}")
     return final_rows, len(pinned)
+    _log("完成")
 
 
 # 同一轮注入的 receipts 是一次 executemany 写进去的，NOW() 取事务开始时间，
@@ -1883,7 +1888,16 @@ _MEMORY_PALACE_RECALL_MIN_REFS = 5
 
 
 def _memory_palace_source_message_id_bounds(source_messages: list) -> tuple:
-    """待提取消息 id 范围。
+    """
+    import time as _time
+    _t0 = _time.perf_counter()
+    _t_last = _t0
+    def _log(step):
+        nonlocal _t_last
+        now = _time.perf_counter()
+        print(f"⏱️ [记忆检索] {step}: +{(now-_t_last)*1000:.0f}ms (总{(now-_t0)*1000:.0f}ms)", flush=True)
+        _t_last = now
+待提取消息 id 范围。
 
     新版 receipts 写入 anchor_message_id：记忆注入发生时，该会话已落库的
     最后一条消息 id。提取某个消息区间时，用这个 id 范围精确找回当时

@@ -1880,11 +1880,10 @@ async def retrieve_memory_palace_rows_for_prompt(query: str = "", limit: int = 5
                 )
             await _memory_palace_strengthen_coactivated([item["id"] for item in final_rows], character_id=character_id)
             _log("访问统计")
-            _log("访问统计+共激活")
         except Exception as e:
             print(f"⚠️ Memory Palace access stats update failed: {e}")
-    return final_rows, len(pinned)
     _log("完成")
+    return final_rows, len(pinned)
 
 # 同一轮注入的 receipts 是一次 executemany 写进去的，NOW() 取事务开始时间，
 # 所以同轮的 injected_at 完全相同。留 5 秒余量兜住极端情况。

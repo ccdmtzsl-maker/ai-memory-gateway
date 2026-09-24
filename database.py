@@ -1087,7 +1087,120 @@ async def search_conversations(query: str, limit: int = 20, offset: int = 0):
                 'message_count': r['message_count'],
             })
         
-        return results, total
+        return result
+
+
+# ========================================
+# 纯数据库检索：不加载全量 rows 到内存
+# ========================================
+
+async def search_memory_palace_db_direct(
+    query_text: str,
+    query_embedding: list,
+    limit: int = 20,
+    character_id: str = "default",
+    room: str = None,
+    include_archived: bool = False,
+) -> list:
+    """
+    纯数据库混合检索，不加载全量 rows。
+    
+    BM25 + 向量相似度 + 时间衰减 + 重要性全在数据库算，
+    只返回 Top-N 结果，避免 13s 延迟。
+    
+    返回格式和 _memory_palace_fetch_rows 一致。
+    """
+    if not query_text and not query_embedding:
+        return []
+    
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        # 检查是否有向量
+        has_vector = bool(query_embedding and memory_palace_vector_ready(len(query_embedding)))
+        
+        # 构造 SQL
+        sql_parts = []
+        sql_parts.append("SELECT")
+        sql_parts.append("""
+            n.id, n.character_id, n.session_id, n.room, n.content, n.tags,
+            n.importance, n.mood, n.valence, n.arousal, n.date, n.created_at,
+            n.last_accessed_at, n.access_count, n.pinned_until, n.source_id,
+            n.origin, n.event_box_id, n.archived, n.is_box_summary,
+            n.source_message_start_id, n.source_message_end_id,
+            n.source_session_id, n.metadata, n.updated_at,
+        """)
+        
+        # 向量相似度
+        if has_vector:
+            vector_literal = "[" + ",".join(repr(float(x)) for x in query_embedding) + "]"
+            sql_parts.append("""
+                GREATEST(0.0, LEAST(1.0, 1.0 - (v.embedding <=> $2::vector))) AS vec_sim,
+            """)
+        else:
+            sql_parts.append("0.0 AS vec_sim,")
+        
+        # BM25 分数
+        sql_parts.append("""
+            ts_rank_cd(
+                to_tsvector('simple', COALESCE(n.content, '') || ' ' || COALESCE(n.tags, '')),
+                plainto_tsquery('simple', $1),
+                32
+            ) AS bm25_score,
+        """)
+        
+        # 综合得分
+        sql_parts.append("(")
+        if has_vector:
+            sql_parts.append("""
+                (GREATEST(0.0, LEAST(1.0, 1.0 - (v.embedding <=> $2::vector))) * 0.6 +
+            """)
+        else:
+            sql_parts.append("(")
+        sql_parts.append("""
+                ts_rank_cd(
+                    to_tsvector('simple', COALESCE(n.content, '') || ' ' || COALESCE(n.tags, '')),
+                    plainto_tsquery('simple', $1),
+                    32
+                ) * 0.4) *
+            (n.importance / 10.0) *
+            EXP(-0.3 * EXTRACT(EPOCH FROM (NOW() - n.date)) / 86400.0) *
+            (1.0 + 0.05 * n.access_count)
+        ) AS score
+        """)
+        
+        sql_parts.append("FROM memory_palace_nodes n")
+        if has_vector:
+            sql_parts.append("LEFT JOIN memory_palace_vectors v ON v.memory_id = n.id")
+        
+        # WHERE 条件
+        where_parts = ["n.character_id = $3"]
+        if not include_archived:
+            where_parts.append("n.archived = FALSE")
+        if room:
+            where_parts.append("n.room = $4")
+        
+        sql_parts.append("WHERE " + " AND ".join(where_parts))
+        sql_parts.append(f"ORDER BY score DESC LIMIT {max(1, min(int(limit), 500))}")
+        
+        sql = "\n".join(sql_parts)
+        
+        # 参数
+        params = [query_text or ""]
+        if has_vector:
+            params.append(vector_literal)
+        params.append(character_id)
+        if room:
+            params.append(room)
+        
+        rows = await conn.fetch(sql, *params)
+        
+        results = []
+        for r in rows:
+            item = dict(r)
+            item["similarity_score"] = float(item.get("vec_sim", 0))
+            results.append(item)
+        
+        return resultss, total
 
 
 async def update_message_content(message_id: int, new_content: str):

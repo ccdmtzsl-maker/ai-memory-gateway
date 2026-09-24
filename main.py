@@ -9126,21 +9126,11 @@ _MP_EMBEDDING_WARNED = set()
 
 
 def _mp_embedding_variants(model: str, text, dim: int) -> list:
-    """按优先级排出候选请求体。
-
-    记忆宫殿必须优先遵守仪表盘里的 EMBEDDING_DIM：先带 dimensions 请求，
-    只有服务商明确不接受时才退回不带。不然兼容端会直接返回模型默认维度
-    （例如 bge-m3=1024），和设置页对不上。
-    """
-    variants = []
-    if dim > 0:
-        variants.append({"model": model, "input": text, "dimensions": dim})
-        variants.append({"model": model, "input": [text], "dimensions": dim})
-    variants.append({"model": model, "input": text})
-    variants.append({"model": model, "input": [text]})
-    return variants
-
-
+    """SiliconFlow bge-m3 拒绝 dimensions 参数，直接用不带的。"""
+    return [
+        {"model": model, "input": text},
+        {"model": model, "input": [text]},
+    ]
 def _mp_embedding_warn_once(key: str, message: str) -> None:
     if key in _MP_EMBEDDING_WARNED:
         return

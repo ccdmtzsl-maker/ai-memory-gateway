@@ -1744,6 +1744,13 @@ _memory_palace_last_explain_corpus = {}
 
 
 async def retrieve_memory_palace_rows_for_prompt(query: str = "", limit: int = 5, room: str = None, character_id: str = "default", recent_messages=None, touch_access: bool = True, explain: bool = False):
+    import time as _time
+    _t0 = _time.perf_counter()
+    _t = [_t0]
+    def _log(step):
+        now = _time.perf_counter()
+        print(f"⏱️ [记忆检索] {step}: +{(now-_t[0])*1000:.0f}ms (总{(now-_t0)*1000:.0f}ms)", flush=True)
+        _t[0] = now
     limit = max(1, min(int(limit or 5), 30))
     await clear_expired_memory_palace_pins(character_id)
     rows = await _memory_palace_fetch_rows(room=room, character_id=character_id)
@@ -1881,8 +1888,6 @@ async def retrieve_memory_palace_rows_for_prompt(query: str = "", limit: int = 5
             print(f"⚠️ Memory Palace access stats update failed: {e}")
     return final_rows, len(pinned)
     _log("完成")
-    _log("完成")
-
 
 # 同一轮注入的 receipts 是一次 executemany 写进去的，NOW() 取事务开始时间，
 # 所以同轮的 injected_at 完全相同。留 5 秒余量兜住极端情况。

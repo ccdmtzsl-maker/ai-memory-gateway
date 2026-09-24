@@ -1755,11 +1755,9 @@ async def retrieve_memory_palace_rows_for_prompt(query: str = "", limit: int = 5
     await clear_expired_memory_palace_pins(character_id)
     rows = await _memory_palace_fetch_rows(room=room, character_id=character_id)
     _log(f"读节点{len(rows)}条")
-    _log(f"读节点{len(rows)}条")
     # 一轮检索会分成好几路（每个用户消息片段一路 + 上下文一路）。切词只跟
     # 记忆本身有关、跟查什么无关，所以整轮只切一次，所有路共用。
     bm25_index = _memory_palace_build_bm25_index(rows)
-    _log(f"BM25索引{len(rows)}节点")
     _log(f"BM25索引{len(rows)}节点")
     merged = {}
     spikes, context_query, fallback_query = _memory_palace_split_last_turn_queries(recent_messages or [])
@@ -1773,7 +1771,6 @@ async def retrieve_memory_palace_rows_for_prompt(query: str = "", limit: int = 5
         batch_texts = [fallback_query or query]
     try:
         batch_embeds = await compute_memory_palace_embeddings(batch_texts)
-        _log(f"批量向量化{len(batch_texts)}段")
         _log(f"批量向量化{len(batch_texts)}段")
     except Exception as e:
         print(f"⚠️ Memory Palace 批量向量化失败，改为逐条: {e}")

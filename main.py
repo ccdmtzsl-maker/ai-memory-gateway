@@ -1677,6 +1677,7 @@ async def _memory_palace_strengthen_coactivated(node_ids, character_id: str = "d
             await conn.executemany("""
                 INSERT INTO memory_palace_links (id, character_id, source_id, target_id, link_type, strength, created_at, updated_at)
                 VALUES ($1, $2, $3, $4, $5, $6, NOW(), NOW())
+                ON CONFLICT (source_id, target_id, link_type) DO NOTHING
             """, values)
 
 
@@ -1927,28 +1928,12 @@ _MEMORY_PALACE_RECALL_MIN_REFS = 5
 
 
 def _memory_palace_source_message_id_bounds(source_messages: list) -> tuple:
-    """
-    import time as _time
-    _t0 = _time.perf_counter()
-    _t_last = _t0
-    def _log(step):
-        nonlocal _t_last
-        now = _time.perf_counter()
-        print(f"⏱️ [记忆检索] {step}: +{(now-_t_last)*1000:.0f}ms (总{(now-_t0)*1000:.0f}ms)", flush=True)
-        _t_last = now
-待提取消息 id 范围。
+    """待提取消息 id 范围。
 
     新版 receipts 写入 anchor_message_id：记忆注入发生时，该会话已落库的
     最后一条消息 id。提取某个消息区间时，用这个 id 范围精确找回当时
     实际注入过的记忆；历史没有 anchor 的记录才回退时间窗。
     """
-    import time as _time
-    _t0 = _time.perf_counter()
-    _t = [_t0]
-    def _log(step):
-        now = _time.perf_counter()
-        print(f"⏱️ [记忆检索] {step}: +{(now-_t[0])*1000:.0f}ms (总{(now-_t0)*1000:.0f}ms)", flush=True)
-        _t[0] = now
     ids = []
     for msg in source_messages or []:
         try:

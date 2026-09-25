@@ -2248,9 +2248,23 @@ async def format_memory_palace_for_prompt(limit: int = 5, room: str = None, quer
     rows, pinned_count = await retrieve_memory_palace_rows_for_prompt(query=query, limit=limit, room=room, character_id=character_id, recent_messages=recent_messages, touch_access=touch_access)
     if not rows:
         return "### 记忆宫殿\n\n暂无可用记忆。"
+    _fmt_t0 = time.perf_counter()
+    _fmt_last = [_fmt_t0]
+
+    def _fmt_log(step: str):
+        _now = time.perf_counter()
+        print(
+            f"⏱️ [记忆组装] {step}: +{(_now - _fmt_last[0]) * 1000:.0f}ms "
+            f"(总{(_now - _fmt_t0) * 1000:.0f}ms)",
+            flush=True,
+        )
+        _fmt_last[0] = _now
+
     box_ids = [r.get("event_box_id") for r in rows[pinned_count:] if r.get("event_box_id")]
     boxes = await load_memory_palace_event_boxes(box_ids, character_id=character_id)
+    _fmt_log(f"读事件盒{len(box_ids)}个")
     box_nodes = await load_memory_palace_event_box_nodes(boxes, character_id=character_id)
+    _fmt_log("读事件盒节点")
     rows = collapse_memory_palace_rows_by_event_box(rows, pinned_count, boxes)
     for row in rows[pinned_count:]:
         if row.get("_event_box"):
@@ -2258,6 +2272,7 @@ async def format_memory_palace_for_prompt(limit: int = 5, room: str = None, quer
     if touch_access:
         try:
             await record_memory_palace_recall_receipts(rows, pinned_count=pinned_count, boxes=boxes, character_id=character_id, session_id=session_id)
+            _fmt_log("写召回receipts")
         except Exception as e:
             print(f"⚠️ Memory Palace recall receipt record failed: {e}")
     lines = [
@@ -4080,11 +4095,10 @@ async def _run_partition_auto_extract_after_response_locked(session_id: str, cha
         cursor = await get_memory_palace_extraction_cursor(session_id, character_id=character_id)
         last_id = int(cursor.get('last_message_id') or 0)
         if boundary_id <= last_id:
-            log_memory_palace_auto_extract(
-                "info",
-                f"🧠 分区自动提取等待：被挤出内容已在游标内 session={session_id}, cursor={last_id}, tail={boundary_id}",
-                session_id=session_id,
-            )
+            # 游标已追上边界：没有待提取内容。直接返回，避免和
+            # _extract_memory_palace_from_partition_messages_locked 里
+            # 同一句日志重复输出（后续 _fetch 在这种情况下必然返回空）。
+            return
         extract_msgs = await _fetch_partition_extract_messages_range(
             session_id, last_id, boundary_id, max(1, int(CACHE_PARTITION_EXTRACT_LIMIT or 120)),
         )
@@ -4467,6 +4481,20 @@ async def chat_completions(request: Request):
         "default"
     )
     
+    # ---------- 入口段计时 ----------
+    # 这段覆盖「入口收到请求」到「分区模式: DB历史N条」之间的耗时。
+    _ent_t0 = time.perf_counter()
+    _ent_last = [_ent_t0]
+
+    def _ent_log(step: str):
+        _now = time.perf_counter()
+        print(
+            f"⏱️ [入口] {step}: +{(_now - _ent_last[0]) * 1000:.0f}ms "
+            f"(总{(_now - _ent_t0) * 1000:.0f}ms)",
+            flush=True,
+        )
+        _ent_last[0] = _now
+
     # ---------- 分区缓存模式 ----------
     if CACHE_PARTITION_ENABLED:
         active_sid = get_active_session_id()
@@ -4479,15 +4507,19 @@ async def chat_completions(request: Request):
 
         # 只读取永久分区边界之后的活跃历史；被挤出的旧消息不会因尾部删除而重新进入。
         partition_state = await get_session_cache_state(session_id)
+        _ent_log("读缓存状态")
         partition_state, partition_boundary_id = await _ensure_partition_message_boundary(session_id, partition_state)
+        _ent_log("确认分区边界")
         try:
             db_history = await get_conversation_messages_after_id(session_id, partition_boundary_id, limit=10000)
+            _ent_log(f"读DB历史{len(db_history or [])}条")
             db_msgs = []
             for m in (db_history or []):
                 msg = db_row_to_message(m)
                 msg['created_at'] = m.get('created_at')
                 msg['id'] = m.get('id')
                 db_msgs.append(msg)
+            _ent_log(f"转换消息{len(db_msgs)}条")
         except Exception as e:
             print(f"[warning] 分区模式读取活跃历史失败: {e}")
             db_msgs = []
@@ -4511,7 +4543,9 @@ async def chat_completions(request: Request):
         client_system_prompt = "\n\n".join(p for p in client_system_parts if p).strip()
         partition_base_prompt = client_system_prompt or SYSTEM_PROMPT
         partition_has_explicit_memory_palace = bool(re.search(r"\{\{\s*memory_palace", partition_base_prompt or "", re.I))
+        _ent_log("提取system prompt")
         partition_base_prompt = await replace_explicit_memory_variables(partition_base_prompt, query=user_message, recent_messages=messages, session_id=session_id)
+        _ent_log("替换记忆变量(含记忆检索)")
 
         # 提取客户端新消息（非系统级消息），可能是user、tool、或带tool_calls的assistant
         client_new_msgs = [m for m in messages if m.get("role") not in system_like_roles]
@@ -4850,6 +4884,7 @@ async def chat_completions(request: Request):
         tool_messages = [m for m in tool_messages if m.get("role") == "tool"]
         
         print(f"📦 分区模式: DB历史{len(db_msgs)}条 + 本轮增量{len(client_increment)}条")
+        _ent_log("归一化messages")
         
         messages = await build_partitioned_messages(
             session_id, all_msgs, partition_base_prompt, user_message, active_history_only=True

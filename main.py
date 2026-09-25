@@ -5281,8 +5281,28 @@ async def chat_completions(request: Request):
                         # raw_assistant_msg 用于 DB 历史/记忆提取；msg_obj["content"] 仅用于返回客户端。
                         # content 可能是多模态数组，先拍平成文本（数组直接当字符串用
                         # 会让客户端显示空白、DB 里存进 list 的 repr）。
-                        raw_assistant_msg = _coerce_assistant_text(msg_obj.get("content"))
+                        _raw_content = msg_obj.get("content")
+                        raw_assistant_msg = _coerce_assistant_text(_raw_content)
                         assistant_msg = raw_assistant_msg
+                        # 多模态数组还要替客户端拍平一次：大多数客户端读
+                        # choices[0].message.content 时按字符串处理，拿到数组就显示空白。
+                        # 只在数组里全是文本片段时才替换；含图片等非文本片段保持原样
+                        # —— 拍平会丢数据，而能发多模态回复的客户端本来就认得数组。
+                        if isinstance(_raw_content, list) and raw_assistant_msg:
+                            _all_text = all(
+                                isinstance(_it, str) or (
+                                    isinstance(_it, dict)
+                                    and (_it.get("type") in (None, "text", "output_text"))
+                                )
+                                for _it in _raw_content
+                            )
+                            if _all_text:
+                                msg_obj["content"] = raw_assistant_msg
+                                print(
+                                    f"\U0001f527 [非流] content 是文本数组（{len(_raw_content)}段），"
+                                    f"已拍平成字符串供客户端读取",
+                                    flush=True,
+                                )
                         if raw_assistant_msg:
                             transformed_msg = apply_response_transform_rules(raw_assistant_msg)
                             if transformed_msg != raw_assistant_msg:

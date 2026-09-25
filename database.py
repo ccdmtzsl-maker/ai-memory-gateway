@@ -1439,22 +1439,29 @@ def _serialize_user_impression_row(row):
     }
 
 
-async def get_user_impression(character_id: str = "default"):
+async def get_user_impression(character_id: str = "default", with_pending_count: bool = True):
+    """读用户画像。
+
+    with_pending_count=False 时跳过 pending_memory_count 的统计。那个统计要
+    COUNT(*) 扫一遍 memory_palace_nodes，只有后台页面要显示「有多少条新记忆
+    还没并进画像」时才需要；提示词渲染用不到它，每轮都算是白算。
+
+    两次查询合并到同一个连接里：原先分别 acquire 两次，在 Render 免费版这种
+    连接池小、延迟高的环境下，多一次 acquire 就是多一次等待。
+    """
     character_id = character_id or "default"
     pool = await get_pool()
+    pending_count = 0
     async with pool.acquire() as conn:
         row = await conn.fetchrow("""
             SELECT character_id, version, impression, source_mode, source_message_count, created_at, updated_at, last_consumed_node_id
             FROM user_impressions
             WHERE character_id = $1
         """, character_id)
-    pending_count = 0
-    if row:
-        last_cn = row.get("last_consumed_node_id")
-        if last_cn:
-            pool2 = await get_pool()
-            async with pool2.acquire() as conn2:
-                pending_count = await conn2.fetchval(
+        if row and with_pending_count:
+            last_cn = row.get("last_consumed_node_id")
+            if last_cn:
+                pending_count = await conn.fetchval(
                     "SELECT COUNT(*) FROM memory_palace_nodes WHERE id > $1 AND archived = FALSE",
                     last_cn
                 )
@@ -2048,8 +2055,19 @@ async def import_conversations(records: list):
 # 日印象（Daily Impression）
 # ============================================================
 
+_DAILY_IMPRESSIONS_SCHEMA_READY = [False]
+
+
 async def _ensure_daily_impressions_schema(conn):
-    """按需确保日印象表结构为新版 tags 字段，避免旧表查询 500。"""
+    """按需确保日印象表结构为新版 tags 字段，避免旧表查询 500。
+
+    进程内只真正跑一次。这里面是 8 条 DDL，含 4 个查 information_schema 的
+    DO $$ 块，实测每轮要 1100ms+。表结构在一个进程的生命周期里不会自己变，
+    迁移成功一次之后后面每轮都是白跑。
+    失败时不置位，下次调用会重试。
+    """
+    if _DAILY_IMPRESSIONS_SCHEMA_READY[0]:
+        return
     await conn.execute("""
         CREATE TABLE IF NOT EXISTS daily_impressions (
             impression_date     DATE PRIMARY KEY,
@@ -2124,6 +2142,8 @@ async def _ensure_daily_impressions_schema(conn):
         CREATE INDEX IF NOT EXISTS idx_daily_impressions_updated
         ON daily_impressions (updated_at DESC);
     """)
+    # 全部成功才置位；中途抛异常就不置位，下次进来重跑。
+    _DAILY_IMPRESSIONS_SCHEMA_READY[0] = True
 
 
 async def upsert_daily_impression(impression_date, summary: str, tags: str = "", mood: str = "", source_fragment_ids: list = None):

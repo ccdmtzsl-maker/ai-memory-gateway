@@ -177,6 +177,43 @@ _dashboard_logs = deque(maxlen=200)
 _READ_CACHE = {}
 _READ_CACHE_MAX_ITEMS = 256
 
+_RSS_PEAK = [0.0]
+
+
+def _read_rss_mb() -> float:
+    """读当前进程物理内存占用（MB）。
+
+    直接读 /proc/self/status 的 VmRSS，纯标准库、不需要 psutil。
+    非 Linux 或读不到时返回 0.0，调用方据此跳过日志。
+    """
+    try:
+        with open("/proc/self/status", "r") as f:
+            for line in f:
+                if line.startswith("VmRSS:"):
+                    return int(line.split()[1]) / 1024.0
+    except Exception:
+        pass
+    return 0.0
+
+
+def log_rss(tag: str = ""):
+    """打一行内存占用。峰值一起带出来，方便回看是哪一轮开始涨的。"""
+    mb = _read_rss_mb()
+    if mb <= 0:
+        return
+    if mb > _RSS_PEAK[0]:
+        _RSS_PEAK[0] = mb
+    limit_note = ""
+    if mb >= 400:
+        limit_note = "  ⚠️ 接近 512MB 上限"
+    elif mb >= 320:
+        limit_note = "  (注意)"
+    print(
+        f"📊 [内存] {tag}RSS={mb:.0f}MB 峰值={_RSS_PEAK[0]:.0f}MB{limit_note}",
+        flush=True,
+    )
+
+
 def _cache_get(key: str):
     try:
         item = _READ_CACHE.get(str(key))
@@ -828,7 +865,8 @@ async def format_user_impression_for_prompt(character_id: str = "default") -> st
     item = await get_user_impression(character_id=character_id)
     imp = (item or {}).get("impression") if item else None
     if not imp:
-        return ""
+        # 空结果也要进缓存，否则没有画像时每轮都白查一次库。
+        return _cache_set(cache_key, "", ttl=900)
 
     user_name = await get_runtime_user_nickname() or "用户"
     summary = imp.get("summary") or ""
@@ -1789,6 +1827,7 @@ async def retrieve_memory_palace_rows_for_prompt(query: str = "", limit: int = 5
     await clear_expired_memory_palace_pins(character_id)
     rows = await _memory_palace_fetch_rows(room=room, character_id=character_id)
     _log(f"读节点{len(rows)}条")
+    log_rss(f"读完{len(rows)}节点 ")
     # 一轮检索会分成好几路（每个用户消息片段一路 + 上下文一路）。切词只跟
     # 记忆本身有关、跟查什么无关，所以整轮只切一次，所有路共用。
     bm25_index = _memory_palace_build_bm25_index(rows)
@@ -2406,11 +2445,32 @@ async def replace_memory_palace_variables(prompt: str, query: str = "", characte
 
 
 async def replace_explicit_memory_variables(prompt: str, query: str = "", character_id: str = "default", recent_messages=None, session_id: str = "") -> str:
+    # 每个变量单独计时。五个 replace_* 都以「prompt 里没这个变量就直接返回」开头，
+    # 所以没写变量的项会是 0ms；哪一项有耗时，就是它真的去取数据了。
+    _v_t0 = time.perf_counter()
+    _v_marks = []
+
+    def _v_mark(name: str):
+        _v_marks.append((name, (time.perf_counter() - _v_t0) * 1000))
+
     prompt = await replace_daily_impression_variables(prompt)
+    _v_mark("daily_impressions")
     prompt = await replace_user_impression_variables(prompt, character_id=character_id)
+    _v_mark("user_impression")
     prompt = await replace_user_activity_meta_variables(prompt, character_id=character_id)
+    _v_mark("user_activity_meta")
     prompt = await replace_special_memory_variables(prompt, character_id=character_id)
+    _v_mark("special_memory")
     prompt = await replace_memory_palace_variables(prompt, query=query, character_id=character_id, recent_messages=recent_messages, session_id=session_id)
+    _v_mark("memory_palace")
+
+    _prev = 0.0
+    _detail = []
+    for _name, _at in _v_marks:
+        _detail.append(f"{_name}={_at - _prev:.0f}ms")
+        _prev = _at
+    if _prev >= 50:
+        print(f"⏱️ [变量替换] 共{_prev:.0f}ms | " + " ".join(_detail), flush=True)
     return prompt
 
 
@@ -4095,10 +4155,11 @@ async def _run_partition_auto_extract_after_response_locked(session_id: str, cha
         cursor = await get_memory_palace_extraction_cursor(session_id, character_id=character_id)
         last_id = int(cursor.get('last_message_id') or 0)
         if boundary_id <= last_id:
-            # 游标已追上边界：没有待提取内容。直接返回，避免和
-            # _extract_memory_palace_from_partition_messages_locked 里
-            # 同一句日志重复输出（后续 _fetch 在这种情况下必然返回空）。
-            return
+            log_memory_palace_auto_extract(
+                "info",
+                f"🧠 分区自动提取等待：被挤出内容已在游标内 session={session_id}, cursor={last_id}, tail={boundary_id}",
+                session_id=session_id,
+            )
         extract_msgs = await _fetch_partition_extract_messages_range(
             session_id, last_id, boundary_id, max(1, int(CACHE_PARTITION_EXTRACT_LIMIT or 120)),
         )
@@ -4481,6 +4542,8 @@ async def chat_completions(request: Request):
         "default"
     )
     
+    log_rss("请求开始 ")
+
     # ---------- 入口段计时 ----------
     # 这段覆盖「入口收到请求」到「分区模式: DB历史N条」之间的耗时。
     _ent_t0 = time.perf_counter()

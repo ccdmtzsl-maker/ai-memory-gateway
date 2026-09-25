@@ -34,6 +34,9 @@ from fastapi.responses import StreamingResponse, JSONResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from fastapi.middleware.gzip import GZipMiddleware
+# GZipResponder：SSESafeGZipMiddleware 需要直接复用它的压缩逻辑，
+# 只把「要不要压」的判断时机往后挪。
+from starlette.middleware.gzip import GZipResponder
 
 from database import init_tables, close_pool, save_message, get_pool, get_gateway_config, set_gateway_config, set_gateway_config_many, get_all_gateway_config, get_conversation_messages, get_session_cache_state, save_session_cache_state, delete_session_cache_state, save_token_usage, ensure_token_usage_table, get_conversations_paginated, get_conversation_messages_after_id, delete_conversation, batch_delete_conversations, merge_sessions_to_target, list_all_session_cache_states, export_all_conversations, import_conversations, get_last_user_content, update_last_assistant_message, update_last_assistant_if_same_user, db_row_to_message, search_conversations, update_message_content, rename_session_id, get_conversation_messages_by_date, upsert_daily_impression, get_daily_impression, list_daily_impressions, search_memory_palace_vector_scores, search_memory_palace_vector_scores_multi, memory_palace_vector_ready
 from database import list_memory_palace_rooms, list_memory_palace_nodes, get_memory_palace_node, create_memory_palace_node, update_memory_palace_node, delete_memory_palace_node, clear_expired_memory_palace_pins, get_user_impression, upsert_user_impression, delete_user_impression, normalize_user_impression, get_user_activity_meta, upsert_user_activity_meta, delete_user_activity_meta
@@ -774,11 +777,87 @@ async def dashboard_performance_diagnostic_middleware(request: Request, call_nex
             category="performance",
         )
 
+class SSESafeGZipMiddleware(GZipMiddleware):
+    """压缩普通响应，但让 SSE 逐条即时发出。
+
+    为什么必须有它
+    --------------
+    starlette 的 GZipMiddleware 在请求进来时就决定要不要压缩（只看
+    Accept-Encoding），一旦决定，整个响应都走 GZipResponder。而
+    GZipResponder 处理流式响应是这样的：
+
+        self.gzip_file.write(body)
+        message["body"] = self.gzip_buffer.getvalue()
+
+    `GzipFile.write()` 不会 flush，数据攒在 deflate 的 32KB 滑动窗口里。
+    SSE 的 chunk 只有几十字节，远攒不满窗口，于是每次 getvalue() 都返回
+    空字节，整段回复堆到流结束 close() 时一次性吐出。
+
+    实测 144 个 chunk / 9485 字节的回复，走原版中间件：144 条 body 消息
+    里只有 2 条非空，第一条是 10 字节的 gzip 文件头，其余 99% 的内容在
+    最后一刻才到。客户端的表现就是「对着空白一直等，回复结束后内容一次性
+    出现」——流式等于完全失效，而且和上游、和客户端都没关系。
+
+    做法
+    ----
+    把「压不压」的决策从「请求进来时」推迟到「看见响应头之后」：
+    自己接住 http.response.start，看 Content-Type 是不是 text/event-stream。
+    是就绕开 GZipResponder 直接转发，不是就把消息交给它走原来的流程。
+
+    这样 SSE 无损逐条透传，Dashboard 的 HTML/JS/CSS 照旧压缩。
+
+    为什么不改成 flush(Z_SYNC_FLUSH) 保留 SSE 压缩：那要重写整个
+    responder，而 SSE 压缩的收益本来就有限（文本增量小），且部分客户端
+    和中间代理对 chunked + gzip 的 SSE 处理并不一致。不压是更稳的选择。
+    """
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        accept_encoding = ""
+        for key, value in scope.get("headers", []):
+            if key.lower() == b"accept-encoding":
+                accept_encoding = value.decode("latin-1").lower()
+                break
+        if "gzip" not in accept_encoding:
+            await self.app(scope, receive, send)
+            return
+
+        responder = GZipResponder(
+            self.app, self.minimum_size, compresslevel=self.compresslevel
+        )
+        # None=还没看到响应头，"raw"=SSE 直发，"gzip"=走压缩
+        state = {"mode": None}
+
+        async def decide_send(message):
+            if state["mode"] is None and message["type"] == "http.response.start":
+                is_sse = False
+                for key, value in message.get("headers") or []:
+                    if key.lower() == b"content-type":
+                        is_sse = b"text/event-stream" in value.lower()
+                        break
+                state["mode"] = "raw" if is_sse else "gzip"
+            if state["mode"] == "raw":
+                await send(message)
+            else:
+                await responder.send_with_gzip(message)
+
+        # responder 的 send 要指向真正的下游；gzip_buffer/gzip_file 用 with
+        # 管起来，和 GZipResponder.__call__ 里的写法保持一致，确保退出时关闭。
+        responder.send = send
+        with responder.gzip_buffer, responder.gzip_file:
+            await self.app(scope, receive, decide_send)
+
+
 # 响应压缩：Dashboard 的 JS/CSS/HTML 都是纯文本，未压缩共 ~260KB，
 # 在 Render 免费实例的出口带宽下直接造成白屏等待。gzip 后通常能降到 1/4 左右。
 # minimum_size=1000：小于 1KB 的响应不压，避免压缩开销大于收益。
-# SSE 流式响应由 Starlette 自行按 chunk 处理，不影响逐字输出。
-app.add_middleware(GZipMiddleware, minimum_size=1000)
+#
+# 必须用 SSESafeGZipMiddleware 而非原版：原版会把 SSE 流缓冲到结束才发，
+# 流式回复变成「空白等待 + 一次性到达」。详见类文档。
+app.add_middleware(SSESafeGZipMiddleware, minimum_size=1000)
 
 # 静态文件和模板配置
 app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -5082,7 +5161,13 @@ async def chat_completions(request: Request):
         return StreamingResponse(
             stream_and_capture(headers, body, session_id, user_message, model, original_messages, skip_conversation_log, tool_messages, is_auto_trigger),
             media_type="text/event-stream",
-            headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                # Render 前面有一层反向代理，某些代理会自己缓冲 SSE。
+                # 这是让 nginx 类代理关闭缓冲的约定头，不认识它的会忽略。
+                "X-Accel-Buffering": "no",
+            },
         )
     else:
         async with httpx.AsyncClient(timeout=300) as client:
@@ -5264,6 +5349,24 @@ async def stream_and_capture(headers: dict, body: dict, session_id: str, user_me
                             parse_failures += 1
                             if len(bad_line_samples) < 3:
                                 bad_line_samples.append(line[:200])
+
+    # 流结束时缓冲区可能还压着最后一行：上游最后一个 data: 没有换行收尾时，
+    # 那一行永远进不了上面的 while 循环。字节已经透传给客户端了，所以客户端
+    # 看得到，但旁路解析会漏掉它，存进库的回复就少了尾巴。
+    _tail_line = line_buffer.strip()
+    if _tail_line.startswith("data: ") and _tail_line != "data: [DONE]":
+        try:
+            _tail_data = json.loads(_tail_line[6:])
+            _tail_delta = _tail_data.get("choices", [{}])[0].get("delta", {})
+            if _tail_delta.get("content"):
+                full_response.append(_tail_delta["content"])
+                print(f"✅ [流式] 从缓冲区补回尾部 {len(_tail_delta['content'])} 字", flush=True)
+            if _tail_delta.get("reasoning_content"):
+                full_reasoning.append(_tail_delta["reasoning_content"])
+            if "usage" in _tail_data:
+                stream_usage = _tail_data["usage"]
+        except (json.JSONDecodeError, KeyError, IndexError):
+            pass
 
     chunk_count = _stream_counters["chunks"]
     byte_count = _stream_counters["bytes"]

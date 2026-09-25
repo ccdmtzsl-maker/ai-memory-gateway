@@ -1615,36 +1615,61 @@ async def _memory_palace_spread_activation(selected, rows, character_id: str = "
 
 
 async def _memory_palace_strengthen_coactivated(node_ids, character_id: str = "default"):
-    """共激活强化：检查已有关联，有则加强已有的那条（任意类型），没有才新建时间关联。"""
+    """共激活强化：批量检查关联，一次查询 + 一次更新 + 一次插入。"""
     node_ids = list(dict.fromkeys(node_ids))[:5]
     if len(node_ids) < 2:
         return
+    
+    # 生成所有配对
+    pairs = []
+    for i in range(len(node_ids)):
+        for j in range(i + 1, len(node_ids)):
+            pairs.append((node_ids[i], node_ids[j]))
+    
+    if not pairs:
+        return
+    
     pool = await get_pool()
     async with pool.acquire() as conn:
-        for i in range(len(node_ids)):
-            for j in range(i + 1, len(node_ids)):
-                source_id, target_id = node_ids[i], node_ids[j]
-                existing = await conn.fetchrow("""
-                    SELECT id, link_type, strength FROM memory_palace_links
-                    WHERE character_id = $1
-                      AND ((source_id = $2 AND target_id = $3) OR (source_id = $3 AND target_id = $2))
-                    LIMIT 1
-                """, character_id, source_id, target_id)
-                if existing:
-                    # 参数编号必须从 $1 开始连续。原来写成 $2/$3 但只传两个参数，
-                    # $1 悬空，asyncpg 无法推断它的类型，每轮都报
-                    # "could not determine data type of parameter $1"，
-                    # 于是共激活强化整段被异常吞掉，从未真正生效过。
-                    await conn.execute("""
-                        UPDATE memory_palace_links
-                        SET strength = LEAST(1.0, strength + $1), updated_at = NOW()
-                        WHERE id = $2
-                    """, _MEMORY_PALACE_CO_ACTIVATION_INCREMENT, existing['id'])
-                else:
-                    await conn.execute("""
-                        INSERT INTO memory_palace_links (id, character_id, source_id, target_id, link_type, strength, created_at, updated_at)
-                        VALUES ($1, $2, $3, $4, 'temporal', $5, NOW(), NOW())
-                    """, f"ml_{int(datetime.now(timezone.utc).timestamp() * 1000)}_{uuid.uuid4().hex[:6]}", character_id, source_id, target_id, _MEMORY_PALACE_CO_ACTIVATION_INCREMENT)
+        # 1. 一次查出所有已有关联
+        pair_conditions = " OR ".join([
+            f"((source_id = '{p[0]}' AND target_id = '{p[1]}') OR (source_id = '{p[1]}' AND target_id = '{p[0]}'))"
+            for p in pairs
+        ])
+        existing = await conn.fetch(f"""
+            SELECT id, source_id, target_id, strength FROM memory_palace_links
+            WHERE character_id = $1 AND ({pair_conditions})
+        """, character_id)
+        
+        # 2. 构建已有关联的索引
+        existing_map = {}
+        for row in existing:
+            key1 = (row['source_id'], row['target_id'])
+            key2 = (row['target_id'], row['source_id'])
+            existing_map[key1] = row['id']
+            existing_map[key2] = row['id']
+        
+        # 3. 批量更新已有关联
+        if existing:
+            link_ids = [row['id'] for row in existing]
+            await conn.execute("""
+                UPDATE memory_palace_links
+                SET strength = LEAST(1.0, strength + $1), updated_at = NOW()
+                WHERE id = ANY($2)
+            """, _MEMORY_PALACE_CO_ACTIVATION_INCREMENT, link_ids)
+        
+        # 4. 批量插入新关联
+        new_pairs = [(p[0], p[1]) for p in pairs if p not in existing_map]
+        if new_pairs:
+            now_ts = int(datetime.now(timezone.utc).timestamp() * 1000)
+            values = [
+                (f"ml_{now_ts}_{i}_{uuid.uuid4().hex[:8]}", character_id, p[0], p[1], 'temporal', _MEMORY_PALACE_CO_ACTIVATION_INCREMENT)
+                for i, p in enumerate(new_pairs)
+            ]
+            await conn.executemany("""
+                INSERT INTO memory_palace_links (id, character_id, source_id, target_id, link_type, strength, created_at, updated_at)
+                VALUES ($1, $2, $3, $4, $5, $6, NOW(), NOW())
+            """, values)
 
 
 async def load_memory_palace_event_boxes(box_ids: list, character_id: str = "default") -> dict:

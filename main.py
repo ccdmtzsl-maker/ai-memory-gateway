@@ -1615,7 +1615,7 @@ async def _memory_palace_spread_activation(selected, rows, character_id: str = "
 
 
 async def _memory_palace_strengthen_coactivated(node_ids, character_id: str = "default"):
-    """共激活强化：批量检查关联，一次查询 + 一次更新 + 一次插入。"""
+    """共激活强化：批量检查关联，参数化查询，3 次数据库往返。"""
     node_ids = list(dict.fromkeys(node_ids))[:5]
     if len(node_ids) < 2:
         return
@@ -1631,17 +1631,25 @@ async def _memory_palace_strengthen_coactivated(node_ids, character_id: str = "d
     
     pool = await get_pool()
     async with pool.acquire() as conn:
-        # 1. 一次查出所有已有关联
-        pair_conditions = " OR ".join([
-            f"((source_id = '{p[0]}' AND target_id = '{p[1]}') OR (source_id = '{p[1]}' AND target_id = '{p[0]}'))"
-            for p in pairs
-        ])
-        existing = await conn.fetch(f"""
-            SELECT id, source_id, target_id, strength FROM memory_palace_links
-            WHERE character_id = $1 AND ({pair_conditions})
-        """, character_id)
+        # 1. 批量查询已有关联（参数化，避免 SQL 注入）
+        # 用 unnest 把配对数组展开成临时表，再跟 links 表连接
+        source_ids = [p[0] for p in pairs]
+        target_ids = [p[1] for p in pairs]
         
-        # 2. 构建已有关联的索引
+        existing = await conn.fetch("""
+            WITH pair_table AS (
+                SELECT unnest($2::text[]) AS src, unnest($3::text[]) AS tgt
+            )
+            SELECT l.id, l.source_id, l.target_id, l.strength
+            FROM memory_palace_links l
+            JOIN pair_table p ON (
+                (l.source_id = p.src AND l.target_id = p.tgt) OR
+                (l.source_id = p.tgt AND l.target_id = p.src)
+            )
+            WHERE l.character_id = $1
+        """, character_id, source_ids, target_ids)
+        
+        # 2. 构建已有关联的双向索引
         existing_map = {}
         for row in existing:
             key1 = (row['source_id'], row['target_id'])

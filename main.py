@@ -836,7 +836,8 @@ async def format_daily_impressions_for_prompt(limit: int = 3) -> str:
     rows = await list_daily_impressions(limit=limit)
     rows = list(reversed(rows))
     if not rows:
-        return "【近日印象】\n暂无。"
+        # 空结果同样写缓存，否则没有日印象时每轮都白查一次库。
+        return _cache_set(cache_key, "【近日印象】\n暂无。", ttl=900)
 
     lines = ["【近日印象】"]
     for row in rows:
@@ -862,7 +863,8 @@ async def format_user_impression_for_prompt(character_id: str = "default") -> st
     cached = _cache_get(cache_key)
     if cached is not None:
         return cached
-    item = await get_user_impression(character_id=character_id)
+    # 提示词里不显示 pending_memory_count，跳过那次 COUNT(*) 全表扫。
+    item = await get_user_impression(character_id=character_id, with_pending_count=False)
     imp = (item or {}).get("impression") if item else None
     if not imp:
         # 空结果也要进缓存，否则没有画像时每轮都白查一次库。
@@ -1956,6 +1958,7 @@ async def retrieve_memory_palace_rows_for_prompt(query: str = "", limit: int = 5
         except Exception as e:
             print(f"⚠️ Memory Palace access stats update failed: {e}")
     _log("完成")
+    log_embedding_cache_stats()
     return final_rows, len(pinned)
 
 # 同一轮注入的 receipts 是一次 executemany 写进去的，NOW() 取事务开始时间，
@@ -5160,6 +5163,11 @@ async def stream_and_capture(headers: dict, body: dict, session_id: str, user_me
     stream_usage = {}
     line_buffer = ""
     accumulated_tool_calls = {}  # index -> {id, type, function: {name, arguments}}
+    # 旁路解析的可观测性：出问题时要能分清是「上游没给」还是「我们没解析出来」。
+    parse_failures = 0
+    bad_line_samples = []
+    _stream_counters = {"chunks": 0, "bytes": 0}
+    _stream_t0 = time.perf_counter()
     
     async with httpx.AsyncClient(timeout=300) as client:
         async with client.stream("POST", API_BASE_URL, headers=headers, json=body) as response:
@@ -5205,6 +5213,8 @@ async def stream_and_capture(headers: dict, body: dict, session_id: str, user_me
             async for chunk in response.aiter_bytes():
                 # 原始字节直接透传给客户端
                 yield chunk
+                _stream_counters["chunks"] += 1
+                _stream_counters["bytes"] += len(chunk)
                 
                 # 旁路解析：从字节流中提取assistant回复内容，用于后续记忆提取
                 text = chunk.decode("utf-8", errors="ignore")
@@ -5249,8 +5259,14 @@ async def stream_and_capture(headers: dict, body: dict, session_id: str, user_me
                                         if "arguments" in fn:
                                             accumulated_tool_calls[idx]["function"]["arguments"] += fn["arguments"]
                         except (json.JSONDecodeError, KeyError, IndexError):
-                            pass
-    
+                            # 解析不了的行照样已经透传给客户端了，这里只影响旁路统计。
+                            # 静默会让「客户端看到回复但库里是空的」完全无法排查，所以计数。
+                            parse_failures += 1
+                            if len(bad_line_samples) < 3:
+                                bad_line_samples.append(line[:200])
+
+    chunk_count = _stream_counters["chunks"]
+    byte_count = _stream_counters["bytes"]
     assistant_msg = "".join(full_response)
     assistant_reasoning = "".join(full_reasoning) if full_reasoning else None
     assistant_tool_calls = list(accumulated_tool_calls.values()) if accumulated_tool_calls else None
@@ -5262,6 +5278,42 @@ async def stream_and_capture(headers: dict, body: dict, session_id: str, user_me
             assistant_msg = _clean or ""
             print(f"\U0001f527 Stream: extracted XML tool call from content: {[tc['function']['name'] for tc in _extracted]}")
     
+    # 收尾诊断。「丢对话」「收不到回复」都能在这一行里定位：
+    #   chunks=0        -> 上游一个字节都没给
+    #   chunks>0 内容=0 -> 上游给了但旁路没解析出内容（看 parse失败/残留）
+    #   残留>0          -> 最后一行没有换行结尾，缓冲区里还压着数据
+    _stream_ms = (time.perf_counter() - _stream_t0) * 1000
+    print(
+        f"📡 [流式] chunks={chunk_count} bytes={byte_count} "
+        f"内容={len(assistant_msg)}字 reasoning={len(assistant_reasoning or '')}字 "
+        f"tool_calls={len(assistant_tool_calls or [])} parse失败={parse_failures} "
+        f"残留={len(line_buffer)}字 耗时={_stream_ms:.0f}ms",
+        flush=True,
+    )
+    if parse_failures and bad_line_samples:
+        print(f"⚠️ [流式] 解析失败样本: {bad_line_samples}", flush=True)
+    if line_buffer.strip():
+        # 没有换行收尾的最后一行会一直留在缓冲区里，里面可能就是最后一段内容。
+        print(f"⚠️ [流式] 缓冲区残留未处理: {line_buffer.strip()[:200]}", flush=True)
+
+    # 上游给了数据但一个字都没解析出来：这正是「客户端看到回复、库里却是空白」
+    # 的那种情况。这里只报警，不跳过存库——跳过会连同 user 那条消息一起不写，
+    # 让整轮对话从历史里消失，比留一条空白 assistant 更难恢复。
+    if chunk_count > 0 and not assistant_msg and not assistant_tool_calls and not assistant_reasoning:
+        add_dashboard_log(
+            "error",
+            f"流式回复解析为空：对话线={session_id}，收到 {chunk_count} 个分片/{byte_count} 字节，"
+            f"但未解析出任何内容（parse失败={parse_failures}，残留={len(line_buffer)}字）。"
+            f"这一轮的 assistant 内容会是空白，user 消息仍会正常保存。",
+            category="chat",
+            session_id=session_id,
+        )
+        print(
+            f"❌ [流式] 上游有数据但解析结果为空 "
+            f"(chunks={chunk_count}, bytes={byte_count}) —— 本轮 assistant 将存为空白",
+            flush=True,
+        )
+
     if assistant_reasoning:
         print(f"🧠 Stream response 包含 reasoning_content ({len(assistant_reasoning)}字符)")
     
@@ -9250,6 +9302,68 @@ def is_valid_memory_palace_embedding_json(value) -> bool:
 # 一轮聊天要算几十次向量，等于白扔几十个失败请求 + 几十倍延迟。
 # key = (endpoint, model, dim)，value = variants 里那个能用的下标。
 _MP_EMBEDDING_VARIANT_CACHE = {}
+
+# ---------- 查询向量缓存 ----------
+# 同一句话反复出现时不再发请求：多轮对话里用户会复述、追问、重发同一句，
+# 检索拆出来的词组更是高度重复（人名、作品名每轮都在）。
+#
+# 容量按内存算：1024 维 float，Python list 存一条约 8KB（每个 float 对象
+# 有额外开销，不是裸 4KB）。上限 400 条 ≈ 3.2MB，对 512MB 的盒子可接受。
+# key 带上 (endpoint, model, dim)：换模型或改维度时旧向量必须失效，
+# 否则会拿 1024 维的缓存去比 768 维的库，相似度全是垃圾。
+_MP_EMBEDDING_TEXT_CACHE = {}
+_MP_EMBEDDING_TEXT_CACHE_MAX = 400
+_MP_EMBEDDING_CACHE_STATS = {"hit": 0, "miss": 0}
+
+
+def _mp_embedding_cache_key(text: str, cfg: dict):
+    return (cfg.get("endpoint") or "", cfg.get("model") or "", int(cfg.get("dim") or 0), text)
+
+
+def _mp_embedding_cache_get(text: str, cfg: dict):
+    """命中返回向量的副本，未命中返回 None。
+
+    返回副本而不是原对象：调用方拿到的 list 有可能被就地改动（归一化之类），
+    那样会污染缓存里的值，后续所有命中都跟着错。复制 1024 个 float 的开销
+    远小于一次网络往返。
+    """
+    v = _MP_EMBEDDING_TEXT_CACHE.get(_mp_embedding_cache_key(text, cfg))
+    if v:
+        _MP_EMBEDDING_CACHE_STATS["hit"] += 1
+        return list(v)
+    _MP_EMBEDDING_CACHE_STATS["miss"] += 1
+    return None
+
+
+def _mp_embedding_cache_put(text: str, cfg: dict, emb):
+    """只缓存非空向量。空结果说明这次调用失败了，缓存它等于把故障固化。"""
+    if not emb or not text:
+        return emb
+    try:
+        if len(_MP_EMBEDDING_TEXT_CACHE) >= _MP_EMBEDDING_TEXT_CACHE_MAX:
+            # 简单 FIFO：dict 保持插入序，弹最早的那条。
+            # 没做 LRU 是因为查询向量的复用集中在相邻几轮，FIFO 足够，
+            # 而 LRU 要维护访问顺序，在热路径上不值得。
+            for _ in range(max(1, _MP_EMBEDDING_TEXT_CACHE_MAX // 10)):
+                if not _MP_EMBEDDING_TEXT_CACHE:
+                    break
+                _MP_EMBEDDING_TEXT_CACHE.pop(next(iter(_MP_EMBEDDING_TEXT_CACHE)), None)
+        _MP_EMBEDDING_TEXT_CACHE[_mp_embedding_cache_key(text, cfg)] = list(emb)
+    except Exception:
+        pass
+    return emb
+
+
+def log_embedding_cache_stats():
+    s = _MP_EMBEDDING_CACHE_STATS
+    total = s["hit"] + s["miss"]
+    if total <= 0:
+        return
+    print(
+        f"🧮 [向量缓存] 命中{s['hit']}/{total} ({s['hit'] * 100 // total}%) "
+        f"缓存{len(_MP_EMBEDDING_TEXT_CACHE)}条",
+        flush=True,
+    )
 # 已经抱怨过的问题，避免同一句话在日志里刷屏。
 _MP_EMBEDDING_WARNED = set()
 
@@ -9331,12 +9445,21 @@ async def compute_memory_palace_embeddings(texts: list) -> list:
     """
     raw = list(texts or [])
     out = [[] for _ in raw]
+    _cfg0 = _mp_embedding_config()
     pending = []  # [(原始下标, 清理后的文本)]
     for i, t in enumerate(raw):
         s = str(t or "").strip()
         if not s:
             continue
-        pending.append((i, s[:4000]))
+        s = s[:4000]
+        # 缓存命中的直接填进 out，不占批次名额。
+        # 一轮检索的几段文字里常有上轮出现过的，能少发就少发。
+        if _cfg0["ready"]:
+            _hit = _mp_embedding_cache_get(s, _cfg0)
+            if _hit is not None:
+                out[i] = _hit
+                continue
+        pending.append((i, s))
     if not pending:
         return out
     if len(pending) == 1:
@@ -9397,6 +9520,7 @@ async def compute_memory_palace_embeddings(texts: list) -> list:
                           f"{len(embeds[0])} 维），后续直接用这种格式")
                 for (orig_i, _t), emb in zip(batch, embeds):
                     out[orig_i] = emb
+                    _mp_embedding_cache_put(_t, cfg, emb)
                 return True
         return False
 
@@ -9445,6 +9569,10 @@ async def compute_memory_palace_embedding(text: str) -> list:
             "[mp-embedding] EMBEDDING_API_KEY / EMBEDDING_BASE_URL / EMBEDDING_MODEL 未完整配置",
         )
         return []
+    # 截断之后再查缓存：key 要和实际发出去的文本一致。
+    _cached = _mp_embedding_cache_get(text, cfg)
+    if _cached is not None:
+        return _cached
     endpoint, model, dim = cfg["endpoint"], cfg["model"], cfg["dim"]
     headers = {"Authorization": f"Bearer {cfg['api_key']}", "Content-Type": "application/json"}
     variants = _mp_embedding_variants(model, text, dim)
@@ -9482,6 +9610,7 @@ async def compute_memory_palace_embedding(text: str) -> list:
                                 f"[mp-embedding] 注意：服务商返回 {len(emb)} 维，但设置里 EMBEDDING_DIM={dim}。"
                                 f"建议把设置页改成 {len(emb)}，否则新旧向量维度会混。",
                             )
+                        _mp_embedding_cache_put(text, cfg, emb)
                         return emb
                     last_error = str(data)[:500]
                     _mp_embedding_warn_once(

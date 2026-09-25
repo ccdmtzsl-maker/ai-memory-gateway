@@ -3256,6 +3256,72 @@ def _drop_orphan_tool_messages(messages: list) -> list:
         print(f"🔧 分区模式: 发上游前降级不完整工具历史 assistant={sanitized_ast} tool={sanitized_tools}，保留内容并避免tool_call_id不匹配")
     return cleaned
 
+def _coerce_assistant_text(content) -> str:
+    """把上游给的 content 规整成纯文本。
+
+    OpenAI 的 content 允许是字符串，也允许是多模态数组
+    [{"type": "text", "text": "..."}, {"type": "image_url", ...}]。
+    直接当字符串用的话，数组形式会让客户端显示空白，存库也会存进
+    Python list 的 repr，两边一起坏掉。这里统一拍平成文本。
+    """
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, dict):
+                # 兼容 {"type":"text","text":...} 和少数实现的 {"content":...}
+                t = item.get("text") or item.get("content")
+                if isinstance(t, str) and t:
+                    parts.append(t)
+        return "".join(parts)
+    return str(content)
+
+
+def _pick_nonstream_message(resp_data):
+    """从非流响应里找出 assistant 消息体。
+
+    正常是 choices[0].message，但实测有几种上游会给别的形状：
+      - choices[0].delta：上游忽略了 stream=false，按流式字段名返回
+      - choices[0].text：旧 completions 格式
+    原来的代码只认 message，遇到这两种会 KeyError，而那个 except 是
+    静默 pass，于是客户端拿到一个自己也读不懂的 json，表现就是空白。
+
+    返回 (message_dict, 来源标签)；取不到就返回 (None, 原因)。
+    """
+    if not isinstance(resp_data, dict):
+        return None, "响应不是 JSON 对象"
+    choices = resp_data.get("choices")
+    if choices is None:
+        return None, "响应里没有 choices 字段"
+    if isinstance(choices, dict):
+        # 少数实现把 choices 做成了 {"0": {...}}
+        choices = [v for _k, v in sorted(choices.items())]
+    if not isinstance(choices, list) or not choices:
+        return None, "choices 为空"
+    first = choices[0]
+    if not isinstance(first, dict):
+        return None, "choices[0] 不是对象（实际 %s）" % type(first).__name__
+
+    msg = first.get("message")
+    if isinstance(msg, dict):
+        return msg, "message"
+    # 上游忽略 stream=false，按流式字段名返回
+    delta = first.get("delta")
+    if isinstance(delta, dict):
+        return delta, "delta(上游忽略了stream=false)"
+    # 旧 completions 格式
+    if isinstance(first.get("text"), str):
+        return {"role": "assistant", "content": first["text"]}, "text(旧completions格式)"
+    if msg is None and "message" in first:
+        return None, "message 为 null"
+    return None, "choices[0] 里没有 message/delta/text"
+
+
 def _extract_xml_tool_calls_from_content(content: str):
     """If assistant content ends with XML tool call, extract and return (clean_content, tool_calls_list)."""
     if not content or not isinstance(content, str):
@@ -5174,35 +5240,127 @@ async def chat_completions(request: Request):
             response = await client.post(API_BASE_URL, headers=headers, json=body)
             
             if response.status_code == 200:
-                resp_data = response.json()
+                # response.json() 会在几种真实情况下抛异常：上游回了空 body、
+                # 被截断的 JSON、CDN 的 HTML 错误页，或者忽略 stream=false
+                # 直接发了 SSE 文本。原来它在 try 之外，一抛就是 HTTP 500，
+                # 客户端表现为「什么都没有」。这里兜住并回一个能看懂的错误。
+                try:
+                    resp_data = response.json()
+                except Exception as _je:
+                    _raw_preview = (response.text or "")[:300]
+                    add_dashboard_log(
+                        "error",
+                        f"上游 HTTP 200 但响应不是合法 JSON：对话线={session_id}，"
+                        f"{type(_je).__name__}: {_je}，body长度={len(response.text or '')}，"
+                        f"片段={_raw_preview}",
+                        category="chat",
+                        session_id=session_id,
+                    )
+                    print(f"❌ [非流] 上游返回非 JSON: {type(_je).__name__} | 片段={_raw_preview[:120]}", flush=True)
+                    return JSONResponse(
+                        status_code=502,
+                        content={"error": {
+                            "message": "上游返回了无法解析的响应（非 JSON）。详情见网关后台日志。",
+                            "type": "upstream_bad_payload",
+                        }},
+                    )
+
                 assistant_msg = ""
                 assistant_tool_calls = None
                 assistant_reasoning = None
+                _msg_source = ""
+                _pick_reason = ""
                 try:
-                    msg_obj = resp_data["choices"][0]["message"]
-                    # raw_assistant_msg 用于 DB 历史/记忆提取；assistant_msg_for_client 仅用于返回客户端
-                    raw_assistant_msg = msg_obj.get("content") or ""
-                    assistant_msg = raw_assistant_msg
-                    if raw_assistant_msg:
-                        transformed_msg = apply_response_transform_rules(raw_assistant_msg)
-                        if transformed_msg != raw_assistant_msg:
-                            msg_obj["content"] = transformed_msg
-                            print("🔁 Response transform 已应用：客户端返回转换后，DB保存转换前")
-                    if msg_obj.get("tool_calls"):
-                        assistant_tool_calls = msg_obj["tool_calls"]
-                        print(f"🔧 Response 包含 {len(assistant_tool_calls)} 个工具调用")
-                    if msg_obj.get("reasoning_content"):
-                        assistant_reasoning = msg_obj["reasoning_content"]
-                        print(f"🧠 Response 包含 reasoning_content ({len(assistant_reasoning)}字符)")
-                    # If no native tool_calls but content has XML tool call, extract it
-                    if not assistant_tool_calls and assistant_msg:
-                        _clean, _extracted = _extract_xml_tool_calls_from_content(assistant_msg)
-                        if _extracted:
-                            assistant_tool_calls = _extracted
-                            assistant_msg = _clean or ""
-                            print(f"\U0001f527 NonStream: extracted XML tool call: {[tc['function']['name'] for tc in _extracted]}")
-                except (KeyError, IndexError):
+                    msg_obj, _pick_info = _pick_nonstream_message(resp_data)
+                    if msg_obj is None:
+                        # 取不到 assistant 消息体。原来这里是静默 pass，客户端会
+                        # 收到一个它自己也读不懂的 json，屏幕上就是空白。
+                        _pick_reason = _pick_info
+                    else:
+                        _msg_source = _pick_info
+                        # raw_assistant_msg 用于 DB 历史/记忆提取；msg_obj["content"] 仅用于返回客户端。
+                        # content 可能是多模态数组，先拍平成文本（数组直接当字符串用
+                        # 会让客户端显示空白、DB 里存进 list 的 repr）。
+                        raw_assistant_msg = _coerce_assistant_text(msg_obj.get("content"))
+                        assistant_msg = raw_assistant_msg
+                        if raw_assistant_msg:
+                            transformed_msg = apply_response_transform_rules(raw_assistant_msg)
+                            if transformed_msg != raw_assistant_msg:
+                                msg_obj["content"] = transformed_msg
+                                print("🔁 Response transform 已应用：客户端返回转换后，DB保存转换前")
+                                if not transformed_msg.strip():
+                                    # 规则把整段正文吃光了。多半是 <think> 类规则碰上
+                                    # 「整段都是思考、没有正文」的回复，客户端会看到空白。
+                                    add_dashboard_log(
+                                        "error",
+                                        f"响应转换规则把正文清空了：对话线={session_id}，"
+                                        f"转换前 {len(raw_assistant_msg)} 字，转换后 0 字。"
+                                        f"客户端会看到空白，请检查 RESPONSE_TRANSFORM_RULES。",
+                                        category="chat",
+                                        session_id=session_id,
+                                    )
+                                    print(f"⚠️ [非流] 转换规则清空了正文（{len(raw_assistant_msg)}字 -> 0字）", flush=True)
+                        if msg_obj.get("tool_calls"):
+                            assistant_tool_calls = msg_obj["tool_calls"]
+                            print(f"🔧 Response 包含 {len(assistant_tool_calls)} 个工具调用")
+                        if msg_obj.get("reasoning_content"):
+                            assistant_reasoning = msg_obj["reasoning_content"]
+                            print(f"🧠 Response 包含 reasoning_content ({len(assistant_reasoning)}字符)")
+                        # If no native tool_calls but content has XML tool call, extract it
+                        if not assistant_tool_calls and assistant_msg:
+                            _clean, _extracted = _extract_xml_tool_calls_from_content(assistant_msg)
+                            if _extracted:
+                                assistant_tool_calls = _extracted
+                                assistant_msg = _clean or ""
+                                print(f"\U0001f527 NonStream: extracted XML tool call: {[tc['function']['name'] for tc in _extracted]}")
+                        # 上游按流式/旧格式返回时，客户端读 choices[0].message 会读不到。
+                        # 补一份规范的 message，原始字段保留不动。
+                        if _msg_source.startswith("delta") or _msg_source.startswith("text"):
+                            try:
+                                _fixed = dict(msg_obj)
+                                _fixed.setdefault("role", "assistant")
+                                resp_data["choices"][0]["message"] = _fixed
+                                print(f"🔧 [非流] 上游用了 {_msg_source}，已补 choices[0].message 供客户端读取", flush=True)
+                            except Exception:
+                                pass
+                except (KeyError, IndexError, TypeError, AttributeError) as _pe:
+                    # TypeError/AttributeError 也要拦：实测 choices[0] 是字符串、
+                    # message 是 null 时会抛这两个，原来没捕获、直接 HTTP 500。
+                    _pick_reason = f"{type(_pe).__name__}: {_pe}"
+                    print(f"⚠️ [非流] 解析 assistant 消息异常: {_pick_reason}", flush=True)
+
+                # ---------- 非流诊断（和流式那条 📡 对齐，便于两边比对） ----------
+                _fr = ""
+                try:
+                    _fr = (resp_data.get("choices") or [{}])[0].get("finish_reason") or ""
+                except Exception:
                     pass
+                print(
+                    f"📨 [非流] 内容={len(assistant_msg)}字 "
+                    f"reasoning={len(assistant_reasoning or '')}字 "
+                    f"tool_calls={len(assistant_tool_calls or [])} "
+                    f"来源={_msg_source or '取不到'} finish_reason={_fr or '-'}",
+                    flush=True,
+                )
+
+                if not assistant_msg and not assistant_tool_calls:
+                    # 客户端这一轮会看到空白。把上游到底给了什么记进后台日志，
+                    # 否则事后完全无从追查（这正是「非流也偶尔空白」难定位的原因）。
+                    _diag = _pick_reason or (
+                        f"只有 reasoning_content（{len(assistant_reasoning)}字）、没有正文"
+                        if assistant_reasoning else
+                        f"content 为空（finish_reason={_fr or '未提供'}）"
+                    )
+                    _keys = list(resp_data.keys())[:8] if isinstance(resp_data, dict) else []
+                    add_dashboard_log(
+                        "error",
+                        f"非流式回复为空：对话线={session_id}，原因={_diag}，"
+                        f"顶层字段={_keys}，来源={_msg_source or '取不到'}，"
+                        f"响应片段={json.dumps(resp_data, ensure_ascii=False)[:400]}",
+                        category="chat",
+                        session_id=session_id,
+                    )
+                    print(f"❌ [非流] 回复为空 —— {_diag}", flush=True)
                 
                 if MEMORY_ENABLED and (user_message or tool_messages):
                     sync_saved_tool_call = False

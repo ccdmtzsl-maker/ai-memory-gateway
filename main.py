@@ -217,6 +217,34 @@ def log_rss(tag: str = ""):
     )
 
 
+# 性能诊断开关：默认关闭，在后台「设置 → 启用性能诊断日志」手动开启。
+# 运行时由 /api/settings 热更新（写 globals()），改完不需要重启。
+PERF_DIAGNOSTIC_ENABLED = os.getenv("PERF_DIAGNOSTIC_ENABLED", "false").lower() == "true"
+
+
+def perf_print(*args, **kwargs):
+    """性能诊断日志的统一出口，受后台「启用性能诊断日志」开关控制。
+
+    定位问题时加的那些计时日志（[入口]/[记忆检索]/[记忆组装]/[变量替换]/
+    [向量缓存]/[流式] 等）在问题查完之后就只是噪音，但真出事时又必须能
+    立刻看到。所以不删，改成默认不打、后台一开就全出来。
+
+    为什么复用 PERF_DIAGNOSTIC_ENABLED 而不新建开关：它已经有 DB 持久化
+    加运行时热更新，语义也正好是「性能诊断」。再加一个只会让设置页多出
+    一个意思差不多的按钮。
+
+    内存日志（log_rss）不走这里 —— Render 免费实例只有 512MB，涨上去就是
+    重启，不能等到想查的时候才开。
+
+    这里读的是模块全局变量，而设置页热更新走 globals() 赋值，是同一个名字，
+    所以开关即时生效，不需要重启进程。
+    """
+    if not PERF_DIAGNOSTIC_ENABLED:
+        return
+    kwargs.setdefault("flush", True)
+    print(*args, **kwargs)
+
+
 def _cache_get(key: str):
     try:
         item = _READ_CACHE.get(str(key))
@@ -728,10 +756,6 @@ _PERF_DIAGNOSTIC_PREFIXES = (
     "/api/daily-impressions",
     "/api/user-impression",
 )
-
-# 性能诊断开关：默认关闭，需在设置页面手动开启。
-PERF_DIAGNOSTIC_ENABLED = os.getenv("PERF_DIAGNOSTIC_ENABLED", "false").lower() == "true"
-
 
 def _database_pool_snapshot() -> str:
     """Return a non-blocking asyncpg pool snapshot without acquiring a connection."""
@@ -1902,7 +1926,7 @@ async def retrieve_memory_palace_rows_for_prompt(query: str = "", limit: int = 5
     _t = [_t0]
     def _log(step):
         now = _time.perf_counter()
-        print(f"⏱️ [记忆检索] {step}: +{(now-_t[0])*1000:.0f}ms (总{(now-_t0)*1000:.0f}ms)", flush=True)
+        perf_print(f"⏱️ [记忆检索] {step}: +{(now-_t[0])*1000:.0f}ms (总{(now-_t0)*1000:.0f}ms)")
         _t[0] = now
     limit = max(1, min(int(limit or 5), 30))
     await clear_expired_memory_palace_pins(character_id)
@@ -2374,10 +2398,9 @@ async def format_memory_palace_for_prompt(limit: int = 5, room: str = None, quer
 
     def _fmt_log(step: str):
         _now = time.perf_counter()
-        print(
+        perf_print(
             f"⏱️ [记忆组装] {step}: +{(_now - _fmt_last[0]) * 1000:.0f}ms "
-            f"(总{(_now - _fmt_t0) * 1000:.0f}ms)",
-            flush=True,
+            f"(总{(_now - _fmt_t0) * 1000:.0f}ms)"
         )
         _fmt_last[0] = _now
 
@@ -2552,7 +2575,7 @@ async def replace_explicit_memory_variables(prompt: str, query: str = "", charac
         _detail.append(f"{_name}={_at - _prev:.0f}ms")
         _prev = _at
     if _prev >= 50:
-        print(f"⏱️ [变量替换] 共{_prev:.0f}ms | " + " ".join(_detail), flush=True)
+        perf_print(f"⏱️ [变量替换] 共{_prev:.0f}ms | " + " ".join(_detail))
     return prompt
 
 
@@ -3476,7 +3499,7 @@ def _strip_cache_control(messages: list):
         if len(content) == 1 and isinstance(content[0], dict) and content[0].get("type") == "text":
             msg["content"] = content[0]["text"]
     if stripped > 0:
-        print(f"🔧 兼容性处理: 剥离了 {stripped} 个 cache_control 字段（非 Claude 模型）")
+        perf_print(f"🔧 兼容性处理: 剥离了 {stripped} 个 cache_control 字段（非 Claude 模型）")
 
 
 def _convert_replacement_groups(replacement: str) -> str:
@@ -4059,7 +4082,7 @@ async def _build_basic_cached(
                 result.append({"role": "system", "content": operit_memory_text})
     
     bp_count = 1 + (1 if history else 0)
-    print(f"🔒 基础缓存(降级): BP×{bp_count} | 历史{len(history)}条 | 总{len(result)}条messages")
+    perf_print(f"🔒 基础缓存(降级): BP×{bp_count} | 历史{len(history)}条 | 总{len(result)}条messages")
     return result
 
 
@@ -4453,10 +4476,10 @@ async def process_memories_background(session_id: str, user_msg: str, assistant_
     
     try:
         # Debug: 打印存储分支判断依据
-        print(f"💾 process_memories_background: user_msg={bool(user_msg)}, tool_messages={len(tool_messages) if tool_messages else 0}, "
-              f"assistant_tool_calls={len(assistant_tool_calls) if assistant_tool_calls else 0}, skip={skip_conversation_log}")
+        perf_print(f"💾 process_memories_background: user_msg={bool(user_msg)}, tool_messages={len(tool_messages) if tool_messages else 0}, "
+                   f"assistant_tool_calls={len(assistant_tool_calls) if assistant_tool_calls else 0}, skip={skip_conversation_log}")
         if tool_messages:
-            print(f"💾 tool详情: {[{'role': m.get('role'), 'tool_call_id': m.get('tool_call_id', '?')} for m in tool_messages]}")
+            perf_print(f"💾 tool详情: {[{'role': m.get('role'), 'tool_call_id': m.get('tool_call_id', '?')} for m in tool_messages]}")
         
         # 1. 存储对话记录（除非明确跳过）
         recent_log_history = []
@@ -4699,10 +4722,9 @@ async def chat_completions(request: Request):
 
     def _ent_log(step: str):
         _now = time.perf_counter()
-        print(
+        perf_print(
             f"⏱️ [入口] {step}: +{(_now - _ent_last[0]) * 1000:.0f}ms "
-            f"(总{(_now - _ent_t0) * 1000:.0f}ms)",
-            flush=True,
+            f"(总{(_now - _ent_t0) * 1000:.0f}ms)"
         )
         _ent_last[0] = _now
 
@@ -5214,14 +5236,14 @@ async def chat_completions(request: Request):
         body.pop("reasoning_effort", None)
         body.pop("google", None)
         body["reasoning_effort"] = REASONING_EFFORT
-        print(f"🧠 注入推理参数: reasoning_effort={REASONING_EFFORT}")
+        perf_print(f"🧠 注入推理参数: reasoning_effort={REASONING_EFFORT}")
     
     print(f"📡 请求: model={model}, stream={is_stream}, memory={'on' if MEMORY_ENABLED else 'off'}", flush=True)
     
     # 调试：打印请求体中的推理相关字段
     debug_keys = {k: v for k, v in body.items() if k in ('reasoning_effort', 'google', 'reasoning')}
     if debug_keys:
-        print(f"📡 推理字段: {debug_keys}", flush=True)
+        perf_print(f"📡 推理字段: {debug_keys}")
     
     if is_stream:
         return StreamingResponse(
@@ -5436,7 +5458,11 @@ async def stream_and_capture(headers: dict, body: dict, session_id: str, user_me
         async with client.stream("POST", API_BASE_URL, headers=headers, json=body) as response:
             # 打印上游响应头（排查thinking问题用）
             upstream_ct = response.headers.get("content-type", "")
-            print(f"📨 上游响应: status={response.status_code}, content-type={upstream_ct}", flush=True)
+            # 正常 200 进开关；非 200 始终打印，下面的错误分支还会补详情。
+            if response.status_code == 200:
+                perf_print(f"📨 上游响应: status={response.status_code}, content-type={upstream_ct}")
+            else:
+                print(f"📨 上游响应: status={response.status_code}, content-type={upstream_ct}", flush=True)
             
             # 上游非200时，提前打印messages结构方便debug
             if response.status_code != 200:
@@ -5492,7 +5518,13 @@ async def stream_and_capture(headers: dict, body: dict, session_id: str, user_me
                             if "usage" in data:
                                 stream_usage = data["usage"]
                             
-                            delta = data.get("choices", [{}])[0].get("delta", {})
+                            # choices 可能是空数组：上游结尾常单独发一个只带
+                            # usage 的 chunk。那不是格式错误（usage 上面已经
+                            # 取过了），直接跳过，否则会被记成 parse 失败。
+                            _choices = data.get("choices") or []
+                            if not _choices:
+                                continue
+                            delta = _choices[0].get("delta", {}) or {}
                             content = delta.get("content", "")
                             if content:
                                 full_response.append(content)
@@ -5535,7 +5567,8 @@ async def stream_and_capture(headers: dict, body: dict, session_id: str, user_me
     if _tail_line.startswith("data: ") and _tail_line != "data: [DONE]":
         try:
             _tail_data = json.loads(_tail_line[6:])
-            _tail_delta = _tail_data.get("choices", [{}])[0].get("delta", {})
+            _tail_choices = _tail_data.get("choices") or [{}]
+            _tail_delta = _tail_choices[0].get("delta", {}) or {}
             if _tail_delta.get("content"):
                 full_response.append(_tail_delta["content"])
                 print(f"✅ [流式] 从缓冲区补回尾部 {len(_tail_delta['content'])} 字", flush=True)
@@ -5564,15 +5597,16 @@ async def stream_and_capture(headers: dict, body: dict, session_id: str, user_me
     #   chunks>0 内容=0 -> 上游给了但旁路没解析出内容（看 parse失败/残留）
     #   残留>0          -> 最后一行没有换行结尾，缓冲区里还压着数据
     _stream_ms = (time.perf_counter() - _stream_t0) * 1000
-    print(
+    # 正常那行进性能诊断开关。下面几条异常始终打印：它们代表真的丢了内容，
+    # 等用户想起来开开关就太晚了。
+    perf_print(
         f"📡 [流式] chunks={chunk_count} bytes={byte_count} "
         f"内容={len(assistant_msg)}字 reasoning={len(assistant_reasoning or '')}字 "
         f"tool_calls={len(assistant_tool_calls or [])} parse失败={parse_failures} "
-        f"残留={len(line_buffer)}字 耗时={_stream_ms:.0f}ms",
-        flush=True,
+        f"残留={len(line_buffer)}字 耗时={_stream_ms:.0f}ms"
     )
     if parse_failures and bad_line_samples:
-        print(f"⚠️ [流式] 解析失败样本: {bad_line_samples}", flush=True)
+        print(f"⚠️ [流式] 解析失败 {parse_failures} 行，样本: {bad_line_samples}", flush=True)
     if line_buffer.strip():
         # 没有换行收尾的最后一行会一直留在缓冲区里，里面可能就是最后一段内容。
         print(f"⚠️ [流式] 缓冲区残留未处理: {line_buffer.strip()[:200]}", flush=True)
@@ -5608,7 +5642,7 @@ async def stream_and_capture(headers: dict, body: dict, session_id: str, user_me
         tt = stream_usage.get("total_tokens", 0)
         if tt > 0:
             asyncio.create_task(save_token_usage(session_id, model, pt, ct, tt))
-            print(f"📊 Stream Token: {pt} + {ct} = {tt}")
+            perf_print(f"📊 Stream Token: {pt} + {ct} = {tt}")
     
     if MEMORY_ENABLED and (user_message or tool_messages):
         sync_saved_tool_call = False
@@ -9640,10 +9674,9 @@ def log_embedding_cache_stats():
     total = s["hit"] + s["miss"]
     if total <= 0:
         return
-    print(
+    perf_print(
         f"🧮 [向量缓存] 命中{s['hit']}/{total} ({s['hit'] * 100 // total}%) "
-        f"缓存{len(_MP_EMBEDDING_TEXT_CACHE)}条",
-        flush=True,
+        f"缓存{len(_MP_EMBEDDING_TEXT_CACHE)}条"
     )
 # 已经抱怨过的问题，避免同一句话在日志里刷屏。
 _MP_EMBEDDING_WARNED = set()

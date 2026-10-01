@@ -16,6 +16,7 @@ import os
 import json
 import uuid
 import asyncio
+import contextvars
 import time
 import re
 import math as _math
@@ -2625,7 +2626,66 @@ async def get_memory_palace_receipt_refs(source_messages: list, character_id: st
     return refs
 
 
+# ------------------------------------------------------------
+# 工具结果轮沿用记忆
+#
+# 一次工具调用，网关会收到两次请求：用户发消息一次，前端交回工具结果一次。
+# 第二次以前会把记忆完整重查一遍（约 3 秒），但查询文本还是用户原来那句话，
+# 查出来基本是同一批，还会把访问次数、共激活、召回记录再记一遍。
+#
+# 现在：每次正常查完，按「会话 + 角色 + 条数 + 房间 + 用户那句话」记一份结果。
+# 只有当本轮是在交工具结果、并且这几项全对得上、且不超过 10 分钟时，才直接沿用。
+# 其余情况（普通轮、对不上、网关重启过、过期）一律照常重查，和以前一样。
+# 「本轮是不是在交工具结果」由 chat_completions 里原有的检测结果决定，这里只读不改。
+# ------------------------------------------------------------
+_MP_TOOL_RESULT_ROUND = contextvars.ContextVar("mp_tool_result_round", default=False)
+_MP_RECALL_REUSE_TTL = 600.0
+_MP_RECALL_REUSE_MAX = 64
+_MP_RECALL_REUSE = {}  # key -> (time.monotonic(), 记忆宫殿文本)
+
+
+def _mp_recall_reuse_key(session_id, character_id, limit, room, query):
+    sid = str(session_id or "").strip()
+    q = str(query or "")
+    if not sid or not q.strip():
+        return None
+    return (sid, str(character_id or "default"), limit, room, q)
+
+
+def _mp_recall_reuse_put(key, text):
+    now = time.monotonic()
+    for k in [k for k, (ts, _) in _MP_RECALL_REUSE.items() if now - ts > _MP_RECALL_REUSE_TTL]:
+        _MP_RECALL_REUSE.pop(k, None)
+    _MP_RECALL_REUSE.pop(key, None)
+    _MP_RECALL_REUSE[key] = (now, text)
+    while len(_MP_RECALL_REUSE) > _MP_RECALL_REUSE_MAX:
+        _MP_RECALL_REUSE.pop(next(iter(_MP_RECALL_REUSE)), None)
+
+
 async def format_memory_palace_for_prompt(limit: int = 5, room: str = None, query: str = "", character_id: str = "default", recent_messages=None, touch_access: bool = True, session_id: str = "") -> str:
+    # 调试接口等不记访问的调用：照旧直接查，不读也不写沿用记录
+    if not touch_access:
+        return await _format_memory_palace_for_prompt_uncached(
+            limit=limit, room=room, query=query, character_id=character_id,
+            recent_messages=recent_messages, touch_access=touch_access, session_id=session_id)
+    key = _mp_recall_reuse_key(session_id, character_id, limit, room, query)
+    if key is not None and _MP_TOOL_RESULT_ROUND.get():
+        hit = _MP_RECALL_REUSE.get(key)
+        if hit and time.monotonic() - hit[0] <= _MP_RECALL_REUSE_TTL:
+            perf_print(
+                f"⏱️ [记忆检索] 工具结果轮：沿用本问题 {time.monotonic() - hit[0]:.0f} 秒前召回的记忆"
+                f"（{len(hit[1])}字），跳过检索与访问记录"
+            )
+            return hit[1]
+    text = await _format_memory_palace_for_prompt_uncached(
+        limit=limit, room=room, query=query, character_id=character_id,
+        recent_messages=recent_messages, touch_access=touch_access, session_id=session_id)
+    if key is not None:
+        _mp_recall_reuse_put(key, text)
+    return text
+
+
+async def _format_memory_palace_for_prompt_uncached(limit: int = 5, room: str = None, query: str = "", character_id: str = "default", recent_messages=None, touch_access: bool = True, session_id: str = "") -> str:
     rows, pinned_count = await retrieve_memory_palace_rows_for_prompt(query=query, limit=limit, room=room, character_id=character_id, recent_messages=recent_messages, touch_access=touch_access)
     if not rows:
         return "### 记忆宫殿\n\n暂无可用记忆。"
@@ -4937,6 +4997,9 @@ async def chat_completions(request: Request):
             tool_messages = []
         if tool_messages:
             print(f"🔧 检测到 {len(tool_messages)} 条工具结果消息")
+    # 只读上面的检测结果，告诉记忆宫殿这一轮是不是在交工具结果。
+    # 每个请求都会设一次（True/False），不会串到别的请求。
+    _MP_TOOL_RESULT_ROUND.set(bool(tool_messages))
     
     # ---------- 生成 session ID ----------
     # OpenAI 兼容请求本身通常不带会话 ID。之前这里每次随机生成 uuid，

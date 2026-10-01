@@ -99,6 +99,7 @@ from timestamps import (
     _prepend_text_to_content,
     _prepend_timestamp_to_user_messages,
     _shorten_client_timestamp,
+    _sparse_stamp_lines,
     _to_local_dt,
     build_current_message_timestamp_prefix,
 )
@@ -3976,15 +3977,17 @@ async def build_partitioned_messages(
             history=history,
             shorten_time=True,
         )
+        _kw_content = current_content  # 关键词匹配用打戳前的正文，exact 规则不受前缀影响
         if _sparse_ts:
             # 优先用打戳过程记下的最后一条时间；它和历史打戳同源，不会错位。
             _prev_dt = (_ts_state or {}).get("prev_dt") or _last_message_dt(a_msgs, b_msgs)
-            _cur_prefix = build_current_message_timestamp_prefix(_prev_dt, current_content)
+            _cur_prefix = build_current_message_timestamp_prefix(
+                _prev_dt, current_content, anchor_dt=(_ts_state or {}).get("anchor_dt"))
             if _cur_prefix:
                 current_content = _prepend_text_to_content(current_content, _cur_prefix)
         result.append({"role": "user", "content": current_content})
 
-        keyword_context_text = await build_keyword_context_text(current_content)
+        keyword_context_text = await build_keyword_context_text(_kw_content)
         if await get_runtime_context_template_enabled():
             # 模板模式：塞一个占位 system，记忆宫殿注入后统一渲染成一条
             result.append({
@@ -4049,14 +4052,16 @@ async def _build_basic_cached(
             history=history,
             shorten_time=False,
         )
+        _kw_content = current_content  # 关键词匹配用打戳前的正文，exact 规则不受前缀影响
         if _sparse_ts:
             _prev_dt = (_ts_state or {}).get("prev_dt") or _last_message_dt(history)
-            _cur_prefix = build_current_message_timestamp_prefix(_prev_dt, current_content)
+            _cur_prefix = build_current_message_timestamp_prefix(
+                _prev_dt, current_content, anchor_dt=(_ts_state or {}).get("anchor_dt"))
             if _cur_prefix:
                 current_content = _prepend_text_to_content(current_content, _cur_prefix)
         result.append({"role": "user", "content": current_content})
 
-        keyword_context_text = await build_keyword_context_text(current_content)
+        keyword_context_text = await build_keyword_context_text(_kw_content)
         if await get_runtime_context_template_enabled():
             # 模板模式：塞一个占位 system，记忆宫殿注入后统一渲染成一条
             result.append({
@@ -6598,16 +6603,14 @@ async def _collect_user_impression_recent_messages(mode: str = "initial", sessio
 def _format_impression_recent_messages(items: list, user_nickname: str, character_name: str) -> str:
     """把画像用近期聊天渲染成带稀疏时间戳的文本。
 
-    时间戳规则与上下文构造一致（复用同一套阈值）：
-      - 每条对话线的第一条打完整戳（带星期）
-      - 跨天打完整戳
-      - 同天间隔≥15分钟打时分戳
-      - 间隔≥6小时在戳后追加「（距上次对话约 N 小时）」
+    标记规则与上下文构造共用 timestamps._sparse_stamp_lines：
+      - 每条对话线第一条打 [07-29 周三 18:00]
+      - 相邻间隔≥15分钟打断点戳「—— 30分钟后（18:30）——」
+      - 无断点但距上个标记≥60分钟（或跨天）打校准戳 [19:00]
     """
     msg_lines = []
     current_session = None
-    prev_dt = None
-    last_date = None
+    ts_state = {}
     for m in items:
         sid = m.get("session_id") or "default"
         if sid != current_session:
@@ -6615,30 +6618,15 @@ def _format_impression_recent_messages(items: list, user_nickname: str, characte
                 msg_lines.append("")
             msg_lines.append(f"【对话线：{sid}】")
             current_session = sid
-            prev_dt = None
-            last_date = None
+            ts_state = {}
 
         local_dt = _to_local_dt(m.get("created_at"))
         if local_dt:
-            gap_minutes = None
-            if prev_dt is not None:
-                gap_minutes = max(0, int((local_dt - prev_dt).total_seconds() // 60))
-            crossed_day = last_date is not None and last_date != local_dt.date()
-            need_stamp = (prev_dt is None) or crossed_day or (
-                gap_minutes is not None and gap_minutes >= SPARSE_TS_GAP_MINUTES
-            )
-            if need_stamp:
-                if prev_dt is None or crossed_day:
-                    wd = _WEEKDAY_CN[local_dt.weekday()]
-                    stamp = f"[{local_dt.strftime('%m-%d')} {wd} {local_dt.strftime('%H:%M')}]"
-                else:
-                    stamp = f"[{local_dt.strftime('%H:%M')}]"
-                note = _format_gap_note(gap_minutes) if gap_minutes is not None else ""
+            stamp_lines = _sparse_stamp_lines(local_dt, ts_state, has_prefix=False)
+            if stamp_lines:
                 if msg_lines and msg_lines[-1] != "" and not msg_lines[-1].startswith("【对话线："):
                     msg_lines.append("")
-                msg_lines.append(stamp + note)
-            last_date = local_dt.date()
-            prev_dt = local_dt
+                msg_lines.extend(stamp_lines)
 
         role = m.get("role") or ""
         speaker = user_nickname if role == "user" else (character_name if role == "assistant" else role)

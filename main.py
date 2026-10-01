@@ -100,8 +100,9 @@ from timestamps import (
     _prepend_timestamp_to_user_messages,
     _shorten_client_timestamp,
     _sparse_stamp_lines,
+    _split_timestamp_prefix,
     _to_local_dt,
-    build_current_message_timestamp_prefix,
+    stamp_current_message,
 )
 from text_and_impression import (
     _clean_current_user_content_preserve_multimodal,
@@ -3981,10 +3982,8 @@ async def build_partitioned_messages(
         if _sparse_ts:
             # 优先用打戳过程记下的最后一条时间；它和历史打戳同源，不会错位。
             _prev_dt = (_ts_state or {}).get("prev_dt") or _last_message_dt(a_msgs, b_msgs)
-            _cur_prefix = build_current_message_timestamp_prefix(
-                _prev_dt, current_content, anchor_dt=(_ts_state or {}).get("anchor_dt"))
-            if _cur_prefix:
-                current_content = _prepend_text_to_content(current_content, _cur_prefix)
+            current_content = stamp_current_message(
+                current_content, _prev_dt, anchor_dt=(_ts_state or {}).get("anchor_dt"))
         result.append({"role": "user", "content": current_content})
 
         keyword_context_text = await build_keyword_context_text(_kw_content)
@@ -4055,10 +4054,8 @@ async def _build_basic_cached(
         _kw_content = current_content  # 关键词匹配用打戳前的正文，exact 规则不受前缀影响
         if _sparse_ts:
             _prev_dt = (_ts_state or {}).get("prev_dt") or _last_message_dt(history)
-            _cur_prefix = build_current_message_timestamp_prefix(
-                _prev_dt, current_content, anchor_dt=(_ts_state or {}).get("anchor_dt"))
-            if _cur_prefix:
-                current_content = _prepend_text_to_content(current_content, _cur_prefix)
+            current_content = stamp_current_message(
+                current_content, _prev_dt, anchor_dt=(_ts_state or {}).get("anchor_dt"))
         result.append({"role": "user", "content": current_content})
 
         keyword_context_text = await build_keyword_context_text(_kw_content)
@@ -6603,10 +6600,11 @@ async def _collect_user_impression_recent_messages(mode: str = "initial", sessio
 def _format_impression_recent_messages(items: list, user_nickname: str, character_name: str) -> str:
     """把画像用近期聊天渲染成带稀疏时间戳的文本。
 
-    标记规则与上下文构造共用 timestamps._sparse_stamp_lines：
-      - 每条对话线第一条打 [07-29 周三 18:00]
-      - 相邻间隔≥15分钟打断点戳「—— 30分钟后（18:30）——」
-      - 无断点但距上个标记≥60分钟（或跨天）打校准戳 [19:00]
+    标记规则与上下文构造共用 timestamps._sparse_stamp_lines（统一横线格式）：
+      - 每条对话线第一条：—— 07-29 周三 18:00 ——
+      - 相邻间隔≥15分钟：—— 30分钟后（18:30）——
+      - 无断点但距上个标记≥60分钟（或跨天）：—— 19:00 ——
+      - user 正文自带附件时间戳：只显示那个时间，不算间隔
     """
     msg_lines = []
     current_session = None
@@ -6620,17 +6618,21 @@ def _format_impression_recent_messages(items: list, user_nickname: str, characte
             current_session = sid
             ts_state = {}
 
+        role = m.get("role") or ""
+        _raw_c = _content_plain_text(m.get("content"))
+        attach_inner = None
+        if role == "user":
+            attach_inner, _raw_c = _split_timestamp_prefix(_raw_c)
+
         local_dt = _to_local_dt(m.get("created_at"))
         if local_dt:
-            stamp_lines = _sparse_stamp_lines(local_dt, ts_state, has_prefix=False)
+            stamp_lines = _sparse_stamp_lines(local_dt, ts_state, attach_inner)
             if stamp_lines:
                 if msg_lines and msg_lines[-1] != "" and not msg_lines[-1].startswith("【对话线："):
                     msg_lines.append("")
                 msg_lines.extend(stamp_lines)
 
-        role = m.get("role") or ""
         speaker = user_nickname if role == "user" else (character_name if role == "assistant" else role)
-        _raw_c = _content_plain_text(m.get("content"))
         content = "\n".join(line.strip() for line in _raw_c.splitlines() if line.strip())
         msg_lines.append(f"{speaker}[#{m.get('id')}]: {content}")
     return "\n".join(msg_lines).rstrip()

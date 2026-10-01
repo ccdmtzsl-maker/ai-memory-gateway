@@ -143,7 +143,10 @@ _WEEKDAY_CN = ("周一", "周二", "周三", "周四", "周五", "周六", "周�
 SPARSE_TS_GAP_MINUTES = 15      # 同天内间隔达到多少分钟才打戳
 
 
-SPARSE_TS_LONG_GAP_HOURS = 6    # 间隔达到多少小时额外补一行说明
+SPARSE_TS_LONG_GAP_HOURS = 6    # 超过多少小时，断点时长只取整小时
+
+
+SPARSE_TS_CALIBRATE_MINUTES = 60   # 距上一个标记多久没有断点，就补一个校准戳
 
 
 def _content_has_timestamp_prefix(content) -> bool:
@@ -197,45 +200,107 @@ def _last_message_dt(*message_lists):
     return None
 
 
-def build_current_message_timestamp_prefix(prev_dt, content) -> str:
-    """给当前轮 user 消息算时间戳前缀（稀疏规则，时间取现在）。
+def _format_gap_duration(minutes: int) -> str:
+    """间隔分钟数 → 断点戳里的时长文字。
 
-    规则与历史消息一致：
-      - 已带附件时间戳：不重复打时间，但间隔≥6小时仍补说明
-      - 无上一条消息（缓存区为空）：打完整戳
-      - 跨天：打完整戳（带星期）
-      - 同天间隔≥15分钟：打时分戳
-      - 其他：不打
+    <1 小时写分钟；6 小时以内精确到分钟（「1小时20分钟」），
+    再长就只取整小时——那时候差几十分钟已经不影响理解；超过一天换成天。
+    """
+    minutes = max(0, int(minutes))
+    if minutes < 60:
+        return f"{minutes}分钟"
+    if minutes < 1440:
+        h, m = divmod(minutes, 60)
+        if m == 0:
+            return f"{h}小时"
+        if h >= SPARSE_TS_LONG_GAP_HOURS:
+            return f"{round(minutes / 60)}小时"
+        return f"{h}小时{m}分钟"
+    d, rem = divmod(minutes, 1440)
+    h = rem // 60
+    if h and d < 3:
+        return f"{d}天{h}小时"
+    return f"{d}天"
+
+
+def _format_stamp_time(dt, with_date: bool) -> str:
+    """戳里的时间：跨天/首条带「月-日 星期」，否则只给时分。"""
+    if with_date:
+        return f"{dt.strftime('%m-%d')} {_WEEKDAY_CN[dt.weekday()]} {dt.strftime('%H:%M')}"
+    return dt.strftime('%H:%M')
+
+
+def _sparse_stamp_lines(local_dt, state: dict, has_prefix: bool = False) -> list:
+    """稀疏时间戳的唯一判定点：决定这条消息前要加哪些标记行，并就地更新 state。
+
+    三种标记：
+      - 首条锚点：[07-29 周三 18:00]
+      - 断点戳：相邻间隔 ≥ 15 分钟 → —— 30分钟后（18:30）——
+                跨天时括号里带日期和星期
+      - 校准戳：没有断点、但距上一个标记已 ≥ 60 分钟，或悄悄跨了天 → [19:00]
+                只写时间不写间隔，用来防止锚点漂移
+
+    has_prefix：消息正文已带 Operit 附件时间戳。此时不再重复写时间，
+    断点只写「—— 30分钟后 ——」；附件戳本身也算一次锚点。
+
+    只依赖「这条及之前」的消息，新消息不会回头改旧消息，A 区缓存前缀稳定。
+
+    state 字段：prev_dt / last_date / first_seen / anchor_dt（最近一次标记的时间）
+    """
+    prev_dt = state.get("prev_dt")
+    last_date = state.get("last_date")
+    anchor_dt = state.get("anchor_dt")
+    first = not state.get("first_seen")
+
+    gap = None if prev_dt is None else max(0, int((local_dt - prev_dt).total_seconds() // 60))
+    crossed_day = (not first) and last_date is not None and last_date != local_dt.date()
+
+    lines = []
+    anchored = has_prefix
+    if first:
+        if not has_prefix:
+            lines.append(f"[{_format_stamp_time(local_dt, True)}]")
+        anchored = True
+    elif gap is not None and gap >= SPARSE_TS_GAP_MINUTES:
+        dur = _format_gap_duration(gap)
+        if has_prefix:
+            lines.append(f"—— {dur}后 ——")
+        else:
+            lines.append(f"—— {dur}后（{_format_stamp_time(local_dt, crossed_day)}）——")
+        anchored = True
+    elif crossed_day or (
+        anchor_dt is not None
+        and (local_dt - anchor_dt).total_seconds() >= SPARSE_TS_CALIBRATE_MINUTES * 60
+    ):
+        if not has_prefix:
+            lines.append(f"[{_format_stamp_time(local_dt, crossed_day)}]")
+        anchored = True
+
+    if anchored:
+        state["anchor_dt"] = local_dt
+    state["first_seen"] = True
+    state["last_date"] = local_dt.date()
+    state["prev_dt"] = local_dt
+    return lines
+
+
+def build_current_message_timestamp_prefix(prev_dt, content, anchor_dt=None) -> str:
+    """给当前轮 user 消息算时间戳前缀（时间取现在），规则同 _sparse_stamp_lines。
+
+    prev_dt：上一条消息时间；anchor_dt：历史里最近一次标记的时间（用于校准戳）。
+    不传 anchor_dt 时只会出首条锚点/断点戳，不会出校准戳。
     """
     now_local = datetime.now(timezone.utc) + timedelta(hours=TIMEZONE_HOURS)
-    has_prefix = _content_has_timestamp_prefix(content)
-
-    gap_minutes = None
-    crossed_day = False
-    if prev_dt is not None:
-        gap_minutes = max(0, int((now_local - prev_dt).total_seconds() // 60))
-        crossed_day = prev_dt.date() != now_local.date()
-
-    need_stamp = (prev_dt is None) or crossed_day or (
-        gap_minutes is not None and gap_minutes >= SPARSE_TS_GAP_MINUTES
-    )
-
-    parts = []
-    if need_stamp and not has_prefix:
-        if prev_dt is None or crossed_day:
-            wd = _WEEKDAY_CN[now_local.weekday()]
-            parts.append(f"[{now_local.strftime('%m-%d')} {wd} {now_local.strftime('%H:%M')}]")
-        else:
-            parts.append(f"[{now_local.strftime('%H:%M')}]")
-
-    if gap_minutes is not None:
-        note = _format_gap_note(gap_minutes)
-        if note:
-            parts.append(note)
-
-    if not parts:
+    state = {
+        "prev_dt": prev_dt,
+        "last_date": prev_dt.date() if prev_dt else None,
+        "first_seen": prev_dt is not None,
+        "anchor_dt": anchor_dt,
+    }
+    lines = _sparse_stamp_lines(now_local, state, _content_has_timestamp_prefix(content))
+    if not lines:
         return ""
-    return chr(10).join(parts) + chr(10) + chr(10)
+    return "\n".join(lines) + "\n\n"
 
 
 def _prepend_timestamp_to_user_messages(messages: list, sparse: bool = False,
@@ -243,21 +308,13 @@ def _prepend_timestamp_to_user_messages(messages: list, sparse: bool = False,
     """给历史消息加时间戳。
 
     sparse=False（默认，兼容旧行为）：只给 user 消息打紧凑戳，每条都打。
-    sparse=True：按间隔稀疏打戳，user/assistant 都参与。
-      - 已带附件时间戳的消息不重复打时间，但仍可能补间隔说明
-      - 首条、跨天、间隔≥15分钟才打戳；间隔≥6小时额外补一行说明
-      - 形如 "[07-29 周三 18:17]" 后接空行再正文
-      - 间隔一律按 created_at 计算，与消息有无附件无关
+    sparse=True：按 _sparse_stamp_lines 的规则稀疏打戳，user/assistant 都参与；
+      标记与正文之间空一行；tool 不打戳但参与间隔计算。
 
-    state / return_state：分区模式要分两次调用（A 区、B 区），中间的
-    prev_dt / last_date 必须接上，否则 B 区首条会被当成整段对话的第一条
-    重打完整戳，而且 A→B 之间那个间隔算不出来——正好是「离开一段时间
-    再回来」最需要提示的位置。
+    state / return_state：分区模式分两次调用（A 区、B 区），中间状态必须接上，
+    否则 B 区首条会被当成整段对话的第一条，A→B 之间的间隔也算不出来。
     """
-    state = state or {}
-    last_date = state.get("last_date")
-    prev_dt = state.get("prev_dt")
-    first_seen = bool(state.get("first_seen"))
+    st = dict(state or {})
     stamped = []
     for msg in messages:
         m = dict(msg)
@@ -266,50 +323,24 @@ def _prepend_timestamp_to_user_messages(messages: list, sparse: bool = False,
 
         if not sparse:
             if role == "user" and local_dt:
-                show_date = last_date != local_dt.date()
+                show_date = st.get("last_date") != local_dt.date()
                 stamp = (f"[{local_dt.strftime('%m-%d %H:%M')}]" if show_date
                          else f"[{local_dt.strftime('%H:%M')}]")
                 if not _content_has_timestamp_prefix(m.get("content")):
                     m["content"] = _prepend_text_to_content(m.get("content"), stamp)
-                last_date = local_dt.date()
+                st["last_date"] = local_dt.date()
         elif role in ("user", "assistant") and local_dt:
-            gap_minutes = None
-            if prev_dt is not None:
-                gap_minutes = max(0, int((local_dt - prev_dt).total_seconds() // 60))
-
-            crossed_day = last_date is not None and last_date != local_dt.date()
-            need_stamp = (not first_seen) or crossed_day or (
-                gap_minutes is not None and gap_minutes >= SPARSE_TS_GAP_MINUTES
-            )
             has_prefix = _content_has_timestamp_prefix(m.get("content"))
-
-            parts = []
-            if need_stamp and not has_prefix:
-                if (not first_seen) or crossed_day:
-                    wd = _WEEKDAY_CN[local_dt.weekday()]
-                    parts.append(f"[{local_dt.strftime('%m-%d')} {wd} {local_dt.strftime('%H:%M')}]")
-                else:
-                    parts.append(f"[{local_dt.strftime('%H:%M')}]")
-
-            if gap_minutes is not None:
-                note = _format_gap_note(gap_minutes)
-                if note:
-                    parts.append(note)
-
-            if parts:
-                prefix = "\n".join(parts) + "\n\n"
-                m["content"] = _prepend_text_to_content(m.get("content"), prefix)
-
-            first_seen = True
-            last_date = local_dt.date()
-            prev_dt = local_dt
+            lines = _sparse_stamp_lines(local_dt, st, has_prefix)
+            if lines:
+                m["content"] = _prepend_text_to_content(m.get("content"), "\n".join(lines) + "\n\n")
         elif local_dt:
             # tool 等其他 role 不打戳，但参与间隔计算
-            prev_dt = local_dt
+            st["prev_dt"] = local_dt
 
         m.pop("id", None)
         m.pop("created_at", None)
         stamped.append(m)
     if return_state:
-        return stamped, {"last_date": last_date, "prev_dt": prev_dt, "first_seen": first_seen}
+        return stamped, st
     return stamped

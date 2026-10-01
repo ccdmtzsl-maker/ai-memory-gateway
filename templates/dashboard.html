@@ -717,10 +717,10 @@
                     </div>
                     <div class="settings-field">
                         <div class="settings-toggle-row">
-                            <label>A 区稀疏时间戳</label>
+                            <label>稀疏时间戳</label>
                             <label class="toggle"><input type="checkbox" id="set-SPARSE_TIMESTAMP_ENABLED"><span class="toggle-slider"></span></label>
                         </div>
-                        <small class="form-hint"><code>SPARSE_TIMESTAMP_ENABLED</code> — 仅 A 区生效。不再逐条硬打时间戳，改为按间隔补：首条与跨天打 <code>[07-29 周三 18:17]</code>，同天间隔满 15 分钟打 <code>[18:17]</code>，满 6 小时再加一行「距上次对话约 N 小时」。时间戳与正文之间空一行；已带 Operit 附件时间戳的消息不重复打戳。关闭时沿用每条 user 都打紧凑戳的旧行为。</small>
+                        <small class="form-hint"><code>SPARSE_TIMESTAMP_ENABLED</code> — 历史与当前消息按间隔补时间标记，不逐条硬打：首条打 <code>[07-29 周三 18:17]</code>；相邻间隔满 15 分钟打断点 <code>—— 30分钟后（18:47）——</code>（跨天带日期星期）；连续聊天无断点时，距上个标记满 60 分钟补校准戳 <code>[19:17]</code>。标记与正文之间空一行；已带 Operit 附件时间戳的消息不重复写时间。关闭时沿用每条 user 都打紧凑戳的旧行为。</small>
                     </div>
                     <div class="settings-field">
                         <div class="settings-toggle-row">

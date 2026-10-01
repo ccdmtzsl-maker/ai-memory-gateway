@@ -1968,6 +1968,72 @@ async def load_memory_palace_event_boxes(box_ids: list, character_id: str = "def
     return {r["id"]: dict(r) for r in rows}
 
 
+# 事件盒和盒内节点一次取回。以前先查盒子、拿到节点编号后再查节点，要跑两趟数据库。
+# 两种行的列不一样，用 UNION ALL 拼成一张宽表（各自没有的列填 NULL），
+# 再按 kind 拆回两个字典。字典里的字段和以前两个函数返回的完全一样。
+_MP_EVENT_BOX_COLUMNS = (
+    "id", "character_id", "name", "tags", "summary_node_id", "live_memory_ids",
+    "archived_memory_ids", "compression_count", "sealed", "created_at", "updated_at",
+)
+_MP_EVENT_BOX_NODE_COLUMNS = (
+    "id", "content", "room", "tags", "importance", "mood", "valence", "arousal",
+    "date", "created_at", "last_accessed_at", "access_count", "pinned_until",
+    "event_box_id", "archived", "is_box_summary",
+)
+_MP_EVENT_BOXES_WITH_NODES_SQL = """
+    WITH b AS (
+        SELECT id, character_id, name, tags, summary_node_id, live_memory_ids, archived_memory_ids,
+               compression_count, sealed, created_at, updated_at
+        FROM memory_palace_event_boxes
+        WHERE character_id = $1 AND id = ANY($2::text[])
+    ),
+    want AS (
+        SELECT x AS id FROM b, unnest(b.live_memory_ids) AS x WHERE COALESCE(x, '') <> ''
+        UNION
+        SELECT summary_node_id FROM b WHERE COALESCE(summary_node_id, '') <> ''
+    )
+    SELECT 'box' AS kind,
+           b.id, b.character_id, b.name, b.tags, b.summary_node_id, b.live_memory_ids,
+           b.archived_memory_ids, b.compression_count, b.sealed, b.created_at, b.updated_at,
+           NULL::text AS content, NULL::text AS room, NULL::integer AS importance, NULL::text AS mood,
+           NULL::double precision AS valence, NULL::double precision AS arousal, NULL::date AS date,
+           NULL::timestamptz AS last_accessed_at, NULL::integer AS access_count,
+           NULL::timestamptz AS pinned_until, NULL::text AS event_box_id,
+           NULL::boolean AS archived, NULL::boolean AS is_box_summary
+    FROM b
+    UNION ALL
+    SELECT 'node' AS kind,
+           n.id, NULL, NULL, n.tags, NULL, NULL,
+           NULL, NULL, NULL, n.created_at, NULL,
+           n.content, n.room, n.importance, n.mood,
+           n.valence, n.arousal, n.date,
+           n.last_accessed_at, n.access_count,
+           n.pinned_until, n.event_box_id,
+           n.archived, n.is_box_summary
+    FROM memory_palace_nodes n
+    WHERE n.character_id = $1 AND n.id IN (SELECT id FROM want)
+"""
+
+
+async def load_memory_palace_event_boxes_with_nodes(box_ids: list, character_id: str = "default") -> tuple:
+    """返回 (boxes, box_nodes)，等价于依次调用
+    load_memory_palace_event_boxes 和 load_memory_palace_event_box_nodes，只跑一趟数据库。"""
+    ids = [str(x) for x in (box_ids or []) if str(x or "").strip()]
+    ids = list(dict.fromkeys(ids))
+    if not ids:
+        return {}, {}
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(_MP_EVENT_BOXES_WITH_NODES_SQL, character_id, ids)
+    boxes, nodes = {}, {}
+    for r in rows:
+        if r["kind"] == "box":
+            boxes[r["id"]] = {c: r[c] for c in _MP_EVENT_BOX_COLUMNS}
+        else:
+            nodes[r["id"]] = {c: r[c] for c in _MP_EVENT_BOX_NODE_COLUMNS}
+    return boxes, nodes
+
+
 def collapse_memory_palace_rows_by_event_box(rows: list, pinned_count: int, boxes: dict) -> list:
     """普通记忆按 event_box_id 去重；便利贴保持逐条置顶。"""
     pinned = rows[:pinned_count]
@@ -2477,19 +2543,27 @@ async def record_memory_palace_recall_receipts(rows: list, pinned_count: int = 0
     ids = list(dict.fromkeys(ids))[:40]
     if not ids:
         return 0
-    anchor_id = await get_conversation_last_message_id(session_id)
+    # 锚点（会话最后一条消息编号）直接在写入语句里查，不再单独跑一趟。
+    # 取值规则和 get_conversation_last_message_id 一致：会话名为空记 0，没消息也记 0。
+    anchor_sid = str(session_id or "").strip()
     pool = await get_pool()
     async with pool.acquire() as conn:
         # 不做写入去重：每轮注入都如实记一组 receipts。
         # 重复记账是信息，不是脏数据：同一条记忆连续多轮出现，说明它是这段
         # 对话的持续主题。后续取样会按 memory_id 去重，重复不会浪费 prompt 名额。
-        await conn.executemany(
+        await conn.execute(
             """
             INSERT INTO memory_palace_recall_receipts
                 (character_id, session_id, memory_id, anchor_message_id, injected_at, metadata)
-            VALUES ($1, $2, $3, $4, NOW(), '{}'::jsonb)
+            SELECT $1::text, $2::text, t.memory_id,
+                   CASE WHEN $3::text = '' THEN 0::bigint
+                        ELSE COALESCE((SELECT MAX(id)::bigint FROM conversations WHERE session_id = $3::text), 0)
+                   END,
+                   NOW(), '{}'::jsonb
+            FROM unnest($4::text[]) WITH ORDINALITY AS t(memory_id, ord)
+            ORDER BY t.ord
             """,
-            [(character_id, session_id or "", memory_id, anchor_id) for memory_id in ids],
+            character_id, session_id or "", anchor_sid, ids,
         )
     # 后台清理，不让聊天请求等它。
     try:
@@ -2567,10 +2641,8 @@ async def format_memory_palace_for_prompt(limit: int = 5, room: str = None, quer
         _fmt_last[0] = _now
 
     box_ids = [r.get("event_box_id") for r in rows[pinned_count:] if r.get("event_box_id")]
-    boxes = await load_memory_palace_event_boxes(box_ids, character_id=character_id)
-    _fmt_log(f"读事件盒{len(box_ids)}个")
-    box_nodes = await load_memory_palace_event_box_nodes(boxes, character_id=character_id)
-    _fmt_log("读事件盒节点")
+    boxes, box_nodes = await load_memory_palace_event_boxes_with_nodes(box_ids, character_id=character_id)
+    _fmt_log(f"读事件盒{len(box_ids)}个+节点{len(box_nodes)}条(一次查询)")
     rows = collapse_memory_palace_rows_by_event_box(rows, pinned_count, boxes)
     for row in rows[pinned_count:]:
         if row.get("_event_box"):
@@ -3969,6 +4041,7 @@ async def build_partitioned_messages(
     base_prompt: str,
     user_message: str,
     active_history_only: bool = False,
+    state: dict = None,
 ) -> list:
     """
     分区缓存模式：构建带breakpoint的messages数组。
@@ -4000,7 +4073,11 @@ async def build_partitioned_messages(
     rounds = group_by_rounds(history)
     total_rounds = len(rounds)
     
-    state = await get_session_cache_state(session_id)
+    # 调用方已经读过分区状态（取历史就是按它的边界取的），直接沿用那份，
+    # 省一次数据库往返，也保证「取历史的边界」和「组装用的状态」是同一份。
+    # 没传时照旧自己读。
+    if state is None:
+        state = await get_session_cache_state(session_id)
     summary_parts = state['summary_parts']
     cumulative_a_start_round = int(state.get('a_start_round') or 0)
     a_start_round = 0 if active_history_only else cumulative_a_start_round
@@ -5190,6 +5267,7 @@ async def chat_completions(request: Request):
                 print(f"🔧 分区模式: 已先写入{persisted_tools}条tool结果到DB，再重建历史")
                 try:
                     latest_state = await get_session_cache_state(session_id)
+                    partition_state = latest_state
                     latest_boundary_id = int(latest_state.get("evicted_through_message_id") or partition_boundary_id or 0)
                     db_history = await get_conversation_messages_after_id(session_id, latest_boundary_id, limit=10000)
                     db_msgs = []
@@ -5282,7 +5360,8 @@ async def chat_completions(request: Request):
         _ent_log("归一化messages")
         
         messages = await build_partitioned_messages(
-            session_id, all_msgs, partition_base_prompt, user_message, active_history_only=True
+            session_id, all_msgs, partition_base_prompt, user_message, active_history_only=True,
+            state=partition_state,
         )
         _ent_log("组装分区消息")
         messages = _repair_tool_call_ids_by_adjacency(messages, session_id=session_id, reason="final_messages")

@@ -1114,11 +1114,12 @@ async def update_message_content(message_id: int, new_content: str):
 #
 # 现在第一次读时把整张表一次取回，之后直接从内存拿。所有写入都走下面的
 # set_gateway_config / set_gateway_config_many，写完立刻作废缓存，所以
-# 后台改设置照样马上生效。另设 60 秒过期，兜底「绕过网关直接改库」的情况。
+# 后台改设置照样马上生效。另设 10 分钟过期，兜底「绕过网关直接改库」的情况。
+# 以前是 60 秒，但两轮对话常隔一分钟以上，几乎每轮都要重读一次整表。
 # ------------------------------------------------------------
 _GATEWAY_CONFIG_CACHE: Optional[dict] = None
 _GATEWAY_CONFIG_CACHE_AT = 0.0
-_GATEWAY_CONFIG_CACHE_TTL = 60.0
+_GATEWAY_CONFIG_CACHE_TTL = 600.0
 # 每作废一次加 1。读库期间如果有人写了设置，读回来的就是旧数据，不能存进缓存。
 _GATEWAY_CONFIG_CACHE_GEN = 0
 

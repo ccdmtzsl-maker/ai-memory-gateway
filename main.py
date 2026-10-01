@@ -50,6 +50,8 @@ from memory_palace_scoring import (
     _MEMORY_PALACE_VECTOR_MIN_SIM,
     _MEMORY_PALACE_VECTOR_WEIGHT,
     _memory_palace_aware_dt,
+    _memory_palace_bm25_gate_ids,
+    _memory_palace_bm25_scores,
     _memory_palace_build_bm25_index,
     _memory_palace_cosine,
     _memory_palace_effective_importance,
@@ -1181,33 +1183,131 @@ def _memory_palace_split_last_turn_queries(messages):
 
 
 async def _memory_palace_fetch_rows(room: str = None, character_id: str = "default", include_archived: bool = False):
+    """取记忆节点，不带向量本体。
+
+    以前每行都附带 embedding_json（1024 维的 JSON 文本，约 18KB），449 条
+    就是 8MB，每轮检索都整批搬一次，日志里约 900ms。但相似度早就交给
+    数据库算了，这些文本只在「数据库没给出分数」时才用得上，正常情况下
+    一条都用不到。
+
+    现在只带一个 has_pgvec 标记：这条记忆在数据库里有没有可比对的向量。
+    真正需要回退计算的那几条，由 _memory_palace_fetch_embeddings 单独补取。
+    """
     room = room if room in _MEMORY_PALACE_ROOM_LABELS else None
     # update 模式用 SQL 过滤 id > last_consumed_node_id 只取新增，每个房间仍用 room_limits 控制上限（总计70）
 
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        if room:
-            return await conn.fetch("""
-                SELECT n.id, n.content, n.room, n.tags, n.importance, n.mood, n.valence, n.arousal,
-                       n.date, n.created_at, n.last_accessed_at, n.access_count, n.pinned_until, n.event_box_id, n.archived, n.is_box_summary, v.embedding_json
-                FROM memory_palace_nodes n
-                LEFT JOIN memory_palace_vectors v ON v.memory_id = n.id
-                WHERE n.character_id = $1 AND n.room = $2 AND ($3::boolean OR n.archived = FALSE)
-            """, character_id, room, include_archived)
-        return await conn.fetch("""
+    # embedding 这一列只在装了 pgvector 时才存在。没装时直接写 FALSE，
+    # 否则查询会因为找不到列而报错。
+    has_pgvec_expr = "(v.embedding IS NOT NULL)" if memory_palace_vector_ready() else "FALSE"
+
+    def _sql(expr: str, with_room: bool) -> str:
+        where = "n.character_id = $1 AND n.room = $2 AND ($3::boolean OR n.archived = FALSE)" if with_room \
+            else "n.character_id = $1 AND ($2::boolean OR n.archived = FALSE)"
+        return f"""
             SELECT n.id, n.content, n.room, n.tags, n.importance, n.mood, n.valence, n.arousal,
-                   n.date, n.created_at, n.last_accessed_at, n.access_count, n.pinned_until, n.event_box_id, n.archived, n.is_box_summary, v.embedding_json
+                   n.date, n.created_at, n.last_accessed_at, n.access_count, n.pinned_until, n.event_box_id, n.archived, n.is_box_summary,
+                   {expr} AS has_pgvec
             FROM memory_palace_nodes n
             LEFT JOIN memory_palace_vectors v ON v.memory_id = n.id
-            WHERE n.character_id = $1 AND ($2::boolean OR n.archived = FALSE)
-        """, character_id, include_archived)
+            WHERE {where}
+        """
+
+    args = (character_id, room, include_archived) if room else (character_id, include_archived)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        try:
+            return await conn.fetch(_sql(has_pgvec_expr, bool(room)), *args)
+        except Exception as e:
+            if has_pgvec_expr == "FALSE":
+                raise
+            # 万一列状态和启动时检测的不一致，退回 FALSE：所有记忆都会被当成
+            # 「数据库里没副本」，走回退计算。慢一些，但检索不会挂掉。
+            print(f"⚠️ 记忆节点查询带 has_pgvec 失败，退回保守模式: {str(e)[:120]}")
+            return await conn.fetch(_sql("FALSE", bool(room)), *args)
 
 
-async def search_memory_palace_for_prompt(query: str = "", limit: int = 5, room: str = None, character_id: str = "default", rows=None, bm25_index=None, query_embedding=None, vector_scores=None, explain: bool = False):
+async def _memory_palace_fetch_embeddings(ids, cache: dict) -> dict:
+    """按编号补取向量本体，解析后放进 cache，返回 cache。
+
+    cache 由调用方在一轮检索里共用：同一轮有好几路（每个片段一路 + 上下文
+    一路），要补取的记忆往往是同一批，取一次、解析一次就够了。
+    解析失败或为空的存 None，后面不会再重复取。
+    """
+    need = [i for i in dict.fromkeys(ids) if i not in cache]
+    if not need:
+        return cache
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        got = await conn.fetch(
+            "SELECT memory_id, embedding_json FROM memory_palace_vectors WHERE memory_id = ANY($1::text[])",
+            need,
+        )
+    raw_by_id = {r["memory_id"]: r["embedding_json"] for r in got}
+    for i in need:
+        raw = raw_by_id.get(i)
+        vec = None
+        if raw:
+            try:
+                vec = json.loads(raw)
+            except Exception:
+                vec = None
+        cache[i] = vec
+    perf_print(f"🧮 [记忆检索] 补取向量 {len(need)} 条（数据库未给出分数）")
+    return cache
+
+
+def _memory_palace_ids_needing_embedding(rows, query: str, vector_scores: dict, vector_ok: bool,
+                                         bm25_scores: dict) -> list:
+    """找出数据库没给出分数、又确实要用到向量的记忆。
+
+    数据库最多只报前 MEMORY_PALACE_VECTOR_CANDIDATES 名的分数。没拿到分数的
+    记忆分三种：
+
+    1. 数据库那条路整个不可用（没装 pgvector、维度对不上、查询报错）：
+       全部都要补取，和改动前的行为一样。
+    2. 数据库里根本没有它的比对副本（has_pgvec=False，比如刚加的还没同步）：
+       要补取，否则它就拿不到向量分。
+    3. 有副本，只是排名在上限之外：它的相似度不会超过已报出的任何一条。
+       向量路只取前 _MEMORY_PALACE_CANDIDATE_POOL 名，上限远大于这个数，
+       所以它不可能靠向量进候选。只有靠关键词进了候选时，最后打分才需要
+       它的向量分。所以只补取「排名在外、但关键词选中」的那几条。
+    """
+    # 只有数据库报的是完整的「前 cap 名」时，才能断定没报的进不了向量路前 N。
+    if vector_ok:
+        cap = int(getattr(_db_module, "MEMORY_PALACE_VECTOR_CANDIDATES", 0) or 0)
+        if cap < _MEMORY_PALACE_CANDIDATE_POOL:
+            # 数据库报的名额比向量路要取的还少，推断不成立。
+            vector_ok = False
+        elif len(vector_scores) < cap and any(
+            r["id"] not in vector_scores and r.get("has_pgvec") for r in rows
+        ):
+            # 没报满上限，说明有副本的记忆应该全报了；还有漏的就是数据对不上
+            # （比如查询期间刚好有新记忆写入），这一路不做推断。
+            vector_ok = False
+    if not vector_ok:
+        return [r["id"] for r in rows if r["id"] not in vector_scores]
+    missing = [r for r in rows if r["id"] not in vector_scores]
+    if not missing:
+        return []
+    need = [r["id"] for r in missing if not r.get("has_pgvec")]
+    out_of_rank = [r["id"] for r in missing if r.get("has_pgvec")]
+    if out_of_rank:
+        if query:
+            keyword_ids = _memory_palace_bm25_gate_ids(bm25_scores)
+            need.extend(i for i in out_of_rank if i in keyword_ids)
+        else:
+            # 没有查询文本时不设门槛，全部记忆都参与排序，都要向量分。
+            need.extend(out_of_rank)
+    return need
+
+
+async def search_memory_palace_for_prompt(query: str = "", limit: int = 5, room: str = None, character_id: str = "default", rows=None, bm25_index=None, query_embedding=None, vector_scores=None, explain: bool = False, embedding_cache: dict = None):
     """单路检索。
 
     query_embedding 已经算好时直接用，不再自己发请求：一轮检索有好几路，
     调用方会把所有路的查询文本一次性批量向量化，省掉逐路的网络往返。
+
+    embedding_cache 是一轮检索里共用的「已补取向量」，同一条记忆不会取两遍。
     """
     limit = max(1, min(int(limit or 5), 30))
     query = (query or "").strip()
@@ -1223,6 +1323,9 @@ async def search_memory_palace_for_prompt(query: str = "", limit: int = 5, room:
     # 打分函数会自动退回 Python 计算，结果一致只是慢一些。
     # vector_scores 已经算好时直接用：一轮检索有好几路，调用方会用一条 SQL
     # 把所有路的相似度一起算完，省掉逐路的数据库往返。
+    # vector_ok：数据库给的分数是不是可信的「前 N 名」。只有可信时，
+    # 才能推断「没报分数的记忆排名在后面」；否则一律当成没算过。
+    vector_ok = False
     if vector_scores is None:
         vector_scores = {}
         if query_embedding:
@@ -1230,13 +1333,36 @@ async def search_memory_palace_for_prompt(query: str = "", limit: int = 5, room:
                 vector_scores = await search_memory_palace_vector_scores(
                     query_embedding, character_id=character_id, room=room,
                 )
+                # 这条备用路可能走近似索引，结果不保证是完整的前 N 名，
+                # 不能据此推断「没报的排在后面」。保持 vector_ok=False，
+                # 缺分数的记忆全部补取，和改动前的行为一致。
             except Exception as e:
                 print(f"ℹ️ pgvector 检索失败，回退 Python 计算: {str(e)[:120]}")
                 vector_scores = {}
+    else:
+        vector_ok = True
+    # 维度对不上或 pgvector 不可用时，数据库那边会直接返回空结果，不代表
+    # 「所有记忆都排在后面」，必须当成没算过。
+    if vector_ok and (not query_embedding or not memory_palace_vector_ready(len(query_embedding))):
+        vector_ok = False
+
+    bm25_scores = _memory_palace_bm25_scores(query, rows, index=bm25_index) if query else {}
+    embeddings = {}
+    if query_embedding:
+        need = _memory_palace_ids_needing_embedding(rows, query, vector_scores, vector_ok, bm25_scores)
+        if need:
+            cache = embedding_cache if embedding_cache is not None else {}
+            try:
+                embeddings = await _memory_palace_fetch_embeddings(need, cache)
+            except Exception as e:
+                # 补取失败只影响这几条的向量分（按 0 处理），不让整轮检索失败。
+                print(f"⚠️ 补取记忆向量失败，这几条按无向量处理: {str(e)[:120]}")
+                embeddings = {i: None for i in need}
 
     return _memory_palace_score_rows(
         rows, query=query, query_embedding=query_embedding,
         vector_scores=vector_scores, bm25_index=bm25_index, explain=explain,
+        embeddings=embeddings, bm25_scores=bm25_scores,
     )[:limit]
 
 
@@ -1967,9 +2093,11 @@ async def retrieve_memory_palace_rows_for_prompt(query: str = "", limit: int = 5
             print(f"ℹ️ pgvector 批量检索失败，逐路回退: {str(e)[:120]}")
             batch_scores = [None] * len(batch_texts)
     pool_limit = _MEMORY_PALACE_CANDIDATE_POOL
+    # 这一轮各路共用的补取向量，同一条记忆只取一次。
+    _emb_cache = {}
     if spikes:
         for pos, spike in enumerate(spikes):
-            results = await search_memory_palace_for_prompt(spike["text"], limit=pool_limit, room=room, character_id=character_id, rows=rows, bm25_index=bm25_index, query_embedding=batch_embeds[pos] or None, vector_scores=batch_scores[pos], explain=explain)
+            results = await search_memory_palace_for_prompt(spike["text"], limit=pool_limit, room=room, character_id=character_id, rows=rows, bm25_index=bm25_index, query_embedding=batch_embeds[pos] or None, vector_scores=batch_scores[pos], explain=explain, embedding_cache=_emb_cache)
             for item in results:
                 if explain:
                     item = dict(item)
@@ -1979,7 +2107,7 @@ async def retrieve_memory_palace_rows_for_prompt(query: str = "", limit: int = 5
                 if prev is None or item["score"] > prev["score"]:
                     merged[item["id"]] = item
         if context_query:
-            ctx_results = await search_memory_palace_for_prompt(context_query, limit=pool_limit, room=room, character_id=character_id, rows=rows, bm25_index=bm25_index, query_embedding=batch_embeds[len(spikes)] or None, vector_scores=batch_scores[len(spikes)], explain=explain)
+            ctx_results = await search_memory_palace_for_prompt(context_query, limit=pool_limit, room=room, character_id=character_id, rows=rows, bm25_index=bm25_index, query_embedding=batch_embeds[len(spikes)] or None, vector_scores=batch_scores[len(spikes)], explain=explain, embedding_cache=_emb_cache)
             for item in ctx_results:
                 item = dict(item)
                 item["score"] *= 0.5
@@ -1992,7 +2120,7 @@ async def retrieve_memory_palace_rows_for_prompt(query: str = "", limit: int = 5
                     merged[item["id"]] = item
     else:
         fallback = fallback_query or query
-        for item in await search_memory_palace_for_prompt(fallback, limit=pool_limit, room=room, character_id=character_id, rows=rows, bm25_index=bm25_index, query_embedding=batch_embeds[0] or None, vector_scores=batch_scores[0], explain=explain):
+        for item in await search_memory_palace_for_prompt(fallback, limit=pool_limit, room=room, character_id=character_id, rows=rows, bm25_index=bm25_index, query_embedding=batch_embeds[0] or None, vector_scores=batch_scores[0], explain=explain, embedding_cache=_emb_cache):
             if explain:
                 item = dict(item)
                 item["_hit_path"] = "fallback"
@@ -8634,11 +8762,12 @@ async def get_memory_palace_related_refs(character_id: str = "default", limit: i
                 print(f"ℹ️ 记忆宫殿提取兜底 pgvector 批量检索失败，逐路回退: {str(e)[:120]}")
                 snippet_scores = []
     fallback_by_id = {}
+    _emb_cache = {}
     for si, snippet in enumerate(snippets):
         try:
             snippet_embed = snippet_embeds[si] if si < len(snippet_embeds) else None
             snippet_score = snippet_scores[si] if si < len(snippet_scores) else None
-            hits = await search_memory_palace_for_prompt(snippet, limit=3, character_id=character_id, rows=rows, bm25_index=bm25_index, query_embedding=snippet_embed or None, vector_scores=snippet_score)
+            hits = await search_memory_palace_for_prompt(snippet, limit=3, character_id=character_id, rows=rows, bm25_index=bm25_index, query_embedding=snippet_embed or None, vector_scores=snippet_score, embedding_cache=_emb_cache)
         except Exception as e:
             print(f"⚠️ 记忆宫殿 related refs 检索失败: {e}")
             continue

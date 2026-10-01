@@ -365,9 +365,25 @@ def _memory_palace_same_day_or_near(a, b) -> bool:
     return abs((at - bt).total_seconds()) <= 24 * 3600
 
 
+def _memory_palace_bm25_gate_ids(bm25_scores: dict) -> set:
+    """关键词路的候选：有命中的记忆里，按关键词分取前 N 名。
+
+    单独抽出来，是因为 main.py 补取指纹时也要知道「哪些记忆会靠关键词
+    进候选」。两边必须用同一段代码算，分数相同时的先后顺序才能一致。
+    """
+    bm_pairs = sorted(
+        ((k, v) for k, v in (bm25_scores or {}).items() if v > 0),
+        key=lambda x: x[1], reverse=True,
+    )
+    return {i for i, _v in bm_pairs[:_MEMORY_PALACE_CANDIDATE_POOL]}
+
+
+_EMBEDDING_NOT_GIVEN = object()
+
+
 def _memory_palace_score_rows(rows, query: str, query_embedding=None, discount: float = 1.0,
                               vector_scores=None, bm25_index=None, explain: bool = False,
-                              apply_gate: bool = True):
+                              apply_gate: bool = True, embeddings=None, bm25_scores=None):
     """给候选记忆打分排序。
 
     vector_scores 是数据库算好的 {memory_id: 余弦相似度}。有它就直接查表，
@@ -377,11 +393,46 @@ def _memory_palace_score_rows(rows, query: str, query_embedding=None, discount: 
 
     没查到的节点仍然走 Python 回退：可能是 pgvector 列还没回填，或者
     维度和查询向量对不上。宁可慢一点，也不能让某条记忆凭空拿 0 分。
+
+    embeddings 是 {memory_id: 已解析的向量列表 或 None}，由调用方按需补取。
+    rows 里已经不再附带 embedding_json（每条约 18KB，449 条就是 8MB），
+    只有数据库没给出分数、又确实要用到的那几条才会单独取。为了兼容，
+    embeddings 里没有某条时，仍会尝试读 row 自带的 embedding_json。
+
+    bm25_scores 可以由调用方先算好传进来，避免同一路检索算两遍。
     """
     scored = []
     query = (query or "").strip()
     vector_scores = vector_scores or {}
-    bm25_scores = _memory_palace_bm25_scores(query, rows, index=bm25_index) if query else {}
+    embeddings = embeddings or {}
+    if bm25_scores is None:
+        bm25_scores = _memory_palace_bm25_scores(query, rows, index=bm25_index) if query else {}
+
+    # Python 回退算出的相似度，按记忆编号记下来。过门槛和最后打分都要用，
+    # 以前两处各算一次，结果相同却要跑两遍 1024 维的循环。
+    _fallback_sim = {}
+
+    def _fallback_vector_score(row):
+        rid = row["id"]
+        if rid in _fallback_sim:
+            return _fallback_sim[rid]
+        vec = embeddings.get(rid, _EMBEDDING_NOT_GIVEN)
+        if vec is _EMBEDDING_NOT_GIVEN:
+            raw = row.get("embedding_json") if hasattr(row, "get") else None
+            vec = None
+            if raw:
+                try:
+                    vec = json.loads(raw)
+                except Exception:
+                    vec = None
+        val = None
+        if vec is not None:
+            try:
+                val = _memory_palace_cosine(query_embedding, vec)
+            except Exception:
+                val = None
+        _fallback_sim[rid] = val
+        return val
 
     # 候选池闸门：两条路各自筛一遍，取并集。
     #
@@ -400,20 +451,13 @@ def _memory_palace_score_rows(rows, query: str, query_embedding=None, discount: 
             vec_pairs = []
             for row in rows:
                 vs = vector_scores.get(row["id"])
-                if vs is None and row["embedding_json"]:
-                    try:
-                        vs = _memory_palace_cosine(query_embedding, json.loads(row["embedding_json"]))
-                    except Exception:
-                        vs = None
+                if vs is None:
+                    vs = _fallback_vector_score(row)
                 if vs is not None and float(vs) >= _MEMORY_PALACE_VECTOR_MIN_SIM:
                     vec_pairs.append((row["id"], float(vs)))
             vec_pairs.sort(key=lambda x: x[1], reverse=True)
             gate_ids.update(i for i, _v in vec_pairs[:_MEMORY_PALACE_CANDIDATE_POOL])
-        bm_pairs = sorted(
-            ((k, v) for k, v in bm25_scores.items() if v > 0),
-            key=lambda x: x[1], reverse=True,
-        )
-        gate_ids.update(i for i, _v in bm_pairs[:_MEMORY_PALACE_CANDIDATE_POOL])
+        gate_ids.update(_memory_palace_bm25_gate_ids(bm25_scores))
         # 两路都空：这一路检索确实没有相关记忆，返回空比返回一堆不相关的更好。
         if not gate_ids:
             return []
@@ -428,11 +472,9 @@ def _memory_palace_score_rows(rows, query: str, query_embedding=None, discount: 
             db_score = vector_scores.get(row["id"])
             if db_score is not None:
                 vector_score = float(db_score)
-            elif row["embedding_json"]:
-                try:
-                    vector_score = _memory_palace_cosine(query_embedding, json.loads(row["embedding_json"]))
-                except Exception:
-                    vector_score = 0.0
+            else:
+                _fb = _fallback_vector_score(row)
+                vector_score = _fb if _fb is not None else 0.0
         keyword_score = bm25_scores.get(row["id"], 0.0)
         if query_embedding:
             similarity = _MEMORY_PALACE_VECTOR_WEIGHT * vector_score + _MEMORY_PALACE_BM25_WEIGHT * keyword_score

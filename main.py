@@ -2057,15 +2057,8 @@ async def retrieve_memory_palace_rows_for_prompt(query: str = "", limit: int = 5
         perf_print(f"⏱️ [记忆检索] {step}: +{(now-_t[0])*1000:.0f}ms (总{(now-_t0)*1000:.0f}ms)")
         _t[0] = now
     limit = max(1, min(int(limit or 5), 30))
-    await clear_expired_memory_palace_pins(character_id)
-    rows = await _memory_palace_fetch_rows(room=room, character_id=character_id)
-    _log(f"读节点{len(rows)}条")
-    log_rss(f"读完{len(rows)}节点 ")
-    # 一轮检索会分成好几路（每个用户消息片段一路 + 上下文一路）。切词只跟
-    # 记忆本身有关、跟查什么无关，所以整轮只切一次，所有路共用。
-    bm25_index = _memory_palace_build_bm25_index(rows)
-    _log(f"BM25索引{len(rows)}节点")
     merged = {}
+    # 查询文本只来自用户最近的消息，跟记忆库无关，所以先切好。
     spikes, context_query, fallback_query = _memory_palace_split_last_turn_queries(recent_messages or [])
     if not spikes and query:
         spikes = [{"label": "q", "text": query.strip()}]
@@ -2075,9 +2068,42 @@ async def retrieve_memory_palace_rows_for_prompt(query: str = "", limit: int = 5
         batch_texts = [s["text"] for s in spikes] + ([context_query] if context_query else [])
     else:
         batch_texts = [fallback_query or query]
+
+    # 向量化要等外部服务 1-2 秒，但它只用到查询文本，用不到记忆。所以先把
+    # 请求发出去，等待期间顺便清便利贴、读节点、建切词索引，两边同时进行。
+    # 以前是读完节点才开始向量化，白白多等了这几百毫秒。
+    _embed_cost = [0.0]
+
+    async def _timed_embed():
+        t = _time.perf_counter()
+        try:
+            return await compute_memory_palace_embeddings(batch_texts)
+        finally:
+            _embed_cost[0] = _time.perf_counter() - t
+
+    embed_task = asyncio.create_task(_timed_embed())
+    # 让出一次，向量化任务先跑到「请求已发出、在等回复」那一步，再去查数据库。
+    await asyncio.sleep(0)
     try:
-        batch_embeds = await compute_memory_palace_embeddings(batch_texts)
-        _log(f"批量向量化{len(batch_texts)}段")
+        await clear_expired_memory_palace_pins(character_id)
+        _log("清过期便利贴")
+        rows = await _memory_palace_fetch_rows(room=room, character_id=character_id)
+        _log(f"读节点{len(rows)}条")
+        log_rss(f"读完{len(rows)}节点 ")
+        # 一轮检索会分成好几路（每个用户消息片段一路 + 上下文一路）。切词只跟
+        # 记忆本身有关、跟查什么无关，所以整轮只切一次，所有路共用。
+        bm25_index = _memory_palace_build_bm25_index(rows)
+        _log(f"BM25索引{len(rows)}节点")
+    except BaseException:
+        # 读节点失败或请求被取消：向量化的结果已经没人要了，取消掉。
+        # 回调里读一下结果，免得事后报「Task exception was never retrieved」。
+        embed_task.cancel()
+        embed_task.add_done_callback(lambda t: t.cancelled() or t.exception())
+        raise
+    try:
+        batch_embeds = await embed_task
+        # 「还要等」是读完节点后剩下的等待时间，「本身」是向量化总共花了多久。
+        _log(f"等向量化{len(batch_texts)}段(本身{_embed_cost[0]*1000:.0f}ms，与读节点并行)")
     except Exception as e:
         print(f"⚠️ Memory Palace 批量向量化失败，改为逐条: {e}")
         batch_embeds = [None] * len(batch_texts)
@@ -2092,6 +2118,7 @@ async def retrieve_memory_palace_rows_for_prompt(query: str = "", limit: int = 5
         except Exception as e:
             print(f"ℹ️ pgvector 批量检索失败，逐路回退: {str(e)[:120]}")
             batch_scores = [None] * len(batch_texts)
+        _log(f"数据库算相似度{len(batch_texts)}路")
     pool_limit = _MEMORY_PALACE_CANDIDATE_POOL
     # 这一轮各路共用的补取向量，同一条记忆只取一次。
     _emb_cache = {}
@@ -2150,10 +2177,13 @@ async def retrieve_memory_palace_rows_for_prompt(query: str = "", limit: int = 5
                         merged[item["id"]] = item
                     break
     selected = sorted(merged.values(), key=lambda x: x["score"], reverse=True)[:limit]
+    # 包含各路打分、按需补取向量、日期加权
+    _log(f"打分合并{len(merged)}候选")
     try:
         selected = await _memory_palace_spread_activation(selected, rows, character_id=character_id, max_expand=3, explain=explain)
     except Exception as e:
         print(f"⚠️ Memory Palace spread activation failed: {e}")
+    _log("扩散激活")
     now = datetime.now(timezone.utc)
     pinned = []
     for row in rows:
@@ -2186,8 +2216,9 @@ async def retrieve_memory_palace_rows_for_prompt(query: str = "", limit: int = 5
                     "UPDATE memory_palace_nodes SET access_count = access_count + 1, last_accessed_at = NOW(), updated_at = NOW() WHERE id = $1",
                     [(item["id"],) for item in final_rows]
                 )
+            _log(f"更新访问次数{len(final_rows)}条")
             await _memory_palace_strengthen_coactivated([item["id"] for item in final_rows], character_id=character_id)
-            _log("访问统计")
+            _log("共激活强化")
         except Exception as e:
             print(f"⚠️ Memory Palace access stats update failed: {e}")
     _log("完成")

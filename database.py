@@ -1105,20 +1105,63 @@ async def update_message_content(message_id: int, new_content: str):
 # 网关配置
 # ============================================================
 
-async def get_gateway_config(key: str, default: str = "") -> str:
+# ------------------------------------------------------------
+# 设置项内存缓存
+#
+# 每轮对话要读七八项设置（记忆注入条数、注入深度、上下文模板、关键词规则、
+# 稀疏时间戳开关、昵称……），以前每项都单独查一次库。数据库每趟约 200ms，
+# 一轮光读设置就要 1 秒多，而这些值平时几乎不改。
+#
+# 现在第一次读时把整张表一次取回，之后直接从内存拿。所有写入都走下面的
+# set_gateway_config / set_gateway_config_many，写完立刻作废缓存，所以
+# 后台改设置照样马上生效。另设 60 秒过期，兜底「绕过网关直接改库」的情况。
+# ------------------------------------------------------------
+_GATEWAY_CONFIG_CACHE: Optional[dict] = None
+_GATEWAY_CONFIG_CACHE_AT = 0.0
+_GATEWAY_CONFIG_CACHE_TTL = 60.0
+# 每作废一次加 1。读库期间如果有人写了设置，读回来的就是旧数据，不能存进缓存。
+_GATEWAY_CONFIG_CACHE_GEN = 0
+
+
+def invalidate_gateway_config_cache():
+    """作废设置缓存。任何直接改 gateway_config 表的代码，改完都要调一次。"""
+    global _GATEWAY_CONFIG_CACHE, _GATEWAY_CONFIG_CACHE_GEN
+    _GATEWAY_CONFIG_CACHE = None
+    _GATEWAY_CONFIG_CACHE_GEN += 1
+
+
+async def _load_gateway_config_cache() -> dict:
+    global _GATEWAY_CONFIG_CACHE, _GATEWAY_CONFIG_CACHE_AT
+    gen = _GATEWAY_CONFIG_CACHE_GEN
     pool = await get_pool()
     async with pool.acquire() as conn:
-        row = await conn.fetchrow("SELECT value FROM gateway_config WHERE key = $1", key)
-        return row['value'] if row else default
+        rows = await conn.fetch("SELECT key, value FROM gateway_config")
+    data = {r['key']: r['value'] for r in rows}
+    if gen == _GATEWAY_CONFIG_CACHE_GEN:
+        _GATEWAY_CONFIG_CACHE = data
+        _GATEWAY_CONFIG_CACHE_AT = time.monotonic()
+    return data
+
+
+async def get_gateway_config(key: str, default: str = "") -> str:
+    cache = _GATEWAY_CONFIG_CACHE
+    if cache is None or time.monotonic() - _GATEWAY_CONFIG_CACHE_AT > _GATEWAY_CONFIG_CACHE_TTL:
+        cache = await _load_gateway_config_cache()
+    # 和原来逐条查一致：有这行就返回它的值（哪怕是 NULL），没有才用默认值
+    return cache[key] if key in cache else default
 
 
 async def set_gateway_config(key: str, value: str):
     pool = await get_pool()
-    async with pool.acquire() as conn:
-        await conn.execute("""
-            INSERT INTO gateway_config (key, value) VALUES ($1, $2)
-            ON CONFLICT (key) DO UPDATE SET value = $2
-        """, key, value)
+    try:
+        async with pool.acquire() as conn:
+            await conn.execute("""
+                INSERT INTO gateway_config (key, value) VALUES ($1, $2)
+                ON CONFLICT (key) DO UPDATE SET value = $2
+            """, key, value)
+    finally:
+        # 写失败也作废：不确定库里到底是新值还是旧值时，下次重新读最稳妥
+        invalidate_gateway_config_cache()
 
 
 async def set_gateway_config_many(items: dict) -> int:
@@ -1147,15 +1190,18 @@ async def set_gateway_config_many(items: dict) -> int:
         params.append(v)
 
     pool = await get_pool()
-    async with pool.acquire() as conn:
-        await conn.execute(
-            f"""
-            INSERT INTO gateway_config (key, value)
-            VALUES {placeholders}
-            ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
-            """,
-            *params,
-        )
+    try:
+        async with pool.acquire() as conn:
+            await conn.execute(
+                f"""
+                INSERT INTO gateway_config (key, value)
+                VALUES {placeholders}
+                ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
+                """,
+                *params,
+            )
+    finally:
+        invalidate_gateway_config_cache()
     return len(keys)
 
 async def get_all_gateway_config() -> dict:

@@ -689,6 +689,7 @@ async def lifespan(app: FastAPI):
                                 _pool = await get_pool()
                                 async with _pool.acquire() as _conn:
                                     await _conn.execute("DELETE FROM gateway_config WHERE key = \'MEMORY_ENABLED\'")
+                                _db_module.invalidate_gateway_config_cache()
                                 print("\U0001f9f9 已清理 DB 中的 MEMORY_ENABLED 脏数据（以环境变量为准）")
                             except Exception as _e:
                                 print(f"\u26a0\ufe0f  清理 MEMORY_ENABLED 脏数据失败: {_e}")
@@ -5283,13 +5284,17 @@ async def chat_completions(request: Request):
         messages = await build_partitioned_messages(
             session_id, all_msgs, partition_base_prompt, user_message, active_history_only=True
         )
+        _ent_log("组装分区消息")
         messages = _repair_tool_call_ids_by_adjacency(messages, session_id=session_id, reason="final_messages")
         messages = _normalize_tool_chains_by_id(messages)
         messages = _drop_orphan_tool_messages(messages)
         _log_tool_chain_snapshot("final_after_drop_orphan", messages, session_id=session_id, enabled=tool_chain_debug)
+        _ent_log("修整工具链")
 
         await inject_memory_palace_auto_context(messages, query=user_message, recent_messages=messages, explicit_present=partition_has_explicit_memory_palace, session_id=session_id)
+        _ent_log("注入记忆宫殿(含记忆检索)")
         await finalize_context_template(messages)
+        _ent_log("套上下文模板")
         body["messages"] = messages
     
     else:
@@ -5310,6 +5315,7 @@ async def chat_completions(request: Request):
                                 non_partition_has_explicit_memory_palace = True
                             item["text"] = await replace_explicit_memory_variables(txt, query=user_message, recent_messages=messages, session_id=session_id)
         body["messages"] = messages
+        _ent_log("替换system变量(非分区)")
         if await get_runtime_context_template_enabled():
             # 模板模式：先放占位 system 承载关键词块，记忆宫殿随后并入
             insert_context_blocks_holder(messages, {
@@ -5317,8 +5323,11 @@ async def chat_completions(request: Request):
             })
         else:
             await inject_keyword_context_auto_context(messages, user_message)
+        _ent_log("关键词上下文(非分区)")
         await inject_memory_palace_auto_context(messages, query=user_message, recent_messages=messages, explicit_present=non_partition_has_explicit_memory_palace, session_id=session_id)
+        _ent_log("注入记忆宫殿(非分区)")
         await finalize_context_template(messages)
+        _ent_log("套上下文模板(非分区)")
 
         # 非分区模式下也要兜一下工具轮次：
         # Operit 有时会把原始 user 又贴到末尾，导致上游把它当成新问题，
@@ -5399,6 +5408,7 @@ async def chat_completions(request: Request):
         body["reasoning_effort"] = REASONING_EFFORT
         perf_print(f"🧠 注入推理参数: reasoning_effort={REASONING_EFFORT}")
     
+    _ent_log("参数处理，准备发上游")
     print(f"📡 请求: model={model}, stream={is_stream}, memory={'on' if MEMORY_ENABLED else 'off'}", flush=True)
     
     # 调试：打印请求体中的推理相关字段
@@ -5421,6 +5431,8 @@ async def chat_completions(request: Request):
     else:
         async with httpx.AsyncClient(timeout=300) as client:
             response = await client.post(API_BASE_URL, headers=headers, json=body)
+            # 非流式要等上游全部生成完才返回，这一段就是上游的总耗时
+            _ent_log(f"[非流] 等上游返回 status={response.status_code}")
             
             if response.status_code == 200:
                 # response.json() 会在几种真实情况下抛异常：上游回了空 body、

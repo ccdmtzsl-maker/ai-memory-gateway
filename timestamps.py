@@ -200,11 +200,40 @@ def _last_message_dt(*message_lists):
     return None
 
 
+_TS_PREFIX_CAPTURE_RE = re.compile(r"^\[((?:[0-9]{2}-[0-9]{2} )?[0-9]{2}:[0-9]{2})\][ \t]*")
+
+
+def _split_timestamp_prefix(content):
+    """拆出正文开头的 Operit 附件时间戳。
+
+    返回 (inner, 去掉前缀后的 content)；inner 形如 "07-28 21:57" 或 "21:57"。
+    没有前缀时返回 (None, content)。list content 只看第一个 text 块。
+    """
+    if isinstance(content, str):
+        m = _TS_PREFIX_CAPTURE_RE.match(content)
+        if not m:
+            return None, content
+        return m.group(1), content[m.end():].lstrip("\n")
+    if isinstance(content, list):
+        for idx, block in enumerate(content):
+            if isinstance(block, dict) and block.get("type") == "text":
+                text = block.get("text", "") or ""
+                m = _TS_PREFIX_CAPTURE_RE.match(text)
+                if not m:
+                    return None, content
+                new_blocks = list(content)
+                nb = dict(block)
+                nb["text"] = text[m.end():].lstrip("\n")
+                new_blocks[idx] = nb
+                return m.group(1), new_blocks
+    return None, content
+
+
 def _format_gap_duration(minutes: int) -> str:
     """间隔分钟数 → 断点戳里的时长文字。
 
     <1 小时写分钟；6 小时以内精确到分钟（「1小时20分钟」），
-    再长就只取整小时——那时候差几十分钟已经不影响理解；超过一天换成天。
+    再长就只取整小时；超过一天换成天（3 天以上只写天数）。
     """
     minutes = max(0, int(minutes))
     if minutes < 60:
@@ -224,27 +253,45 @@ def _format_gap_duration(minutes: int) -> str:
 
 
 def _format_stamp_time(dt, with_date: bool) -> str:
-    """戳里的时间：跨天/首条带「月-日 星期」，否则只给时分。"""
+    """戳里的时间：带日期时为「月-日 星期 时:分」，否则只给时分。"""
     if with_date:
         return f"{dt.strftime('%m-%d')} {_WEEKDAY_CN[dt.weekday()]} {dt.strftime('%H:%M')}"
     return dt.strftime('%H:%M')
 
 
-def _sparse_stamp_lines(local_dt, state: dict, has_prefix: bool = False) -> list:
-    """稀疏时间戳的唯一判定点：决定这条消息前要加哪些标记行，并就地更新 state。
+def _format_attachment_stamp(inner: str, local_dt, need_date: bool) -> str:
+    """附件时间戳 → 横线格式里的时间文字。
 
-    三种标记：
-      - 首条锚点：[07-29 周三 18:00]
-      - 断点戳：相邻间隔 ≥ 15 分钟 → —— 30分钟后（18:30）——
-                跨天时括号里带日期和星期
-      - 校准戳：没有断点、但距上一个标记已 ≥ 60 分钟，或悄悄跨了天 → [19:00]
-                只写时间不写间隔，用来防止锚点漂移
+    附件自带日期时补上星期；附件只有时分、但这里需要日期（首条/跨天）时，
+    用 created_at 的日期补齐，保证缓存区开头一定有日期锚点。
+    """
+    if " " in inner:
+        md, hm = inner.split(" ", 1)
+        try:
+            mo, d = (int(x) for x in md.split("-"))
+            year = local_dt.year if local_dt else datetime.now().year
+            dd = datetime(year, mo, d).date()
+            if local_dt and dd > local_dt.date() + timedelta(days=1):
+                dd = datetime(year - 1, mo, d).date()   # 跨年：附件写 12-31，created_at 已是 1 月
+            return f"{md} {_WEEKDAY_CN[dd.weekday()]} {hm}"
+        except Exception:
+            return inner
+    if need_date and local_dt:
+        return f"{local_dt.strftime('%m-%d')} {_WEEKDAY_CN[local_dt.weekday()]} {inner}"
+    return inner
 
-    has_prefix：消息正文已带 Operit 附件时间戳。此时不再重复写时间，
-    断点只写「—— 30分钟后 ——」；附件戳本身也算一次锚点。
+
+def _sparse_stamp_lines(local_dt, state: dict, attach_inner: str = None) -> list:
+    """稀疏时间戳的唯一判定点：决定这条消息前加什么标记行，并就地更新 state。
+
+    统一横线格式：
+      - 首条锚点：—— 07-29 周三 18:00 ——
+      - 断点戳：相邻间隔 ≥ 15 分钟 → —— 30分钟后（18:30）——（跨天时括号里带日期星期）
+      - 校准戳：无断点但距上个标记 ≥ 60 分钟，或悄悄跨了天 → —— 19:00 ——
+      - 附件戳：正文自带 Operit 时间戳时，只显示那个时间、不算间隔 → —— 18:40 ——
+                附件戳也算一次标记（之后的校准戳从它开始计时）
 
     只依赖「这条及之前」的消息，新消息不会回头改旧消息，A 区缓存前缀稳定。
-
     state 字段：prev_dt / last_date / first_seen / anchor_dt（最近一次标记的时间）
     """
     prev_dt = state.get("prev_dt")
@@ -256,27 +303,19 @@ def _sparse_stamp_lines(local_dt, state: dict, has_prefix: bool = False) -> list
     crossed_day = (not first) and last_date is not None and last_date != local_dt.date()
 
     lines = []
-    anchored = has_prefix
-    if first:
-        if not has_prefix:
-            lines.append(f"[{_format_stamp_time(local_dt, True)}]")
-        anchored = True
+    if attach_inner:
+        lines.append(f"—— {_format_attachment_stamp(attach_inner, local_dt, first or crossed_day)} ——")
+    elif first:
+        lines.append(f"—— {_format_stamp_time(local_dt, True)} ——")
     elif gap is not None and gap >= SPARSE_TS_GAP_MINUTES:
-        dur = _format_gap_duration(gap)
-        if has_prefix:
-            lines.append(f"—— {dur}后 ——")
-        else:
-            lines.append(f"—— {dur}后（{_format_stamp_time(local_dt, crossed_day)}）——")
-        anchored = True
+        lines.append(f"—— {_format_gap_duration(gap)}后（{_format_stamp_time(local_dt, crossed_day)}）——")
     elif crossed_day or (
         anchor_dt is not None
         and (local_dt - anchor_dt).total_seconds() >= SPARSE_TS_CALIBRATE_MINUTES * 60
     ):
-        if not has_prefix:
-            lines.append(f"[{_format_stamp_time(local_dt, crossed_day)}]")
-        anchored = True
+        lines.append(f"—— {_format_stamp_time(local_dt, crossed_day)} ——")
 
-    if anchored:
+    if lines:
         state["anchor_dt"] = local_dt
     state["first_seen"] = True
     state["last_date"] = local_dt.date()
@@ -284,11 +323,11 @@ def _sparse_stamp_lines(local_dt, state: dict, has_prefix: bool = False) -> list
     return lines
 
 
-def build_current_message_timestamp_prefix(prev_dt, content, anchor_dt=None) -> str:
-    """给当前轮 user 消息算时间戳前缀（时间取现在），规则同 _sparse_stamp_lines。
+def stamp_current_message(content, prev_dt, anchor_dt=None):
+    """给当前轮 user 消息打稀疏时间戳（时间取现在），返回新 content。
 
     prev_dt：上一条消息时间；anchor_dt：历史里最近一次标记的时间（用于校准戳）。
-    不传 anchor_dt 时只会出首条锚点/断点戳，不会出校准戳。
+    正文自带附件时间戳时，把它换成横线格式，不再计算间隔。
     """
     now_local = datetime.now(timezone.utc) + timedelta(hours=TIMEZONE_HOURS)
     state = {
@@ -297,10 +336,11 @@ def build_current_message_timestamp_prefix(prev_dt, content, anchor_dt=None) -> 
         "first_seen": prev_dt is not None,
         "anchor_dt": anchor_dt,
     }
-    lines = _sparse_stamp_lines(now_local, state, _content_has_timestamp_prefix(content))
+    attach_inner, body = _split_timestamp_prefix(content)
+    lines = _sparse_stamp_lines(now_local, state, attach_inner)
     if not lines:
-        return ""
-    return "\n".join(lines) + "\n\n"
+        return content
+    return _prepend_text_to_content(body, "\n".join(lines) + "\n\n")
 
 
 def _prepend_timestamp_to_user_messages(messages: list, sparse: bool = False,
@@ -310,6 +350,7 @@ def _prepend_timestamp_to_user_messages(messages: list, sparse: bool = False,
     sparse=False（默认，兼容旧行为）：只给 user 消息打紧凑戳，每条都打。
     sparse=True：按 _sparse_stamp_lines 的规则稀疏打戳，user/assistant 都参与；
       标记与正文之间空一行；tool 不打戳但参与间隔计算。
+      附件时间戳只认 user 消息（assistant 学着输出的 [18:00] 不当附件处理）。
 
     state / return_state：分区模式分两次调用（A 区、B 区），中间状态必须接上，
     否则 B 区首条会被当成整段对话的第一条，A→B 之间的间隔也算不出来。
@@ -330,10 +371,12 @@ def _prepend_timestamp_to_user_messages(messages: list, sparse: bool = False,
                     m["content"] = _prepend_text_to_content(m.get("content"), stamp)
                 st["last_date"] = local_dt.date()
         elif role in ("user", "assistant") and local_dt:
-            has_prefix = _content_has_timestamp_prefix(m.get("content"))
-            lines = _sparse_stamp_lines(local_dt, st, has_prefix)
+            attach_inner, body = (None, m.get("content"))
+            if role == "user":
+                attach_inner, body = _split_timestamp_prefix(m.get("content"))
+            lines = _sparse_stamp_lines(local_dt, st, attach_inner)
             if lines:
-                m["content"] = _prepend_text_to_content(m.get("content"), "\n".join(lines) + "\n\n")
+                m["content"] = _prepend_text_to_content(body, "\n".join(lines) + "\n\n")
         elif local_dt:
             # tool 等其他 role 不打戳，但参与间隔计算
             st["prev_dt"] = local_dt

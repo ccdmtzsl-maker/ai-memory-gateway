@@ -2693,11 +2693,11 @@ function uiEditNum(id, fallback) {
     return Math.max(0, Math.min(100, n));
 }
 
-function uiEditField(label, id, value, multiline) {
+function uiEditField(label, id, value, multiline, isArray) {
     if (multiline) {
         return '<label style="display:flex;flex-direction:column;gap:6px;font-size:12px;font-weight:800;">' +
             uiEsc(label) +
-            '<textarea id="' + uiEsc(id) + '" class="textarea" rows="4" style="min-height:90px;">' + uiEsc(value || '') + '</textarea>' +
+            '<textarea id="' + uiEsc(id) + '" class="textarea" rows="4" style="min-height:90px;"' + (isArray ? ' data-array="1"' : '') + '>' + uiEsc(value || '') + '</textarea>' +
             '</label>';
     }
     return '<label style="display:flex;flex-direction:column;gap:6px;font-size:12px;font-weight:800;">' +
@@ -2764,14 +2764,16 @@ function renderUserImpressionEditor(imp) {
     for (const key of tagKeys) {
         const label = TAG_LABELS[key];
         const value = tags[key];
+        // 按值的实际类型选控件：数组用多行框（一行一项），字符串用单行框。
+        // others 始终是列表；尚未出现的标签默认按单行处理。
+        const isArray = Array.isArray(value) || key === 'others';
         let valueText = '';
         if (Array.isArray(value)) {
             valueText = value.join('\n');
         } else if (value) {
             valueText = String(value);
         }
-        const isMulti = ['likes', 'dislikes', 'stress_signals', 'others'].includes(key);
-        tagFields += uiEditField(`${label} (${key})`, `uiEdit_tag_${key}`, valueText, isMulti);
+        tagFields += uiEditField(`${label} (${key})`, `uiEdit_tag_${key}`, valueText, isArray, isArray);
     }
     html += uiEditBlock('标签区（最多12个，留空=不使用该标签）', tagFields);
 
@@ -2798,9 +2800,9 @@ function collectUserImpressionEdit() {
         if (!el) continue;
         const val = String(el.value || '').trim();
         if (!val) continue;
-        
-        // 判断是列表还是文本（简单规则：如果有换行就当列表）
-        if (val.includes('\n')) {
+
+        // 沿用渲染时的类型：数组字段按行拆分（只有一项也保持数组），其余保持字符串。
+        if (el.dataset.array === '1') {
             const arr = val.split(/\n+/).map(x => x.trim()).filter(Boolean);
             if (arr.length > 0) {
                 tags[key] = arr;

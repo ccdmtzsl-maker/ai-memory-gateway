@@ -1405,15 +1405,10 @@ def normalize_user_impression(raw):
 
     # 自选标签区
     TAG_WHITELIST = {
-        # A组 价值与喜恶
         "core_values", "likes", "dislikes", "money_attitude", "aesthetic",
-        # B组 思维与能力
         "decision_style", "knowledge_map", "thinking_pattern", "humor_style", "learning_style",
-        # C组 情绪与相处
         "comfort_zone", "stress_signals", "emotional_triggers", "soothing_methods", "expression_habit",
-        # D组 生活与关注
         "life_rhythm", "current_focus", "social_pattern", "attitude_to_me",
-        # 可选：兼容旧字段降级成标签
         "mbti_sketch",
         # 白名单外内容的归集标签
         "others",

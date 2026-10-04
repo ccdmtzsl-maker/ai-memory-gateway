@@ -2609,7 +2609,6 @@ function renderUserImpressionObject(imp) {
         current_focus: '近期关注',
         social_pattern: '社交模式',
         attitude_to_me: '对我的态度',
-        mbti_sketch: 'MBTI侧写',
         others: '其他',
     };
 
@@ -2791,7 +2790,7 @@ function collectUserImpressionEdit() {
         'core_values', 'likes', 'dislikes', 'money_attitude', 'aesthetic',
         'decision_style', 'knowledge_map', 'thinking_pattern', 'humor_style', 'learning_style',
         'comfort_zone', 'stress_signals', 'emotional_triggers', 'soothing_methods', 'expression_habit',
-        'life_rhythm', 'current_focus', 'social_pattern', 'attitude_to_me', 'mbti_sketch', 'others'
+        'life_rhythm', 'current_focus', 'social_pattern', 'attitude_to_me', 'others'
     ];
 
     const tags = {};

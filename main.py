@@ -2642,6 +2642,9 @@ _MP_TOOL_RESULT_ROUND = contextvars.ContextVar("mp_tool_result_round", default=F
 _MP_RECALL_REUSE_TTL = 600.0
 _MP_RECALL_REUSE_MAX = 64
 _MP_RECALL_REUSE = {}  # key -> (time.monotonic(), 记忆宫殿文本)
+# re-roll 判断：(会话, 角色) -> 最近一次正常检索用的那句话。
+# 和网关保存回复时的 re-roll 判断同一个口径：这句话和上一轮用户那句一样，就算重 roll。
+_MP_RECALL_LAST_QUERY = {}
 
 
 def _mp_recall_reuse_key(session_id, character_id, limit, room, query):
@@ -2669,20 +2672,147 @@ async def format_memory_palace_for_prompt(limit: int = 5, room: str = None, quer
             limit=limit, room=room, query=query, character_id=character_id,
             recent_messages=recent_messages, touch_access=touch_access, session_id=session_id)
     key = _mp_recall_reuse_key(session_id, character_id, limit, room, query)
-    if key is not None and _MP_TOOL_RESULT_ROUND.get():
-        hit = _MP_RECALL_REUSE.get(key)
-        if hit and time.monotonic() - hit[0] <= _MP_RECALL_REUSE_TTL:
-            perf_print(
-                f"⏱️ [记忆检索] 工具结果轮：沿用本问题 {time.monotonic() - hit[0]:.0f} 秒前召回的记忆"
-                f"（{len(hit[1])}字），跳过检索与访问记录"
-            )
-            return hit[1]
+    if key is not None:
+        reuse_reason = None
+        if _MP_TOOL_RESULT_ROUND.get():
+            reuse_reason = "工具结果轮"
+        elif _MP_RECALL_LAST_QUERY.get(key[:2]) == key[4]:
+            reuse_reason = "re-roll（和上一轮同一句话）"
+        if reuse_reason:
+            hit = _MP_RECALL_REUSE.get(key)
+            if hit and time.monotonic() - hit[0] <= _MP_RECALL_REUSE_TTL:
+                perf_print(
+                    f"⏱️ [记忆检索] {reuse_reason}：沿用本问题 {time.monotonic() - hit[0]:.0f} 秒前召回的记忆"
+                    f"（{len(hit[1])}字），跳过检索与访问记录"
+                )
+                return hit[1]
     text = await _format_memory_palace_for_prompt_uncached(
         limit=limit, room=room, query=query, character_id=character_id,
         recent_messages=recent_messages, touch_access=touch_access, session_id=session_id)
     if key is not None:
         _mp_recall_reuse_put(key, text)
+        _MP_RECALL_LAST_QUERY.pop(key[:2], None)
+        _MP_RECALL_LAST_QUERY[key[:2]] = key[4]
+        while len(_MP_RECALL_LAST_QUERY) > _MP_RECALL_REUSE_MAX:
+            _MP_RECALL_LAST_QUERY.pop(next(iter(_MP_RECALL_LAST_QUERY)), None)
     return text
+
+
+# ------------------------------------------------------------
+# 上游缓存诊断：只打日志，不改请求
+#
+# OpenAI 类模型的提示词缓存按「请求开头和上一轮一字不差」命中。
+# 每轮发上游前，把 messages 和同一对话线上一轮发出去的比一下，
+# 打一行：前几条一致、从第几条第几个字开始不同、变成了什么。
+# 收到回复后再打一行上游实际报告的缓存命中数。
+# ------------------------------------------------------------
+_UPSTREAM_PREFIX_LAST = {}  # session_id -> 上一轮发上游的 messages 快照
+_UPSTREAM_PREFIX_MAX = 16
+
+
+def _upstream_msg_text(msg) -> str:
+    if not isinstance(msg, dict):
+        return str(msg)
+    c = msg.get("content")
+    if isinstance(c, list):
+        return "".join(
+            (x.get("text") or "") if isinstance(x, dict) else str(x) for x in c
+        )
+    return "" if c is None else str(c)
+
+
+def _upstream_snip(s: str, n: int = 30) -> str:
+    s = s[:n].replace("\r", "").replace("\n", "⏎")
+    return s if s else "（空）"
+
+
+def log_upstream_prefix_diff(session_id: str, body: dict) -> None:
+    try:
+        msgs = list(body.get("messages") or [])
+        ser = [json.dumps(m, ensure_ascii=False, sort_keys=True) for m in msgs]
+        texts = [_upstream_msg_text(m) for m in msgs]
+        roles = [(m.get("role") if isinstance(m, dict) else "?") for m in msgs]
+        tools = json.dumps(body.get("tools") or [], ensure_ascii=False, sort_keys=True)
+        model = str(body.get("model") or "")
+        sid = str(session_id or "")
+        total = sum(len(s) for s in ser) or 1
+
+        prev = _UPSTREAM_PREFIX_LAST.pop(sid, None)
+        _UPSTREAM_PREFIX_LAST[sid] = {"ser": ser, "texts": texts, "roles": roles, "tools": tools, "model": model}
+        while len(_UPSTREAM_PREFIX_LAST) > _UPSTREAM_PREFIX_MAX:
+            _UPSTREAM_PREFIX_LAST.pop(next(iter(_UPSTREAM_PREFIX_LAST)), None)
+
+        if prev is None:
+            print(f"🧩 [前缀对比] 对话线={sid}：网关启动后第一次见，先记下（{len(ser)}条/{total}字），下一轮开始对比", flush=True)
+            return
+
+        head = []
+        if prev["model"] != model:
+            head.append(f"模型变了 {prev['model']}→{model}")
+        if prev["tools"] != tools:
+            head.append("工具定义变了（工具定义排在消息前面，它一变后面全不命中）")
+        pre = ("；".join(head) + "；") if head else ""
+
+        n = min(len(prev["ser"]), len(ser))
+        i = 0
+        while i < n and prev["ser"][i] == ser[i]:
+            i += 1
+        same = sum(len(s) for s in ser[:i])
+        pct = same * 100 // total
+
+        if i == len(prev["ser"]):
+            print(
+                f"🧩 [前缀对比] {pre}上一轮{len(prev['ser'])}条原样保留，本轮在后面新增{len(ser) - i}条"
+                f"（相同开头≈{same}字，占本轮{pct}%）", flush=True)
+            return
+        if i == len(ser):
+            print(
+                f"🧩 [前缀对比] {pre}本轮{len(ser)}条都和上一轮开头一致，上一轮后面多的{len(prev['ser']) - i}条这轮没有"
+                f"（比如 re-roll；相同开头≈{same}字，占本轮{pct}%）", flush=True)
+            return
+
+        if prev["roles"][i] != roles[i]:
+            why = f"角色不同 {prev['roles'][i]}→{roles[i]}"
+        elif prev["texts"][i] == texts[i]:
+            old_c = prev["ser"][i]
+            new_c = ser[i]
+            if ('"content": [' in old_c) != ('"content": [' in new_c):
+                why = "文字一样，但写法变了（字符串↔分段数组）"
+            else:
+                why = "文字一样，但别的字段变了（如 tool_calls/name）"
+        else:
+            a, b = prev["texts"][i], texts[i]
+            k = 0
+            m_len = min(len(a), len(b))
+            while k < m_len and a[k] == b[k]:
+                k += 1
+            why = f"第{k}字起不同：上一轮「{_upstream_snip(a[k:])}」→本轮「{_upstream_snip(b[k:])}」"
+        print(
+            f"🧩 [前缀对比] {pre}前{i}条一致（≈{same}字，占本轮{pct}%），"
+            f"第{i + 1}条（{roles[i]}）开始不同：{why}", flush=True)
+    except Exception as e:
+        print(f"⚠️ 前缀对比日志失败: {e}", flush=True)
+
+
+def log_upstream_cache_usage(usage, label: str) -> None:
+    try:
+        if not isinstance(usage, dict) or not usage:
+            print(f"📦 [缓存命中] {label}：上游没返回 usage，看不到命中数", flush=True)
+            return
+        prompt = usage.get("prompt_tokens") or usage.get("input_tokens") or 0
+        details = usage.get("prompt_tokens_details") or usage.get("input_tokens_details") or {}
+        cached = details.get("cached_tokens") if isinstance(details, dict) else None
+        if cached is None:
+            cached = usage.get("cache_read_input_tokens")
+        if cached is None:
+            cached = usage.get("prompt_cache_hit_tokens")
+        if cached is None:
+            print(f"📦 [缓存命中] {label}：输入 {prompt} tokens，上游没报缓存字段", flush=True)
+            return
+        pct = (cached * 100 / prompt) if prompt else 0
+        print(f"📦 [缓存命中] {label}：{cached}/{prompt} tokens（{pct:.0f}%）", flush=True)
+    except Exception as e:
+        print(f"⚠️ 缓存命中日志失败: {e}", flush=True)
 
 
 async def _format_memory_palace_for_prompt_uncached(limit: int = 5, room: str = None, query: str = "", character_id: str = "default", recent_messages=None, touch_access: bool = True, session_id: str = "") -> str:
@@ -5523,6 +5653,9 @@ async def chat_completions(request: Request):
     except Exception as e:
         print(f"⚠️ 记录上次请求体失败: {e}")
 
+    # 只打日志：和上一轮发出去的比开头，看缓存为什么没命中
+    log_upstream_prefix_diff(session_id, body)
+
     # ---------- 转发请求 ----------
     headers = {
         "Authorization": f"Bearer {API_KEY}",
@@ -5602,6 +5735,7 @@ async def chat_completions(request: Request):
                         }},
                     )
 
+                log_upstream_cache_usage(resp_data.get("usage") if isinstance(resp_data, dict) else None, "非流")
                 assistant_msg = ""
                 assistant_tool_calls = None
                 assistant_reasoning = None
@@ -5951,6 +6085,7 @@ async def stream_and_capture(headers: dict, body: dict, session_id: str, user_me
     if assistant_tool_calls:
         print(f"🔧 Stream response 包含 {len(assistant_tool_calls)} 个工具调用")
     
+    log_upstream_cache_usage(stream_usage, "流式")
     if stream_usage:
         pt = stream_usage.get("prompt_tokens", 0)
         ct = stream_usage.get("completion_tokens", 0)

@@ -1409,7 +1409,6 @@ def normalize_user_impression(raw):
         "decision_style", "knowledge_map", "thinking_pattern", "humor_style", "learning_style",
         "comfort_zone", "stress_signals", "emotional_triggers", "soothing_methods", "expression_habit",
         "life_rhythm", "current_focus", "social_pattern", "attitude_to_me",
-        "mbti_sketch",
         # 白名单外内容的归集标签
         "others",
     }

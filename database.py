@@ -2005,22 +2005,37 @@ def db_row_to_message(row: dict) -> dict:
     return msg
 
 
+def _metadata_for_export(raw):
+    """metadata 列是 TEXT，里面存的是一段 JSON（思考过程、tool_calls 等）。
+    导出成对象，备份文件更好读；解析不了就原样给出去，保证一个字都不丢。"""
+    if raw is None or raw == '':
+        return None
+    if isinstance(raw, (dict, list)):
+        return raw
+    try:
+        return json.loads(raw)
+    except (ValueError, TypeError):
+        return raw
+
+
 async def export_all_conversations():
     """导出所有对话记录（用于备份）"""
     pool = await get_pool()
     async with pool.acquire() as conn:
         rows = await conn.fetch("""
-            SELECT session_id, role, content, model, created_at
+            SELECT id, session_id, role, content, model, created_at, metadata
             FROM conversations
-            ORDER BY session_id, created_at
+            ORDER BY session_id, created_at, id
         """)
         return [
             {
+                'id': r['id'],
                 'session_id': r['session_id'],
                 'role': r['role'],
                 'content': r['content'],
                 'model': r['model'] or '',
                 'created_at': r['created_at'].isoformat() if r['created_at'] else None,
+                'metadata': _metadata_for_export(r['metadata']),
             }
             for r in rows
         ]
@@ -2030,7 +2045,7 @@ async def import_conversations(records: list):
     """
     导入对话记录（自动去重）
     
-    records: [{ session_id, role, content, model?, created_at? }, ...]
+    records: [{ session_id, role, content, model?, created_at?, metadata? }, ...]
     按 session_id + role + created_at 三元组去重，已存在的跳过。
     返回 (导入数量, 跳过数量)
     """
@@ -2051,6 +2066,16 @@ async def import_conversations(records: list):
             
             model = r.get('model', '')
             created_at = r.get('created_at')
+
+            # metadata 在库里是 TEXT。导出时是对象，这里转回字符串；
+            # 老备份文件里没有这个字段，按 None 处理，和以前一样。
+            metadata = r.get('metadata')
+            if isinstance(metadata, (dict, list)):
+                metadata = json.dumps(metadata, ensure_ascii=False)
+            elif metadata is not None and not isinstance(metadata, str):
+                metadata = None
+            if metadata == '':
+                metadata = None
             
             # 解析时间
             from datetime import datetime
@@ -2073,14 +2098,14 @@ async def import_conversations(records: list):
                     continue
                 
                 await conn.execute("""
-                    INSERT INTO conversations (session_id, role, content, model, created_at)
-                    VALUES ($1, $2, $3, $4, $5)
-                """, session_id, role, content, model, created_at)
+                    INSERT INTO conversations (session_id, role, content, model, created_at, metadata)
+                    VALUES ($1, $2, $3, $4, $5, $6)
+                """, session_id, role, content, model, created_at, metadata)
             else:
                 await conn.execute("""
-                    INSERT INTO conversations (session_id, role, content, model)
-                    VALUES ($1, $2, $3, $4)
-                """, session_id, role, content, model)
+                    INSERT INTO conversations (session_id, role, content, model, metadata)
+                    VALUES ($1, $2, $3, $4, $5)
+                """, session_id, role, content, model, metadata)
             
             imported += 1
         

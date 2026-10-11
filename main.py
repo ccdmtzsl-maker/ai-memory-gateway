@@ -403,12 +403,12 @@ DEFAULT_CONTEXT_TEMPLATE = (
 MEMORY_PALACE_EVENT_BOX_COMPRESS_THRESHOLD = int(os.getenv("MEMORY_PALACE_EVENT_BOX_COMPRESS_THRESHOLD", "4"))
 MEMORY_PALACE_EVENT_BOX_LIVE_HARD_CAP = int(os.getenv("MEMORY_PALACE_EVENT_BOX_LIVE_HARD_CAP", "15"))
 # 自动提取的事件盒建盒模式：
-#   related = 只采纳 relatedTo（往既有记忆上挂），默认
-#   all     = relatedTo + sameAs 都建（和手动导入一致）
+#   all     = relatedTo + sameAs 都建（和手动导入一致），默认
+#   related = 只采纳 relatedTo（往既有记忆上挂）
 #   off     = 只解析并记日志，不建盒
-# 默认 related：sameAs 是批内两条新记忆互相配对，一次提取就能凭空开新盒，
-# 而压缩阈值只有 4 条活节点，盒子涨太快会频繁触发 LLM 压缩。
-MEMORY_PALACE_AUTO_EVENT_BOX_MODE = str(os.getenv("MEMORY_PALACE_AUTO_EVENT_BOX_MODE", "related") or "related").strip().lower()
+# 注意 sameAs 是批内两条新记忆互相配对，一次提取就能开新盒，而压缩阈值
+# 只有 4 条活节点，盒子涨得快会更频繁触发 LLM 压缩。嫌压缩太多就设成 related。
+MEMORY_PALACE_AUTO_EVENT_BOX_MODE = str(os.getenv("MEMORY_PALACE_AUTO_EVENT_BOX_MODE", "all") or "all").strip().lower()
 # 封盒阈值＝压缩次数。压满这么多次就封盒，之后的相关记忆另开延续新盒。
 # （SullyOS 原版按「事件总数 archived+live」判定，这里按压缩次数——
 #  一个盒能沉淀的轮数更直观，且不受每轮压几条影响。）
@@ -2765,10 +2765,13 @@ async def _format_memory_palace_for_prompt_uncached(limit: int = 5, room: str = 
             days_left = max(1, int(((pu or now) - now).total_seconds() // 86400) + 1)
             lines.append(f"- {str(row['content'] or '').strip()}（剩余 {days_left} 天）")
     normal_rows = rows[pinned_count:]
-    by_room = {r: [] for r in _MEMORY_PALACE_ROOM_ORDER}
+    # rows 已按相关度从高到低排好（扩散激活补进来的排在最后）。房间按各自
+    # 最相关那条的名次排，房间内保持原顺序，所以最相关的记忆总在最上面。
+    # 以前按固定房间顺序（卧室→客厅→书房…）输出，最相关的可能被压到下面。
+    by_room = {}
     for row in normal_rows:
         by_room.setdefault(row["room"] or "living_room", []).append(row)
-    for room_id in _MEMORY_PALACE_ROOM_ORDER:
+    for room_id in list(by_room):
         room_rows = by_room.get(room_id) or []
         if not room_rows:
             continue
@@ -3956,10 +3959,9 @@ async def _extract_memory_palace_from_partition_messages_locked(messages: list, 
             except Exception as e:
                 log_memory_palace_auto_extract("error", f"⚠️ 分区自动提取 embedding 失败 {node_id}: {e}", session_id=session_id)
             created.append(node)
-        # 事件盒绑定。默认只采纳 relatedTo（往既有记忆上挂），不采纳 sameAs：
-        # sameAs 是批内两条新记忆互相配对，一次提取就能凭空开新盒，而压缩阈值
-        # 只有 4 条活节点，盒子涨太快会频繁触发 LLM 压缩。想全开把
-        # MEMORY_PALACE_AUTO_EVENT_BOX_MODE 设成 all，只想看日志设成 off。
+        # 事件盒绑定。默认 relatedTo 和 sameAs 都采纳（MEMORY_PALACE_AUTO_EVENT_BOX_MODE=all）。
+        # sameAs 会让一次提取就开新盒、压缩更频繁；只想挂旧记忆设成 related，
+        # 只想看日志设成 off。
         # 整段失败不影响已保存的记忆和游标推进。
         event_box_count = 0
         event_link_count = 0

@@ -92,6 +92,7 @@
 | `MEMORY_EXTRACT_ENABLED`（可选） | 记忆提取总开关 | `true` |
 | `FORCE_STREAM`（可选） | 强制流式传输 | `false` |
 | `REASONING_EFFORT`（可选） | 推理强度 | 留空不注入 |
+| `MEMORY_PALACE_AUTO_EVENT_BOX_MODE`（可选） | 自动提取记忆后的事件盒建盒方式：`all` = relatedTo（挂到旧记忆）和 sameAs（本批新记忆互相配对）都建盒；`related` = 只建 relatedTo；`off` = 只记日志不建盒。`all` 会让盒子涨得更快、压缩更频繁 | `all`（默认） |
 
 部署后访问 `/dashboard` 打开管理页面。
 

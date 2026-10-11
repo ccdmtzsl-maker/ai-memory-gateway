@@ -2699,101 +2699,9 @@ async def format_memory_palace_for_prompt(limit: int = 5, room: str = None, quer
 
 
 # ------------------------------------------------------------
-# 上游缓存诊断：只打日志，不改请求
-#
-# OpenAI 类模型的提示词缓存按「请求开头和上一轮一字不差」命中。
-# 每轮发上游前，把 messages 和同一对话线上一轮发出去的比一下，
-# 打一行：前几条一致、从第几条第几个字开始不同、变成了什么。
-# 收到回复后再打一行上游实际报告的缓存命中数。
+# 上游缓存命中日志：只打日志，不改请求
+# 收到回复后打一行上游实际报告的缓存命中数。
 # ------------------------------------------------------------
-_UPSTREAM_PREFIX_LAST = {}  # session_id -> 上一轮发上游的 messages 快照
-_UPSTREAM_PREFIX_MAX = 16
-
-
-def _upstream_msg_text(msg) -> str:
-    if not isinstance(msg, dict):
-        return str(msg)
-    c = msg.get("content")
-    if isinstance(c, list):
-        return "".join(
-            (x.get("text") or "") if isinstance(x, dict) else str(x) for x in c
-        )
-    return "" if c is None else str(c)
-
-
-def _upstream_snip(s: str, n: int = 30) -> str:
-    s = s[:n].replace("\r", "").replace("\n", "⏎")
-    return s if s else "（空）"
-
-
-def log_upstream_prefix_diff(session_id: str, body: dict) -> None:
-    try:
-        msgs = list(body.get("messages") or [])
-        ser = [json.dumps(m, ensure_ascii=False, sort_keys=True) for m in msgs]
-        texts = [_upstream_msg_text(m) for m in msgs]
-        roles = [(m.get("role") if isinstance(m, dict) else "?") for m in msgs]
-        tools = json.dumps(body.get("tools") or [], ensure_ascii=False, sort_keys=True)
-        model = str(body.get("model") or "")
-        sid = str(session_id or "")
-        total = sum(len(s) for s in ser) or 1
-
-        prev = _UPSTREAM_PREFIX_LAST.pop(sid, None)
-        _UPSTREAM_PREFIX_LAST[sid] = {"ser": ser, "texts": texts, "roles": roles, "tools": tools, "model": model}
-        while len(_UPSTREAM_PREFIX_LAST) > _UPSTREAM_PREFIX_MAX:
-            _UPSTREAM_PREFIX_LAST.pop(next(iter(_UPSTREAM_PREFIX_LAST)), None)
-
-        if prev is None:
-            print(f"🧩 [前缀对比] 对话线={sid}：网关启动后第一次见，先记下（{len(ser)}条/{total}字），下一轮开始对比", flush=True)
-            return
-
-        head = []
-        if prev["model"] != model:
-            head.append(f"模型变了 {prev['model']}→{model}")
-        if prev["tools"] != tools:
-            head.append("工具定义变了（工具定义排在消息前面，它一变后面全不命中）")
-        pre = ("；".join(head) + "；") if head else ""
-
-        n = min(len(prev["ser"]), len(ser))
-        i = 0
-        while i < n and prev["ser"][i] == ser[i]:
-            i += 1
-        same = sum(len(s) for s in ser[:i])
-        pct = same * 100 // total
-
-        if i == len(prev["ser"]):
-            print(
-                f"🧩 [前缀对比] {pre}上一轮{len(prev['ser'])}条原样保留，本轮在后面新增{len(ser) - i}条"
-                f"（相同开头≈{same}字，占本轮{pct}%）", flush=True)
-            return
-        if i == len(ser):
-            print(
-                f"🧩 [前缀对比] {pre}本轮{len(ser)}条都和上一轮开头一致，上一轮后面多的{len(prev['ser']) - i}条这轮没有"
-                f"（比如 re-roll；相同开头≈{same}字，占本轮{pct}%）", flush=True)
-            return
-
-        if prev["roles"][i] != roles[i]:
-            why = f"角色不同 {prev['roles'][i]}→{roles[i]}"
-        elif prev["texts"][i] == texts[i]:
-            old_c = prev["ser"][i]
-            new_c = ser[i]
-            if ('"content": [' in old_c) != ('"content": [' in new_c):
-                why = "文字一样，但写法变了（字符串↔分段数组）"
-            else:
-                why = "文字一样，但别的字段变了（如 tool_calls/name）"
-        else:
-            a, b = prev["texts"][i], texts[i]
-            k = 0
-            m_len = min(len(a), len(b))
-            while k < m_len and a[k] == b[k]:
-                k += 1
-            why = f"第{k}字起不同：上一轮「{_upstream_snip(a[k:])}」→本轮「{_upstream_snip(b[k:])}」"
-        print(
-            f"🧩 [前缀对比] {pre}前{i}条一致（≈{same}字，占本轮{pct}%），"
-            f"第{i + 1}条（{roles[i]}）开始不同：{why}", flush=True)
-    except Exception as e:
-        print(f"⚠️ 前缀对比日志失败: {e}", flush=True)
-
-
 def log_upstream_cache_usage(usage, label: str) -> None:
     try:
         if not isinstance(usage, dict) or not usage:
@@ -5652,9 +5560,6 @@ async def chat_completions(request: Request):
         }
     except Exception as e:
         print(f"⚠️ 记录上次请求体失败: {e}")
-
-    # 只打日志：和上一轮发出去的比开头，看缓存为什么没命中
-    log_upstream_prefix_diff(session_id, body)
 
     # ---------- 转发请求 ----------
     headers = {

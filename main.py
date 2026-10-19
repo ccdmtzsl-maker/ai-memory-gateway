@@ -420,7 +420,7 @@ MEMORY_PALACE_SUMMARY_TARGET_MAX_CHARS = int(os.getenv("MEMORY_PALACE_SUMMARY_TA
 # 提示词里告诉模型的「绝对上限」。写得比真正介入的 HARD_MAX 低，
 # 是给「模型数不准字数」留缓冲：它瞄着 800 写、稍微超一点也不会被砍。
 MEMORY_PALACE_SUMMARY_PROMPT_MAX_CHARS = int(os.getenv("MEMORY_PALACE_SUMMARY_PROMPT_MAX_CHARS", "800"))
-# 代码真正介入的硬上限：超过这个值才触发二次压缩，压不动才截断。
+# 代码真正介入的上限：超过这个值触发二次压缩。不再截断，压不动就保留原文。
 MEMORY_PALACE_SUMMARY_HARD_MAX_CHARS = int(os.getenv("MEMORY_PALACE_SUMMARY_HARD_MAX_CHARS", "900"))
 
 # 记忆模型专用 API 地址。留空时不会自动回退到主 API_BASE_URL，由调用方决定是否跳过。
@@ -9670,11 +9670,14 @@ async def call_memory_palace_event_box_summarizer(box: dict, live_nodes: list, c
             memory_model=memory_model,
             character_name=character_name,
         )
-        if shorter and len(shorter) <= hard_max:
+        # 不再硬截断：二次压缩拿到结果就用（哪怕仍超上限，也比砍成半截强），
+        # 压缩失败就保留原文全文。
+        if shorter:
+            if len(shorter) > hard_max:
+                print(f"🗜️ 二次压缩后仍有 {len(shorter)} 字，超过 {hard_max}，按原样保留不截断")
             content = shorter
         else:
-            content = content[:hard_max].rstrip() + "…"
-            print(f"🗜️ 二次压缩未达标，硬截断到 {hard_max} 字")
+            print(f"🗜️ 二次压缩失败，保留原文 {len(content)} 字不截断")
         item["content"] = content
 
     return item
@@ -9927,8 +9930,7 @@ async def call_memory_palace_extractor(messages_text: str, character_id: str = "
         ],
         # 提取要判断什么值得记、怎么组织叙事，0.2 会让输出趋于模板化。
         "temperature": 0.4,
-        # 给带 reasoning/thinking 的兼容模型留足输出空间，避免 JSON 被截断。
-        "max_tokens": 12000,
+        # 不传 max_tokens：输出上限交给上游/模型默认值，避免长提取或带思考的模型被截断。
     }
     timeout = httpx.Timeout(180.0, connect=30.0)
     try:

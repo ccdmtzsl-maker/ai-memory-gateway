@@ -1751,17 +1751,79 @@ async def batch_delete_conversations(session_ids: list):
         await conn.execute("DELETE FROM session_cache_state WHERE session_id = ANY($1)", session_ids)
 
 
+async def _migrate_session_memory_refs(conn, source_ids: list, target_id: str) -> dict:
+    """改名 / 合并对话线时，把记忆宫殿里挂在旧 session 上的数据一起迁到新 session。
+
+    以前只迁了 conversations / token_usage / session_cache_state，结果：
+      - 旧记忆还挂在旧名字下，「对话线记忆」弹窗按新名字查不到；
+      - 提取游标留在旧名字下，新名字从 0 开始，已经提取过的消息会被再提取一遍，
+        产生内容重复的记忆。
+    只改归属字段，不碰记忆内容和 updated_at。必须在调用方的事务里执行。
+    """
+    source_ids = [s for s in dict.fromkeys(source_ids or []) if s and s != target_id]
+    result = {"nodes": 0, "node_metadata": 0, "cursors": 0, "extracted_marks": 0, "receipts": 0}
+    if not source_ids or not target_id:
+        return result
+
+    def _count(status: str) -> int:
+        try:
+            return int(str(status or "").split()[-1])
+        except Exception:
+            return 0
+
+    result["nodes"] = _count(await conn.execute(
+        "UPDATE memory_palace_nodes SET session_id = $1 WHERE session_id = ANY($2::text[])",
+        target_id, source_ids,
+    ))
+    await conn.execute(
+        "UPDATE memory_palace_nodes SET source_session_id = $1 WHERE source_session_id = ANY($2::text[])",
+        target_id, source_ids,
+    )
+    result["node_metadata"] = _count(await conn.execute("""
+        UPDATE memory_palace_nodes
+        SET metadata = jsonb_set(metadata::jsonb, '{source_session}', to_jsonb($1::text))
+        WHERE metadata IS NOT NULL AND (metadata::jsonb ->> 'source_session') = ANY($2::text[])
+    """, target_id, source_ids))
+    # 游标取最大值：宁可漏提，不重复提。合并多条线时，目标线游标与来源线游标之间
+    # 若有目标线自己还没提取的消息，会被跳过（改名不存在这个问题）。
+    await conn.execute("""
+        INSERT INTO memory_palace_extraction_cursor (character_id, session_id, last_message_id, last_source, updated_at)
+        SELECT character_id, $1, MAX(last_message_id), 'session_migrate', NOW()
+        FROM memory_palace_extraction_cursor
+        WHERE session_id = ANY($2::text[])
+        GROUP BY character_id
+        ON CONFLICT (character_id, session_id) DO UPDATE SET
+            last_message_id = GREATEST(memory_palace_extraction_cursor.last_message_id, EXCLUDED.last_message_id),
+            updated_at = NOW()
+    """, target_id, source_ids)
+    result["cursors"] = _count(await conn.execute(
+        "DELETE FROM memory_palace_extraction_cursor WHERE session_id = ANY($1::text[])", source_ids,
+    ))
+    result["extracted_marks"] = _count(await conn.execute(
+        "UPDATE memory_palace_extracted_messages SET session_id = $1 WHERE session_id = ANY($2::text[])",
+        target_id, source_ids,
+    ))
+    result["receipts"] = _count(await conn.execute(
+        "UPDATE memory_palace_recall_receipts SET session_id = $1 WHERE session_id = ANY($2::text[])",
+        target_id, source_ids,
+    ))
+    return result
+
+
 async def merge_sessions_to_target(source_ids: list, target_id: str) -> dict:
     if not source_ids:
         return {'merged_sessions': 0, 'merged_messages': 0, 'merged_token_records': 0}
     pool = await get_pool()
     async with pool.acquire() as conn:
-        msg_count = await conn.fetchval("SELECT COUNT(*) FROM conversations WHERE session_id = ANY($1)", source_ids)
-        await conn.execute("UPDATE conversations SET session_id = $1 WHERE session_id = ANY($2)", target_id, source_ids)
-        token_count = await conn.fetchval("SELECT COUNT(*) FROM token_usage WHERE session_id = ANY($1)", source_ids)
-        await conn.execute("UPDATE token_usage SET session_id = $1 WHERE session_id = ANY($2)", target_id, source_ids)
-        await conn.execute("DELETE FROM session_cache_state WHERE session_id = ANY($1)", source_ids)
-        return {'merged_sessions': len(source_ids), 'merged_messages': msg_count or 0, 'merged_token_records': token_count or 0}
+        # 放进事务：记忆归属和聊天记录要么一起迁，要么都不迁。
+        async with conn.transaction():
+            msg_count = await conn.fetchval("SELECT COUNT(*) FROM conversations WHERE session_id = ANY($1)", source_ids)
+            await conn.execute("UPDATE conversations SET session_id = $1 WHERE session_id = ANY($2)", target_id, source_ids)
+            token_count = await conn.fetchval("SELECT COUNT(*) FROM token_usage WHERE session_id = ANY($1)", source_ids)
+            await conn.execute("UPDATE token_usage SET session_id = $1 WHERE session_id = ANY($2)", target_id, source_ids)
+            await conn.execute("DELETE FROM session_cache_state WHERE session_id = ANY($1)", source_ids)
+            mem = await _migrate_session_memory_refs(conn, source_ids, target_id)
+        return {'merged_sessions': len(source_ids), 'merged_messages': msg_count or 0, 'merged_token_records': token_count or 0, 'merged_memory_nodes': mem.get('nodes', 0)}
 
 
 async def list_all_session_cache_states() -> list:
@@ -1826,7 +1888,7 @@ async def delete_session_cache_state(session_id: str):
 
 
 async def rename_session_id(old_id: str, new_id: str) -> bool:
-    """重命名对话线ID（事务内同时修改三个表）"""
+    """重命名对话线ID（事务内同时修改对话、token、缓存状态和记忆宫殿相关表）"""
     pool = await get_pool()
     async with pool.acquire() as conn:
         async with conn.transaction():
@@ -1851,6 +1913,8 @@ async def rename_session_id(old_id: str, new_id: str) -> bool:
                 "UPDATE token_usage SET session_id = $1 WHERE session_id = $2",
                 new_id, old_id
             )
+            # 记忆宫殿：记忆归属、提取游标、已提取标记、召回记录
+            await _migrate_session_memory_refs(conn, [old_id], new_id)
             return True
 
 

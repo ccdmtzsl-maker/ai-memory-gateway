@@ -6355,11 +6355,11 @@ async def api_clear_dashboard_logs():
     return {"status": "ok"}
 
 
-_DEFAULT_DAILY_IMPRESSION_PROMPT = """你是长期陪伴型AI的记忆整理员。请根据某一天的真实对话历史，生成一条“日印象”。
+_DEFAULT_DAILY_IMPRESSION_PROMPT = """你是长期陪伴型AI的记忆整理员。请根据{period}的真实对话历史，生成一条“日印象”。
 
 要求：
 - 使用第三人称、客观但有温度的语气。
-- 不要逐条复述对话，要总结这一天的标签、状态、重要进展和关系氛围。
+- 不要逐条复述对话，要总结{period}的标签、状态、重要进展和关系氛围。
 - 如果有承诺、待办、偏好变化、情绪波动，可以自然写入。
 - 可以保留对用户表达习惯、互动模式的观察，但不要编造对话中没有的信息。
 - 只输出下面三个 XML 标签，不要代码块，不要额外说明。
@@ -6368,9 +6368,9 @@ _DEFAULT_DAILY_IMPRESSION_PROMPT = """你是长期陪伴型AI的记忆整理员�
 输出格式：
 <summary>200-600字的日印象正文</summary>
 <tags>标签1, 标签2、标签3</tags>
-<mood>当天整体氛围/情绪，简短描述</mood>
+<mood>{period}整体氛围/情绪，简短描述</mood>
 
-当天对话历史：
+{period}的对话历史：
 {conversation}
 """
 
@@ -6398,51 +6398,71 @@ def set_daily_impression_prompt(prompt: str):
     _cached_daily_impression_prompt_loaded = True
 
 
-async def generate_daily_impression_for_date(impression_date, start_hour: int = 0):
+async def generate_daily_impression_for_date(impression_date, start_hour: int = 0, start_date=None):
     """从指定日期的对话历史生成/更新日印象，不改动碎片状态。"""
     try:
         start_hour = int(start_hour or 0)
     except (TypeError, ValueError):
         start_hour = 0
     start_hour = max(0, min(start_hour, 23))
-    messages = await get_conversation_messages_by_date(impression_date, start_hour=start_hour)
+    multi_day = bool(start_date and start_date < impression_date)
+    if not multi_day:
+        start_date = None
+    messages = await get_conversation_messages_by_date(impression_date, start_hour=start_hour, start_date=start_date)
     if not messages:
         return {"status": "no_conversations", "date": str(impression_date)}
 
     role_map = {"user": "用户", "assistant": "澈", "system": "系统", "tool": "工具"}
-    session_blocks = []
-    current_session_id = None
-    current_lines = []
+    day_count = (impression_date - start_date).days + 1 if multi_day else 1
+    # {period} 变量：单日为“今天”，多日为“这n天”
+    period_text = f"这{day_count}天" if multi_day else "今天"
 
-    def flush_session_block():
-        if current_session_id is None and not current_lines:
-            return
-        session_label = current_session_id or "unknown"
-        session_blocks.append(
-            f"【对话线：{session_label}】\n" + "\n".join(current_lines)
-        )
-
-    for m in messages:
-        session_id = m.get("session_id") or "unknown"
-        if current_session_id is None:
+    def build_session_blocks(msgs):
+        """连续同一 session 的消息归为一个对话线块。"""
+        blocks = []
+        current_session_id = None
+        current_lines = []
+        for msg in msgs:
+            session_id = msg.get("session_id") or "unknown"
+            if current_session_id is not None and session_id != current_session_id:
+                blocks.append(f"【对话线：{current_session_id}】\n" + "\n".join(current_lines))
+                current_lines = []
             current_session_id = session_id
-        elif session_id != current_session_id:
-            flush_session_block()
-            current_session_id = session_id
-            current_lines = []
+            # created_at 是 UTC，先折算成 TIMEZONE_HOURS 对应的本地时间
+            _local_dt = _to_local_dt(msg.get("created_at"))
+            time_text = _local_dt.strftime("%H:%M") if _local_dt else ""
+            current_lines.append(
+                f"[{time_text}] {role_map.get(msg.get('role'), msg.get('role'))}: {msg.get('content') or ''}"
+            )
+        if current_lines:
+            blocks.append(f"【对话线：{current_session_id or 'unknown'}】\n" + "\n".join(current_lines))
+        return blocks
 
-        # created_at 是 TIMESTAMPTZ，asyncpg 返回带 tzinfo=utc 的 datetime，
-        # 直接 strftime 得到的是 UTC：北京时间晚上 22:30 会显示成 14:30，
-        # 模型会把晚上的对话当成下午。先折算成 TIMEZONE_HOURS 对应的本地时间。
-        _local_dt = _to_local_dt(m.get("created_at"))
-        time_text = _local_dt.strftime("%H:%M") if _local_dt else ""
-        current_lines.append(
-            f"[{time_text}] {role_map.get(m.get('role'), m.get('role'))}: {m.get('content') or ''}"
-        )
+    if multi_day:
+        # 多日：先按本地日期分段，段内再按对话线分组
+        day_order = []
+        day_messages = {}
+        for msg in messages:
+            _local_dt = _to_local_dt(msg.get("created_at"))
+            day_key = _local_dt.date() if _local_dt else None
+            if day_key not in day_messages:
+                day_messages[day_key] = []
+                day_order.append(day_key)
+            day_messages[day_key].append(msg)
+        day_sections = []
+        for day_key in day_order:
+            label = f"{day_key.month}月{day_key.day}日" if day_key else "未知日期"
+            day_sections.append(f"===== {label} =====\n" + "\n\n".join(build_session_blocks(day_messages[day_key])))
+        conversation_text = "\n\n".join(day_sections)
+    else:
+        conversation_text = "\n\n".join(build_session_blocks(messages))
 
-    flush_session_block()
-    conversation_text = "\n\n".join(session_blocks)
-    prompt = (await get_daily_impression_prompt()).replace("{conversation}", conversation_text).replace("{fragments}", conversation_text)
+    prompt = (
+        (await get_daily_impression_prompt())
+        .replace("{conversation}", conversation_text)
+        .replace("{fragments}", conversation_text)
+        .replace("{period}", period_text)
+    )
 
     impression_api_url = await get_runtime_memory_api_base_url()
     impression_model = await get_runtime_memory_model()
@@ -6512,6 +6532,7 @@ async def generate_daily_impression_for_date(impression_date, start_hour: int = 
             "status": "ok",
             "date": str(impression_date),
             "start_hour": start_hour,
+            "start_date": str(start_date) if start_date else None,
             "messages_used": len(messages),
             "impression": _serialize_daily_impression(saved),
             "raw": raw,
@@ -6675,7 +6696,18 @@ async def api_generate_daily_impression(request: Request):
         return {"error": "请提供日期"}
     impression_date = datetime.strptime(date_str, "%Y-%m-%d").date()
     start_hour = data.get("start_hour", data.get("startHour", 0))
-    result = await generate_daily_impression_for_date(impression_date, start_hour=start_hour)
+    start_date = None
+    start_date_str = str(data.get("start_date") or data.get("startDate") or "").strip()
+    if start_date_str:
+        try:
+            start_date = datetime.strptime(start_date_str, "%Y-%m-%d").date()
+        except ValueError:
+            return {"error": "开始日期格式错误"}
+        if start_date > impression_date:
+            return {"error": "开始日期不能晚于结束日期"}
+        if start_date == impression_date:
+            start_date = None
+    result = await generate_daily_impression_for_date(impression_date, start_hour=start_hour, start_date=start_date)
     if not result.get("error") and result.get("status") != "error":
         invalidate_daily_impression_cache()
     return result

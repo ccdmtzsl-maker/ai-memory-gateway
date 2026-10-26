@@ -407,18 +407,29 @@ function renderDailyRawBlock(raw) {
 async function generateDailyImpressionFromPage() {
     const dateInput = document.getElementById('dailyPageDate');
     const startTimeInput = document.getElementById('dailyPageStartTime');
+    const startDateInput = document.getElementById('dailyPageStartDate');
     const msg = document.getElementById('daily-page-msg');
     _dailySyncStartTime('dailyPageOverviewStartTime');
     const date = dateInput ? dateInput.value : '';
     const startHourRaw = startTimeInput && startTimeInput.value ? startTimeInput.value.split(':')[0] : '0';
     const startHour = Math.max(0, Math.min(23, parseInt(startHourRaw, 10) || 0));
     if (!date) { if (msg) msg.innerHTML = '<div class="msg msg-error">请选择日期</div>'; return; }
-    if (msg) msg.innerHTML = '<div class="msg msg-info">正在生成日印象...（材料窗口：' + startHour + ':00 到次日 ' + startHour + ':00）</div>';
+    // 开始日期可选：留空或等于日期时按单日处理
+    let startDate = startDateInput ? (startDateInput.value || '') : '';
+    if (startDate && startDate > date) {
+        if (msg) msg.innerHTML = '<div class="msg msg-error">开始日期不能晚于日期</div>';
+        return;
+    }
+    if (startDate === date) startDate = '';
+    const windowText = startDate
+        ? (startDate + ' ' + startHour + ':00 到 ' + date + ' 次日 ' + startHour + ':00')
+        : (startHour + ':00 到次日 ' + startHour + ':00');
+    if (msg) msg.innerHTML = '<div class="msg msg-info">正在生成日印象...（材料窗口：' + escHtml(windowText) + '）</div>';
     try {
         const resp = await fetch('/api/daily-impressions/generate', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({date, start_hour: startHour})
+            body: JSON.stringify(startDate ? {date, start_date: startDate, start_hour: startHour} : {date, start_hour: startHour})
         });
         const text = await resp.text();
         let data = {};

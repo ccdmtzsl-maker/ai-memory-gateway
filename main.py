@@ -6417,8 +6417,11 @@ async def generate_daily_impression_for_date(impression_date, start_hour: int = 
     # {period} 变量：单日为“今天”，多日为“这n天”
     period_text = f"这{day_count}天" if multi_day else "今天"
 
-    def build_session_blocks(msgs):
-        """连续同一 session 的消息归为一个对话线块。"""
+    def build_session_blocks(msgs, logical_day=None):
+        """连续同一 session 的消息归为一个对话线块。
+
+        logical_day: 多日模式下该段所属的逻辑日；消息实际日期晚于它时（跨过午夜），时间前加“次日”。
+        """
         blocks = []
         current_session_id = None
         current_lines = []
@@ -6431,6 +6434,8 @@ async def generate_daily_impression_for_date(impression_date, start_hour: int = 
             # created_at 是 UTC，先折算成 TIMEZONE_HOURS 对应的本地时间
             _local_dt = _to_local_dt(msg.get("created_at"))
             time_text = _local_dt.strftime("%H:%M") if _local_dt else ""
+            if logical_day and _local_dt and _local_dt.date() > logical_day:
+                time_text = "次日 " + time_text
             current_lines.append(
                 f"[{time_text}] {role_map.get(msg.get('role'), msg.get('role'))}: {msg.get('content') or ''}"
             )
@@ -6439,20 +6444,24 @@ async def generate_daily_impression_for_date(impression_date, start_hour: int = 
         return blocks
 
     if multi_day:
-        # 多日：先按本地日期分段，段内再按对话线分组
-        day_order = []
+        # 多日：按“逻辑日”分段（每天从 start_hour 起算，与材料窗口一致），段内再按对话线分组。
+        # 范围内每一天都列出；没有聊天记录的日子标注（无）。
         day_messages = {}
         for msg in messages:
             _local_dt = _to_local_dt(msg.get("created_at"))
-            day_key = _local_dt.date() if _local_dt else None
-            if day_key not in day_messages:
-                day_messages[day_key] = []
-                day_order.append(day_key)
-            day_messages[day_key].append(msg)
+            if not _local_dt:
+                continue
+            day_key = (_local_dt - timedelta(hours=start_hour)).date()
+            day_messages.setdefault(day_key, []).append(msg)
         day_sections = []
-        for day_key in day_order:
-            label = f"{day_key.month}月{day_key.day}日" if day_key else "未知日期"
-            day_sections.append(f"===== {label} =====\n" + "\n\n".join(build_session_blocks(day_messages[day_key])))
+        for offset in range(day_count):
+            day_key = start_date + timedelta(days=offset)
+            label = f"===== {day_key.month}月{day_key.day}日 ====="
+            msgs_of_day = day_messages.get(day_key) or []
+            if msgs_of_day:
+                day_sections.append(label + "\n" + "\n\n".join(build_session_blocks(msgs_of_day, logical_day=day_key)))
+            else:
+                day_sections.append(label + "\n（无）")
         conversation_text = "\n\n".join(day_sections)
     else:
         conversation_text = "\n\n".join(build_session_blocks(messages))

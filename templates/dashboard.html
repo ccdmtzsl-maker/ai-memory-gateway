@@ -680,6 +680,11 @@
                         <input type="number" id="set-MEMORY_PALACE_INJECTION_DEPTH" class="input" min="0" max="50" value="0">
                         <small class="form-hint">0 表示保持现状，挂在最新消息后；1 表示往上找一条普通对话消息后插入；如果历史不够深，则仍挂在最新消息后。</small>
                     </div>
+                    <div class="settings-field">
+                        <label>记忆宫殿跳过词表 (MEMORY_PALACE_SKIP_PHRASES)</label>
+                        <textarea id="set-MEMORY_PALACE_SKIP_PHRASES" class="input" rows="6" spellcheck="false" placeholder="留空则使用默认词表"></textarea>
+                        <small class="form-hint">一行一个词。用户这条消息和某一行完全一致时，本轮不检索记忆宫殿，只注入便利贴。比对前两边都会去掉标点、空格和表情，全角转半角，英文不分大小写，连续重复的字算一个（“哈哈”能匹配“哈哈哈哈！！”）。带图片、或只发表情的消息照常注入。留空使用默认词表。</small>
+                    </div>
                     <div class="settings-field settings-toggle-row">
                         <label>启用关键词触发上下文 (KEYWORD_CONTEXT_ENABLED)</label>
                         <label class="toggle"><input type="checkbox" id="set-KEYWORD_CONTEXT_ENABLED"><span class="toggle-slider"></span></label>
@@ -702,7 +707,7 @@
                     <div class="settings-field">
                         <label>上下文模板 (CONTEXT_TEMPLATE)</label>
                         <textarea id="set-CONTEXT_TEMPLATE" class="input" rows="10" spellcheck="false"></textarea>
-                        <small class="form-hint">开启后用户消息之后的多条 system 会按此模板合并成一条。可用变量：&#123;&#123;env&#125;&#125; 环境状态、&#123;&#123;keyword&#125;&#125; 关键词命中内容、&#123;&#123;hot_news&#125;&#125; 热点新闻、&#123;&#123;operit_memory&#125;&#125; Operit 原生记忆、&#123;&#123;memory_palace&#125;&#125; 记忆宫殿召回（仅注入深度为 0 时并入，深度大于 0 仍独立注入）。变量无内容时整行删除，模板里的其他文字照常发送；模板留空则不注入。</small>
+                        <small class="form-hint">开启后用户消息之后的多条 system 会按此模板合并成一条。可用变量：&#123;&#123;env&#125;&#125; 环境状态、&#123;&#123;keyword&#125;&#125; 关键词命中内容、&#123;&#123;memory_palace&#125;&#125; 记忆宫殿召回（仅注入深度为 0 时并入，深度大于 0 仍独立注入）。变量无内容时整行删除，模板里的其他文字照常发送；模板留空则不注入。</small>
                     </div>
                 </div>
 

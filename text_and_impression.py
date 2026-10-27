@@ -1,7 +1,7 @@
 """文本抽取与用户画像计算 —— 从 main.py 拆出的纯计算逻辑。
 
 不依赖热更新配置、不碰数据库。包含：
-- 文本抽取：环境包、代理上下文、Operit 记忆附件、自动触发判断
+- 文本抽取：环境包、代理上下文、自动触发判断
 - 用户画像：MMR 选择、配额分配、相似度计算、提示词生成
 """
 
@@ -21,7 +21,7 @@ from memory_palace_scoring import (
 
 def _clean_current_user_content_preserve_multimodal(content, history: list = None, shorten_time: bool = False) -> tuple:
     """
-    清理当前用户消息里的 Operit 环境/记忆/proxy 文本附件，同时保留多模态内容。
+    清理当前用户消息里的 Operit 环境/proxy 文本附件，同时保留多模态内容。
 
     规则：
     - str content：沿用旧逻辑，清理白名单附件，不匹配的附件原样保留。
@@ -29,8 +29,6 @@ def _clean_current_user_content_preserve_multimodal(content, history: list = Non
     - 不匹配环境/记忆/proxy 规则的 <attachment> 由 extract_* 内部原样返回，不删除。
     """
     env_parts = []
-    hot_news_parts = []
-    operit_memory_parts = []
     time_text = ""
 
     def _clean_one_text(text: str) -> str:
@@ -38,18 +36,13 @@ def _clean_current_user_content_preserve_multimodal(content, history: list = Non
         if not isinstance(text, str):
             return text
 
-        cleaned, env_text, hot_news_text, attachment_time = extract_environment_bundle_from_text(text)
-        cleaned, operit_memory_text = extract_operit_memory_attachment_from_text(cleaned)
+        cleaned, env_text, attachment_time = extract_environment_bundle_from_text(text)
         cleaned, proxy_env_text, proxy_time = extract_proxy_sender_context_from_text(cleaned)
 
         if env_text:
             env_parts.append(env_text)
-        if hot_news_text:
-            hot_news_parts.append(hot_news_text)
         if proxy_env_text:
             env_parts.append(proxy_env_text)
-        if operit_memory_text:
-            operit_memory_parts.append(operit_memory_text)
 
         raw_time = attachment_time or proxy_time
         if raw_time and not time_text:
@@ -90,24 +83,22 @@ def _clean_current_user_content_preserve_multimodal(content, history: list = Non
         cleaned_content = cleaned_text
 
     env_text_final = "\n\n".join(part for part in env_parts if part)
-    hot_news_final = "\n\n".join(part for part in hot_news_parts if part)
-    operit_memory_final = "\n\n".join(part for part in operit_memory_parts if part)
-    return cleaned_content, env_text_final, hot_news_final, operit_memory_final
+    return cleaned_content, env_text_final
 
 
-def extract_environment_bundle_from_text(text: str) -> tuple[str, str, str, str]:
+def extract_environment_bundle_from_text(text: str) -> tuple[str, str, str]:
     """识别并压缩 Operit 注入的 text/plain 环境附件。
-    返回: (清理后的用户文本, 轻量环境上下文, 热点上下文, 附件时间戳)
+    返回: (清理后的用户文本, 轻量环境上下文, 附件时间戳)
+    热点新闻段落随附件一起移除，不再单独解析。
     """
     if not isinstance(text, str) or "<attachment" not in text:
-        return text, "", "", ""
+        return text, "", ""
 
     env_lines = []
-    hot_news_parts = []
     attachment_time = ""
 
     def repl(match):
-        nonlocal attachment_time, env_lines, hot_news_parts
+        nonlocal attachment_time, env_lines
         attrs = match.group(1) or ""
         body = match.group(2) or ""
         filename_match = re.search(r'filename="([^"]+)"', attrs)
@@ -128,27 +119,6 @@ def extract_environment_bundle_from_text(text: str) -> tuple[str, str, str, str]
         battery_match = re.search(r'【当前电量】.*?电量:\s*([^\n]+).*?状态:\s*([^\n]+)', body, re.S)
         if battery_match:
             env_lines.append(f"电量: {battery_match.group(1).strip()}，{battery_match.group(2).strip()}")
-
-        hot_news_block = re.search(r'(📰\s*)?【最近真实热点[^】]*】(.*?)(?=\n\s*【当前天气】|\n\s*【应用使用时长】|\n\s*【当前屏幕应用】|$)', body, re.S)
-        if hot_news_block:
-            hot_lines = []
-            prefix = (hot_news_block.group(1) or "").strip()
-            title = "【最近真实热点 · 背景认知】"
-            if prefix:
-                title = prefix + " " + title
-            hot_lines.append(title)
-            hot_body = hot_news_block.group(2).strip()
-            for line in hot_body.splitlines():
-                line = line.rstrip()
-                if not line.strip():
-                    hot_lines.append("")
-                    continue
-                if line.strip().startswith("更新时间："):
-                    continue
-                hot_lines.append(line)
-            hot_text = "\n".join(hot_lines).strip()
-            if hot_text:
-                hot_news_parts.append(hot_text)
 
         weather_block = re.search(r'【当前天气】(.*?)(?:【|$)', body, re.S)
         if weather_block:
@@ -183,55 +153,7 @@ def extract_environment_bundle_from_text(text: str) -> tuple[str, str, str, str]
 
     cleaned = re.sub(r'<attachment([^>]*)>(.*?)</attachment>', repl, text, flags=re.S).strip()
     env_text = "【当前环境】\n" + "\n".join(env_lines) if env_lines else ""
-    hot_news_text = "\n\n".join(part for part in hot_news_parts if part)
-    return cleaned, env_text, hot_news_text, attachment_time
-
-
-def extract_operit_memory_attachment_from_text(text: str) -> tuple[str, str]:
-    """识别 Operit 原生记忆库手动注入的相关记忆附件。
-    返回: (清理后的用户文本, 格式化后的记忆上下文)
-    """
-    if not isinstance(text, str) or "<attachment" not in text or "相关记忆" not in text:
-        return text, ""
-
-    memory_bodies = []
-
-    def repl(match):
-        attrs = match.group(1) or ""
-        body = (match.group(2) or "").strip()
-        filename_match = re.search(r'filename="([^"]+)"', attrs)
-        filename = filename_match.group(1) if filename_match else ""
-
-        if filename != "相关记忆":
-            return match.group(0)
-        if not body:
-            return ""
-
-        memory_bodies.append(body)
-        return ""
-
-    cleaned = re.sub(r'<attachment([^>]*)>(.*?)</attachment>', repl, text, flags=re.S).strip()
-    if not memory_bodies:
-        return cleaned, ""
-
-    memory_text = "\n\n".join(memory_bodies).strip()
-    formatted = f"""【从operit记忆库中检索到的相关记忆】
-{memory_text}
-
-# 记忆应用
-- 像朋友般自然运用这些记忆，不刻意展示
-- 仅在相关话题出现时引用，避免主动提及
-- 对重要信息（如健康、日期、约定）保持一致性
-- 新信息与记忆冲突时，以新信息为准
-- 模糊记忆可表达不确定性：\"记得你似乎说过...\"
-
-# 交流方式
-- 自然引用：\"记得你说过...\"或\"上次我们聊到...\"
-- 避免机械式表达如\"根据我的记忆...\"或\"检索到的信息显示...\"
-- 共同经历可温情回忆：\"上次那个事挺好玩的\"
-
-记忆是丰富对话的工具，而非对话焦点。"""
-    return cleaned, formatted
+    return cleaned, env_text, attachment_time
 
 
 def extract_proxy_sender_context_from_text(text: str) -> tuple[str, str, str]:
@@ -368,11 +290,9 @@ def clean_user_message_for_log(user_msg: str, history: list = None) -> str:
     cleaned = user_msg
     time_text = ""
 
-    cleaned, _env_text, _hot_news_text, attachment_time = extract_environment_bundle_from_text(cleaned)
+    cleaned, _env_text, attachment_time = extract_environment_bundle_from_text(cleaned)
     if attachment_time:
         time_text = attachment_time
-
-    cleaned, _operit_memory_text = extract_operit_memory_attachment_from_text(cleaned)
 
     cleaned, _proxy_env_text, proxy_time = extract_proxy_sender_context_from_text(cleaned)
     if proxy_time and not time_text:

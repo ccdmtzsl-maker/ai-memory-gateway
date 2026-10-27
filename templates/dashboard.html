@@ -680,11 +680,11 @@
                         <input type="number" id="set-MEMORY_PALACE_INJECTION_DEPTH" class="input" min="0" max="50" value="0">
                         <small class="form-hint">0 表示保持现状，挂在最新消息后；1 表示往上找一条普通对话消息后插入；如果历史不够深，则仍挂在最新消息后。</small>
                     </div>
-                    <div class="settings-field">
-                        <label>记忆宫殿跳过词表 (MEMORY_PALACE_SKIP_PHRASES)</label>
+                    <details class="settings-field" style="border:none;padding:0;margin-bottom:20px;">
+                        <summary style="cursor:pointer;font-size:13px;color:var(--text-light);margin-bottom:6px;font-weight:500;">记忆宫殿跳过词表 (MEMORY_PALACE_SKIP_PHRASES)</summary>
                         <textarea id="set-MEMORY_PALACE_SKIP_PHRASES" class="input" rows="6" spellcheck="false" placeholder="留空则使用默认词表"></textarea>
                         <small class="form-hint">一行一个词。用户这条消息和某一行完全一致时，本轮不检索记忆宫殿，只注入便利贴。比对前两边都会去掉标点、空格和表情，全角转半角，英文不分大小写，连续重复的字算一个（“哈哈”能匹配“哈哈哈哈！！”）。带图片、或只发表情的消息照常注入。留空使用默认词表。</small>
-                    </div>
+                    </details>
                     <div class="settings-field settings-toggle-row">
                         <label>启用关键词触发上下文 (KEYWORD_CONTEXT_ENABLED)</label>
                         <label class="toggle"><input type="checkbox" id="set-KEYWORD_CONTEXT_ENABLED"><span class="toggle-slider"></span></label>

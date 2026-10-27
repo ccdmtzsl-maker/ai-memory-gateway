@@ -19,6 +19,7 @@ import asyncio
 import contextvars
 import time
 import re
+import unicodedata
 import math as _math
 import hashlib
 import hmac
@@ -396,8 +397,6 @@ CONTEXT_TEMPLATE = os.getenv("CONTEXT_TEMPLATE", "")
 DEFAULT_CONTEXT_TEMPLATE = (
     "{{env}}" "\n"
     "{{keyword}}" "\n"
-    "{{hot_news}}" "\n"
-    "{{operit_memory}}" "\n"
     "{{memory_palace}}"
 )
 MEMORY_PALACE_EVENT_BOX_COMPRESS_THRESHOLD = int(os.getenv("MEMORY_PALACE_EVENT_BOX_COMPRESS_THRESHOLD", "4"))
@@ -2116,7 +2115,7 @@ def format_memory_palace_event_box_item(row: dict) -> str:
 _memory_palace_last_explain_corpus = {}
 
 
-async def retrieve_memory_palace_rows_for_prompt(query: str = "", limit: int = 5, room: str = None, character_id: str = "default", recent_messages=None, touch_access: bool = True, explain: bool = False):
+async def retrieve_memory_palace_rows_for_prompt(query: str = "", limit: int = 5, room: str = None, character_id: str = "default", recent_messages=None, touch_access: bool = True, explain: bool = False, skip_recall: bool = False):
     import time as _time
     _t0 = _time.perf_counter()
     _t = [_t0]
@@ -2125,6 +2124,32 @@ async def retrieve_memory_palace_rows_for_prompt(query: str = "", limit: int = 5
         perf_print(f"⏱️ [记忆检索] {step}: +{(now-_t[0])*1000:.0f}ms (总{(now-_t0)*1000:.0f}ms)")
         _t[0] = now
     limit = max(1, min(int(limit or 5), 30))
+    if skip_recall:
+        # 命中跳过词表：不向量化、不打分，只取仍在有效期内的便利贴。
+        await clear_expired_memory_palace_pins(character_id)
+        rows = await _memory_palace_fetch_rows(room=room, character_id=character_id)
+        now = datetime.now(timezone.utc)
+        pinned = []
+        for row in rows:
+            pu = _memory_palace_aware_dt(row["pinned_until"])
+            if pu and pu > now:
+                item = dict(row)
+                item["score"] = 999.0
+                pinned.append(item)
+        pinned.sort(key=lambda x: x["pinned_until"] or now)
+        if touch_access and pinned:
+            try:
+                pool = await get_pool()
+                async with pool.acquire() as conn:
+                    await conn.executemany(
+                        "UPDATE memory_palace_nodes SET access_count = access_count + 1, last_accessed_at = NOW(), updated_at = NOW() WHERE id = $1",
+                        [(item["id"],) for item in pinned]
+                    )
+                await _memory_palace_strengthen_coactivated([item["id"] for item in pinned], character_id=character_id)
+            except Exception as e:
+                print(f"⚠️ Memory Palace access stats update failed: {e}")
+        _log(f"跳过检索，只取便利贴{len(pinned)}条")
+        return pinned, len(pinned)
     merged = {}
     # 查询文本只来自用户最近的消息，跟记忆库无关，所以先切好。
     spikes, context_query, fallback_query = _memory_palace_split_last_turn_queries(recent_messages or [])
@@ -2665,6 +2690,75 @@ def _mp_recall_reuse_put(key, text):
         _MP_RECALL_REUSE.pop(next(iter(_MP_RECALL_REUSE)), None)
 
 
+# ------------------------------------------------------------
+# 记忆宫殿跳过词表
+# 用户这句话只是附和/寒暄（如“嗯嗯”“好的~”“哈哈哈”）时，本轮不检索记忆，
+# 只注入便利贴。整句比对：两边用同一套规则清洗后完全相等才算命中。
+# 带图片等非文本内容、或清洗后什么都不剩（只发表情）时照常注入。
+# ------------------------------------------------------------
+_DEFAULT_MP_SKIP_PHRASES = "\n".join([
+    "嗯", "嗯嗯", "嗯呢", "嗯哼", "哦", "噢", "喔", "啊", "哇", "耶",
+    "哈哈", "嘿嘿", "呵呵", "嘻嘻", "噗",
+    "好", "好的", "好滴", "好哒", "好吧", "好呀", "好啊", "好嘞",
+    "行", "行吧", "可以", "收到", "了解", "知道了",
+    "对", "对的", "是的", "ok", "okay", "666",
+    "谢谢", "谢啦",
+])
+
+
+def _mp_skip_normalize(text: str) -> str:
+    """全角转半角、英文转小写、只保留文字和数字、连续重复的字压成一个。"""
+    text = unicodedata.normalize("NFKC", text or "").lower()
+    text = "".join(ch for ch in text if unicodedata.category(ch)[0] in "LN")
+    return re.sub(r"(.)\1+", r"\1", text)
+
+
+_mp_skip_set = None
+
+
+def set_memory_palace_skip_phrases(raw: str):
+    """保存设置时调用：清洗词表并缓存到内存，每轮直接读内存不查库。留空用默认。"""
+    global _mp_skip_set
+    source = raw if str(raw or "").strip() else _DEFAULT_MP_SKIP_PHRASES
+    phrases = set()
+    for line in str(source).splitlines():
+        norm = _mp_skip_normalize(line)
+        if norm:
+            phrases.add(norm)
+    _mp_skip_set = phrases
+
+
+async def _get_memory_palace_skip_set() -> set:
+    if _mp_skip_set is None:
+        raw = ""
+        try:
+            raw = await get_gateway_config("MEMORY_PALACE_SKIP_PHRASES", "") or ""
+        except Exception as e:
+            print(f"⚠️ 读取记忆宫殿跳过词表失败，使用默认: {e}")
+        set_memory_palace_skip_phrases(raw)
+    return _mp_skip_set
+
+
+_MP_SKIP_ATTACHMENT_RE = re.compile(r"<attachment[^>]*>.*?</attachment>", re.S)
+
+
+async def _mp_should_skip_recall(query: str, recent_messages=None) -> bool:
+    # 最后一条用户消息带图片等非文本块：照常注入
+    for msg in reversed(recent_messages or []):
+        if isinstance(msg, dict) and msg.get("role") == "user":
+            content = msg.get("content")
+            if isinstance(content, list) and any(
+                isinstance(b, dict) and b.get("type") != "text" for b in content
+            ):
+                return False
+            break
+    # 客户端附带的环境附件不算用户说的话
+    norm = _mp_skip_normalize(_MP_SKIP_ATTACHMENT_RE.sub("", query or ""))
+    if not norm:
+        return False
+    return norm in await _get_memory_palace_skip_set()
+
+
 async def format_memory_palace_for_prompt(limit: int = 5, room: str = None, query: str = "", character_id: str = "default", recent_messages=None, touch_access: bool = True, session_id: str = "") -> str:
     # 调试接口等不记访问的调用：照旧直接查，不读也不写沿用记录
     if not touch_access:
@@ -2724,7 +2818,11 @@ def log_upstream_cache_usage(usage, label: str) -> None:
 
 
 async def _format_memory_palace_for_prompt_uncached(limit: int = 5, room: str = None, query: str = "", character_id: str = "default", recent_messages=None, touch_access: bool = True, session_id: str = "") -> str:
-    rows, pinned_count = await retrieve_memory_palace_rows_for_prompt(query=query, limit=limit, room=room, character_id=character_id, recent_messages=recent_messages, touch_access=touch_access)
+    # 调试接口（touch_access=False）不受跳过词表影响
+    skip_recall = await _mp_should_skip_recall(query, recent_messages) if touch_access else False
+    if skip_recall:
+        print("🔕 [记忆宫殿] 用户消息命中跳过词表：本轮不检索记忆，只注入便利贴")
+    rows, pinned_count = await retrieve_memory_palace_rows_for_prompt(query=query, limit=limit, room=room, character_id=character_id, recent_messages=recent_messages, touch_access=touch_access, skip_recall=skip_recall)
     if not rows:
         return "### 记忆宫殿\n\n暂无可用记忆。"
     _fmt_t0 = time.perf_counter()
@@ -3005,7 +3103,9 @@ async def build_keyword_context_text(user_message: str, max_rules: int = 5) -> s
 CONTEXT_BLOCKS_KEY = "_ctx_blocks"
 
 
-_CONTEXT_TEMPLATE_VARS = ("env", "keyword", "hot_news", "operit_memory", "memory_palace")
+_CONTEXT_TEMPLATE_VARS = ("env", "keyword", "memory_palace")
+# 已删除的旧变量：设置页存过的模板里可能还带着，按空值处理（独占一行时整行删除），免得原样发给模型。
+_REMOVED_CONTEXT_TEMPLATE_VARS = ("hot_news", "operit_memory")
 
 
 def render_context_template(template: str, blocks: dict) -> str:
@@ -3019,7 +3119,7 @@ def render_context_template(template: str, blocks: dict) -> str:
     if not template:
         return ""
     out = template
-    for _name in _CONTEXT_TEMPLATE_VARS:
+    for _name in _CONTEXT_TEMPLATE_VARS + _REMOVED_CONTEXT_TEMPLATE_VARS:
         _value = str(blocks.get(_name) or "").strip()
         _pat = "\\{\\{\\s*" + _name + "\\s*\\}\\}"
         if _value:
@@ -3093,23 +3193,8 @@ async def inject_keyword_context_auto_context(messages: list, user_message: str)
     return insert_keyword_context_system_message(messages, text)
 
 
-def _is_operit_memory_context_message(msg: dict) -> bool:
-    text = _message_content_text(msg)
-    if not text:
-        return False
-    markers = (
-        "【从operit记忆库中检索到的相关记忆】",
-    )
-    return any(marker in text for marker in markers)
-
-
 def _default_memory_palace_insert_index(messages: list) -> int:
-    insert_at = len(messages)
-    for idx in range(len(messages) - 1, -1, -1):
-        msg = messages[idx]
-        if isinstance(msg, dict) and _is_operit_memory_context_message(msg):
-            insert_at = idx
-    return insert_at
+    return len(messages)
 
 
 def _is_memory_palace_depth_anchor(msg: dict) -> bool:
@@ -4310,7 +4395,7 @@ async def build_partitioned_messages(
         result.append(m)
     
     if current_user_msg:
-        current_content, env_text, hot_news_text, operit_memory_text = _clean_current_user_content_preserve_multimodal(
+        current_content, env_text = _clean_current_user_content_preserve_multimodal(
             current_user_msg.get('content', ''),
             history=history,
             shorten_time=True,
@@ -4332,8 +4417,6 @@ async def build_partitioned_messages(
                 CONTEXT_BLOCKS_KEY: {
                     "env": env_text,
                     "keyword": keyword_context_text,
-                    "hot_news": hot_news_text,
-                    "operit_memory": operit_memory_text,
                 },
             })
         else:
@@ -4342,11 +4425,6 @@ async def build_partitioned_messages(
                 result.append({"role": "system", "content": env_text})
             if keyword_context_text:
                 result.append({"role": "system", "content": keyword_context_text})
-            if hot_news_text:
-                result.append({"role": "system", "content": hot_news_text})
-            # Operit 原生记忆附件放在最底部，按用户手动检索结果使用。
-            if operit_memory_text:
-                result.append({"role": "system", "content": operit_memory_text})
     
     bp_count = 1 + (1 if summary_parts else 0) + (1 if cleaned_a else 0) + (1 if b_msgs else 0)
     summary_total = sum(len(p) for p in summary_parts)
@@ -4383,7 +4461,7 @@ async def _build_basic_cached(
         result.append(m)
     
     if current_user_msg:
-        current_content, env_text, hot_news_text, operit_memory_text = _clean_current_user_content_preserve_multimodal(
+        current_content, env_text = _clean_current_user_content_preserve_multimodal(
             current_user_msg.get('content', ''),
             history=history,
             shorten_time=False,
@@ -4404,8 +4482,6 @@ async def _build_basic_cached(
                 CONTEXT_BLOCKS_KEY: {
                     "env": env_text,
                     "keyword": keyword_context_text,
-                    "hot_news": hot_news_text,
-                    "operit_memory": operit_memory_text,
                 },
             })
         else:
@@ -4414,11 +4490,6 @@ async def _build_basic_cached(
                 result.append({"role": "system", "content": env_text})
             if keyword_context_text:
                 result.append({"role": "system", "content": keyword_context_text})
-            if hot_news_text:
-                result.append({"role": "system", "content": hot_news_text})
-            # Operit 原生记忆附件放在最底部，按用户手动检索结果使用。
-            if operit_memory_text:
-                result.append({"role": "system", "content": operit_memory_text})
     
     bp_count = 1 + (1 if history else 0)
     perf_print(f"🔒 基础缓存(降级): BP×{bp_count} | 历史{len(history)}条 | 总{len(result)}条messages")
@@ -11638,6 +11709,7 @@ async def get_settings():
             # 记忆提取提示词
             "extractionPrompt": db.get("extractionPrompt") or _DEFAULT_EXTRACTION_PROMPT or "",
             "dailyImpressionPrompt": db.get("dailyImpressionPrompt") or _DEFAULT_DAILY_IMPRESSION_PROMPT or "",
+            "MEMORY_PALACE_SKIP_PHRASES": db.get("MEMORY_PALACE_SKIP_PHRASES") or _DEFAULT_MP_SKIP_PHRASES,
             "modelPresets": json.loads(db.get("modelPresets") or "[]"),
             "memoryModelPresets": json.loads(db.get("memoryModelPresets") or "[]"),
         }
@@ -11840,6 +11912,12 @@ async def save_settings(request: Request):
             if key == "dailyImpressionPrompt":
                 queue_write("dailyImpressionPrompt", value)
                 set_daily_impression_prompt(str(value))
+                continue
+
+            # --- 记忆宫殿跳过词表：写库同时刷新内存缓存 ---
+            if key == "MEMORY_PALACE_SKIP_PHRASES":
+                queue_write("MEMORY_PALACE_SKIP_PHRASES", value)
+                set_memory_palace_skip_phrases(str(value or ""))
                 continue
 
             # --- modelPresets 特殊处理 ---

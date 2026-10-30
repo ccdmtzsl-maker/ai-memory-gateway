@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Memory Gateway</title>
-    <link rel="stylesheet" href="/static/css/dashboard.css?v=4.6">
+    <link rel="stylesheet" href="/static/css/dashboard.css?v=4.7">
     <style>
         .memory-notebook {
             position:relative; isolation:isolate; margin:18px 0 28px;
@@ -293,7 +293,10 @@
                 <div id="conv-detail-panel" class="card" style="display: none;">
                     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
                         <h4 id="conv-detail-title">对话详情</h4>
-                        <button class="btn btn-sm" onclick="closeConvDetail()">关闭</button>
+                        <div style="display:flex;gap:8px;align-items:center;">
+                            <button id="conv-detail-delete-selected" class="btn btn-sm" style="display:none;color:var(--danger);" onclick="deleteSelectedConvMessages()">删除</button>
+                            <button class="btn btn-sm" onclick="closeConvDetail()">关闭</button>
+                        </div>
                     </div>
                     <div id="conv-detail-messages" style="max-height: 600px; overflow-y: auto;"></div>
                 </div>
@@ -868,7 +871,7 @@
         </main>
     </div>
 
-    <script src="/static/js/dashboard.js?v=7.16"></script>
+    <script src="/static/js/dashboard.js?v=7.17"></script>
 <script src="/static/js/daily_impressions.js?v=1.5"></script>
 <script>
     // --- 模型预设管理（右上角切换面板） ---

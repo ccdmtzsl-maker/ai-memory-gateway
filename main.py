@@ -8471,6 +8471,38 @@ async def api_memory_palace_compress_event_boxes(request: Request):
         return {"status": "error", "error": str(e), "compressed": 0}
 
 
+@app.post("/api/memory-palace/event-boxes/checkup/preview")
+async def api_memory_palace_event_box_checkup_preview(request: Request):
+    if not MEMORY_ENABLED:
+        return {"error": "记忆系统未启用"}
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    try:
+        return await preview_event_box_checkup(character_id=(data or {}).get("character_id") or "default")
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return {"status": "error", "error": f"{type(e).__name__}: {e}"}
+
+
+@app.post("/api/memory-palace/event-boxes/checkup/confirm")
+async def api_memory_palace_event_box_checkup_confirm(request: Request):
+    if not MEMORY_ENABLED:
+        return {"error": "记忆系统未启用"}
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    try:
+        return await confirm_event_box_checkup((data or {}).get("boxes") or [], character_id=(data or {}).get("character_id") or "default")
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return {"status": "error", "error": f"{type(e).__name__}: {e}"}
+
+
 @app.post("/api/memory-palace/event-boxes/{box_id}/undo-compress")
 async def api_memory_palace_undo_event_box_compression(box_id: str, request: Request):
     if not MEMORY_ENABLED:
@@ -8597,6 +8629,12 @@ async def api_memory_palace_update_event_box(box_id: str, request: Request):
     if "sealed" in data:
         updates.append("sealed = $%d" % (len(args) + 3))
         args.append(bool(data.get("sealed")))
+    if "name" in data:
+        new_name = _eb_clean_name(data.get("name"))
+        if not new_name:
+            return {"status": "error", "error": "盒名不能为空", "updated": 0}
+        updates.append("name = $%d" % (len(args) + 3))
+        args.append(new_name)
     if not updates:
         return {"status": "ok", "updated": 0}
     try:
@@ -8614,6 +8652,7 @@ async def api_memory_palace_update_event_box(box_id: str, request: Request):
             )
         if not row:
             return JSONResponse({"error": "事件盒不存在"}, status_code=404)
+        invalidate_memory_palace_cache(character_id)
         return {"status": "ok", "updated": 1, "box": _serialize_event_box(dict(row))}
     except Exception as e:
         return {"status": "error", "error": str(e), "updated": 0}
@@ -10234,6 +10273,463 @@ async def maybe_compress_memory_palace_event_boxes(box_ids=None, character_id: s
                 except Exception as e:
                     print(f"⚠️ 事件盒压缩解锁失败 {box_id}: {e}")
     return compressed
+
+# ============================================================
+# 事件盒体检：检查未封盒、压缩 0~1 次的事件盒里有没有混进无关记忆
+# 流程：preview（每盒调一次模型，给出调整方案）→ 前端勾选 → confirm（执行 + 打健康标记）
+# ============================================================
+_EB_CHECKUP_MAX_BOXES = 6
+_EB_CHECKUP_MIN_MEMBERS = 2
+_EB_CHECKUP_MAX_COMPRESSION = 1
+_EB_CHECKUP_CONCURRENCY = 3
+_EB_CHECKUP_CONTENT_MAX_CHARS = 400
+
+
+def _eb_member_ids(box: dict) -> list:
+    """盒内成员（live + archived），不含 summary 节点，保持原顺序去重。"""
+    summary_id = str(box.get("summary_node_id") or "")
+    out = []
+    for x in [*(box.get("live_memory_ids") or []), *(box.get("archived_memory_ids") or [])]:
+        x = str(x or "").strip()
+        if x and x != summary_id and x not in out:
+            out.append(x)
+    return out
+
+
+def _eb_member_fingerprint(ids) -> str:
+    joined = "\n".join(sorted({str(x) for x in (ids or []) if x}))
+    return hashlib.sha1(joined.encode("utf-8")).hexdigest()[:16]
+
+
+def _eb_clean_name(value) -> str:
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    text = text.strip("「」『』\"'“”‘’《》【】[]").strip()
+    return text[:24]
+
+
+async def _eb_checkup_select_boxes(conn, character_id: str, limit: int = _EB_CHECKUP_MAX_BOXES) -> list:
+    rows = await conn.fetch("""
+        SELECT id, name, tags, summary_node_id, live_memory_ids, archived_memory_ids,
+               compression_count, checkup_fingerprint, updated_at
+        FROM memory_palace_event_boxes
+        WHERE character_id = $1 AND sealed = FALSE AND COALESCE(compression_count, 0) <= $2
+    """, character_id, _EB_CHECKUP_MAX_COMPRESSION)
+    picked = []
+    for r in rows:
+        box = dict(r)
+        members = _eb_member_ids(box)
+        if len(members) < _EB_CHECKUP_MIN_MEMBERS:
+            continue
+        fp = box.get("checkup_fingerprint")
+        if fp and fp == _eb_member_fingerprint(members):
+            continue
+        box["_members"] = members
+        picked.append(box)
+    # 记忆多的盒子优先
+    picked.sort(key=lambda b: (-len(b["_members"]), -(b["updated_at"].timestamp() if b.get("updated_at") else 0)))
+    return picked[:max(1, int(limit))]
+
+
+async def _eb_checkup_load_material(conn, box: dict, character_id: str):
+    rows = await conn.fetch("""
+        SELECT id, content, room, tags, importance, date, created_at, archived
+        FROM memory_palace_nodes
+        WHERE character_id = $1 AND id = ANY($2::text[]) AND is_box_summary = FALSE
+        ORDER BY COALESCE(date, created_at::date) ASC, created_at ASC, id ASC
+    """, character_id, box["_members"])
+    summary = None
+    if box.get("summary_node_id"):
+        summary = await conn.fetchval(
+            "SELECT content FROM memory_palace_nodes WHERE character_id = $1 AND id = $2",
+            character_id, box["summary_node_id"],
+        )
+    return [dict(r) for r in rows], (str(summary).strip() if summary else None)
+
+
+def _eb_checkup_prompt(box: dict, nodes: list, summary: str, char_name: str) -> str:
+    lines = []
+    for i, n in enumerate(nodes, 1):
+        date_text = str(n.get("date") or n.get("created_at") or "")[:10]
+        room = _MEMORY_PALACE_ROOM_LABELS.get(n.get("room"), n.get("room") or "")
+        content = re.sub(r"\s+", " ", str(n.get("content") or "")).strip()[:_EB_CHECKUP_CONTENT_MAX_CHARS]
+        lines.append(f"M{i} [{date_text}]（{room}）{content}")
+    parts = [
+        f"你在帮{char_name or '角色'}整理记忆宫殿。事件盒用来装「同一件事」的一组记忆，召回时整盒一起出现。"
+        "这个盒子里可能混进了跟主线无关的记忆，请检查。",
+        "",
+        f"盒名：「{box.get('name') or '未命名事件'}」",
+    ]
+    if summary:
+        parts += ["", "这个盒子之前压缩出的总结如下。它可能已经掺进了无关内容，只作参考，不要以它为准：", summary]
+    parts += [
+        "",
+        "盒内记忆（标签 [日期]（房间）内容）：",
+        *lines,
+        "",
+        "## 怎么判断",
+        "1. 先确定盒子的主线：大多数记忆在讲的那一件事。",
+        "2. 每条记忆三选一：留在盒里 / 和其他移出的记忆组成新盒 / 单独移出。",
+        "3. 只是时间相近、出现了同一个人、或情绪相似，不算同一件事。同一件事要有连续的情节或明确的因果。",
+        "4. 拿不准的留在盒里。至少两条移出的记忆明显在讲另一件事时，才组新盒。",
+        "5. 给盒子（包括新盒）起名：5-12 字，说清是什么事，用平实的说法，不要夸张、煽情、文艺化。原名合适就原样写原名。",
+        "",
+        "## 输出",
+        "严格 JSON 对象，不要 markdown。每个标签必须出现、且只出现一次：",
+        "- 盒子不用动：box.members 原样写出全部标签，new_boxes 和 singles 写空数组。",
+        "- 盒子要动：box.members 写动完以后留下的标签。",
+        "- 组成新盒的：写进 new_boxes，每个新盒写盒名和组好的标签。",
+        "- 单独移出的：每个标签单独写进 singles。",
+        '{"box":{"name":"盒名","members":["M1","M2"]},"new_boxes":[{"name":"新盒名","members":["M3","M4"]}],"singles":["M5"],"reason":"一句话：主线是什么，为什么这样调整"}',
+    ]
+    return "\n".join(parts)
+
+
+async def _eb_checkup_call_llm(prompt: str) -> str:
+    base_url = await get_runtime_memory_api_base_url()
+    model = await get_runtime_memory_model()
+    if not base_url or not model:
+        raise RuntimeError("记忆模型未配置（MEMORY_API_BASE_URL / MEMORY_MODEL）")
+    api_key = await get_runtime_memory_api_key()
+    headers = {"Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    if "openrouter" in base_url:
+        headers["HTTP-Referer"] = EXTRA_REFERER
+        headers["X-Title"] = EXTRA_TITLE
+    body = {
+        "model": model,
+        "messages": [{"role": "system", "content": "你只输出 JSON 对象。"}, {"role": "user", "content": prompt}],
+        "temperature": 0.3,
+        "max_tokens": 8000,
+    }
+    async with httpx.AsyncClient(timeout=180.0) as client:
+        resp = await client.post(base_url, headers=headers, json=body)
+    if resp.status_code >= 400:
+        msg = _memory_palace_extractor_http_error(resp, model, "", "")
+        raise RuntimeError(re.sub(r"（model=.*）$", f"（model={model}，提示词 {len(prompt)} 字）", msg))
+    data = resp.json()
+    raw = ""
+    try:
+        raw = (data.get("choices") or [{}])[0].get("message", {}).get("content", "") or ""
+    except Exception:
+        raw = ""
+    if not str(raw).strip():
+        raw = json.dumps(data, ensure_ascii=False)[:4000]
+    return str(raw)
+
+
+def _eb_checkup_parse(raw: str):
+    text = re.sub(r"<think>.*?</think>", "", str(raw or ""), flags=re.S | re.I).strip()
+    text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text).strip()
+    start, end = text.find("{"), text.rfind("}")
+    if start < 0 or end <= start:
+        return None
+    try:
+        data = json.loads(text[start:end + 1])
+    except Exception:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _eb_checkup_normalize(plan: dict, labels: dict) -> dict:
+    """把模型的方案整理成合法方案：每个标签只归到一处。
+
+    优先级 box > new_boxes > singles（重复时保守地留在盒里）；漏写的标签留在盒里；
+    只有一条的新盒按单独移出处理。
+    """
+    warnings = []
+    seen = set()
+
+    def take(items, where):
+        out = []
+        for x in (items if isinstance(items, list) else []):
+            lab = str(x or "").strip().upper()
+            if lab not in labels:
+                if lab:
+                    warnings.append(f"{where} 里有不存在的标签 {lab}，已忽略")
+                continue
+            if lab in seen:
+                warnings.append(f"标签 {lab} 重复出现，按第一次出现的位置处理")
+                continue
+            seen.add(lab)
+            out.append(lab)
+        return out
+
+    box = plan.get("box") if isinstance(plan.get("box"), dict) else {}
+    keep = take(box.get("members"), "box")
+    groups = []
+    for nb in (plan.get("new_boxes") if isinstance(plan.get("new_boxes"), list) else []):
+        if not isinstance(nb, dict):
+            continue
+        members = take(nb.get("members"), "new_boxes")
+        if members:
+            groups.append({"name": _eb_clean_name(nb.get("name")) or "未命名事件", "members": members})
+    singles = take(plan.get("singles"), "singles")
+    new_boxes = []
+    for g in groups:
+        if len(g["members"]) >= 2:
+            new_boxes.append(g)
+        else:
+            singles.extend(g["members"])
+    missing = [lab for lab in labels if lab not in seen]
+    if missing:
+        warnings.append(f"模型漏写了 {'、'.join(missing)}，按留在盒里处理")
+        keep.extend(missing)
+    order = {lab: i for i, lab in enumerate(labels)}
+    keep.sort(key=lambda lab: order[lab])
+    singles.sort(key=lambda lab: order[lab])
+    return {
+        "name": _eb_clean_name(box.get("name")),
+        "keep": keep,
+        "new_boxes": new_boxes,
+        "singles": singles,
+        "warnings": warnings,
+    }
+
+
+async def preview_event_box_checkup(character_id: str = "default") -> dict:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        boxes = await _eb_checkup_select_boxes(conn, character_id)
+        materials = []
+        for b in boxes:
+            nodes, summary = await _eb_checkup_load_material(conn, b, character_id)
+            materials.append((b, nodes, summary))
+    if not materials:
+        return {
+            "status": "empty",
+            "message": "没有需要体检的事件盒（只查未封盒、压缩 0~1 次、至少 2 条记忆、上次体检后成员有变化的盒子）",
+            "boxes": [],
+        }
+    char_name = await get_runtime_character_name()
+    sem = asyncio.Semaphore(_EB_CHECKUP_CONCURRENCY)
+
+    async def one(b, nodes, summary):
+        base = {
+            "box_id": b["id"],
+            "box_name": b.get("name") or "未命名事件",
+            "compression_count": int(b.get("compression_count") or 0),
+            "member_count": len(nodes),
+            "has_summary": bool(summary),
+            "keep": [], "new_boxes": [], "singles": [], "warnings": [],
+            "suggested_name": "", "reason": "",
+        }
+        labels = {f"M{i}": n["id"] for i, n in enumerate(nodes, 1)}
+        by_id = {n["id"]: n for n in nodes}
+
+        def view(lab):
+            n = by_id[labels[lab]]
+            return {
+                "id": n["id"], "label": lab, "content": str(n.get("content") or ""),
+                "archived": bool(n.get("archived")), "room": n.get("room") or "",
+                "date": str(n.get("date") or n.get("created_at") or "")[:10],
+            }
+
+        if len(nodes) < _EB_CHECKUP_MIN_MEMBERS:
+            return {**base, "status": "unchanged", "keep": [view(l) for l in labels]}
+        prompt = _eb_checkup_prompt(b, nodes, summary, char_name)
+        try:
+            async with sem:
+                raw = await _eb_checkup_call_llm(prompt)
+        except Exception as e:
+            err = str(e) if isinstance(e, RuntimeError) else f"{type(e).__name__}: {e}"
+            print(f"⚠️ 事件盒体检失败 {b['id']}: {err}")
+            return {**base, "status": "error", "error": err}
+        plan = _eb_checkup_parse(raw)
+        if plan is None:
+            return {**base, "status": "error", "error": "模型返回的内容解析不出 JSON", "raw": str(raw)[:3000]}
+        norm = _eb_checkup_normalize(plan, labels)
+        changed = bool(norm["new_boxes"] or norm["singles"])
+        suggested = norm["name"] if norm["name"] and norm["name"] != base["box_name"] else ""
+        return {
+            **base,
+            "status": "ok" if changed else "unchanged",
+            "suggested_name": suggested,
+            "reason": str(plan.get("reason") or "").strip()[:300],
+            "keep": [view(l) for l in norm["keep"]],
+            "new_boxes": [{"name": g["name"], "nodes": [view(l) for l in g["members"]]} for g in norm["new_boxes"]],
+            "singles": [view(l) for l in norm["singles"]],
+            "warnings": norm["warnings"],
+        }
+
+    results = await asyncio.gather(*[one(*m) for m in materials])
+    return {"status": "ok", "boxes": list(results)}
+
+
+async def _eb_checkup_apply_one(box_id: str, decision: dict, character_id: str = "default") -> dict:
+    """执行一个盒子的体检调整，并打上健康标记。
+
+    移出了已归档记忆、且盒子有总结时：复活剩余归档、删除旧总结、压缩次数归零，
+    事务提交后再重新压缩一次（成功后压缩次数回到 1）。压缩失败时盒子停在
+    「全部 live、没有总结」的状态，可以手动点「压缩此盒」。
+    盒名最后才改，免得被重新压缩时模型给的名字覆盖。
+    """
+    out = {"box_id": box_id, "status": "ok", "moved_out": 0, "new_boxes": [], "dissolved": False,
+           "rewrite": None, "rewrite_error": "", "renamed": False}
+    rename = _eb_clean_name(decision.get("rename"))
+    need_compress = False
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            # 和压缩共用同一把锁，避免压缩跑到一半时改成员
+            await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"mp_event_box_compress:{character_id}:{box_id}")
+            row = await conn.fetchrow("""
+                SELECT id, name, summary_node_id, live_memory_ids, archived_memory_ids, compression_count, sealed
+                FROM memory_palace_event_boxes
+                WHERE character_id = $1 AND id = $2
+                FOR UPDATE
+            """, character_id, box_id)
+            if not row:
+                return {**out, "status": "error", "error": "事件盒不存在"}
+            box = dict(row)
+            if box.get("sealed"):
+                return {**out, "status": "error", "error": "事件盒已封盒，已跳过"}
+            summary_id = box.get("summary_node_id")
+            members = _eb_member_ids(box)
+            member_set = set(members)
+            archived_set = {str(x) for x in (box.get("archived_memory_ids") or []) if x}
+            used = set()
+
+            def pick(ids):
+                res = []
+                for x in (ids if isinstance(ids, list) else []):
+                    x = str(x or "").strip()
+                    if x in member_set and x not in used:
+                        used.add(x)
+                        res.append(x)
+                return res
+
+            groups = []
+            for nb in (decision.get("new_boxes") if isinstance(decision.get("new_boxes"), list) else []):
+                if isinstance(nb, dict):
+                    groups.append({"name": _eb_clean_name(nb.get("name")) or "未命名事件", "ids": pick(nb.get("node_ids"))})
+            singles = pick(decision.get("singles"))
+            final_groups = []
+            for g in groups:
+                if len(g["ids"]) >= 2:
+                    final_groups.append(g)
+                else:
+                    singles.extend(g["ids"])
+            moved = [*singles, *[x for g in final_groups for x in g["ids"]]]
+            moved_set = set(moved)
+            remaining = [x for x in members if x not in moved_set]
+            out["moved_out"] = len(moved)
+
+            if not moved:
+                # 没有调整：只打健康标记，不动 updated_at，免得列表顺序被打乱
+                await conn.execute("""
+                    UPDATE memory_palace_event_boxes SET checkup_fingerprint = $3, checkup_at = NOW()
+                    WHERE character_id = $1 AND id = $2
+                """, character_id, box_id, _eb_member_fingerprint(members))
+            else:
+                if len(remaining) <= 1:
+                    out["dissolved"] = True
+                    singles.extend(remaining)
+                    remaining = []
+                elif summary_id and (moved_set & archived_set):
+                    need_compress = True
+
+                for g in final_groups:
+                    new_id = f"eb_{int(datetime.now(timezone.utc).timestamp() * 1000)}_{uuid.uuid4().hex[:6]}"
+                    tag_rows = await conn.fetch(
+                        "SELECT tags FROM memory_palace_nodes WHERE character_id = $1 AND id = ANY($2::text[])",
+                        character_id, g["ids"],
+                    )
+                    tags = _merge_text_tags(*[r["tags"] for r in tag_rows])
+                    await conn.execute("""
+                        INSERT INTO memory_palace_event_boxes
+                            (id, character_id, name, tags, live_memory_ids, archived_memory_ids, compression_count, sealed,
+                             checkup_fingerprint, checkup_at, created_at, updated_at)
+                        VALUES ($1, $2, $3, $4, $5::text[], '{}'::text[], 0, FALSE, $6, NOW(), NOW(), NOW())
+                    """, new_id, character_id, g["name"], tags, g["ids"], _eb_member_fingerprint(g["ids"]))
+                    await conn.execute("""
+                        UPDATE memory_palace_nodes
+                        SET event_box_id = $3, archived = FALSE, is_box_summary = FALSE, updated_at = NOW()
+                        WHERE character_id = $1 AND id = ANY($2::text[])
+                    """, character_id, g["ids"], new_id)
+                    out["new_boxes"].append({"id": new_id, "name": g["name"], "count": len(g["ids"])})
+                    await asyncio.sleep(0.002)  # 让同一毫秒里建的两个盒 id 前缀不同（后缀本来也随机）
+
+                if singles:
+                    await conn.execute("""
+                        UPDATE memory_palace_nodes
+                        SET event_box_id = NULL, archived = FALSE, is_box_summary = FALSE, updated_at = NOW()
+                        WHERE character_id = $1 AND id = ANY($2::text[])
+                    """, character_id, singles)
+
+                if out["dissolved"]:
+                    await conn.execute(
+                        "UPDATE memory_palace_event_boxes SET summary_node_id = NULL WHERE character_id = $1 AND id = $2",
+                        character_id, box_id,
+                    )
+                    if summary_id:
+                        await conn.execute(
+                            "DELETE FROM memory_palace_nodes WHERE character_id = $1 AND id = $2 AND is_box_summary = TRUE",
+                            character_id, summary_id,
+                        )
+                    await conn.execute("DELETE FROM memory_palace_event_boxes WHERE character_id = $1 AND id = $2", character_id, box_id)
+                elif need_compress:
+                    await conn.execute(
+                        "UPDATE memory_palace_nodes SET archived = FALSE, updated_at = NOW() WHERE character_id = $1 AND id = ANY($2::text[])",
+                        character_id, remaining,
+                    )
+                    await conn.execute("""
+                        UPDATE memory_palace_event_boxes
+                        SET summary_node_id = NULL, live_memory_ids = $3::text[], archived_memory_ids = '{}'::text[],
+                            compression_count = 0, checkup_fingerprint = $4, checkup_at = NOW(), updated_at = NOW()
+                        WHERE character_id = $1 AND id = $2
+                    """, character_id, box_id, remaining, _eb_member_fingerprint(remaining))
+                    await conn.execute(
+                        "DELETE FROM memory_palace_nodes WHERE character_id = $1 AND id = $2 AND is_box_summary = TRUE",
+                        character_id, summary_id,
+                    )
+                else:
+                    live_left = [str(x) for x in (box.get("live_memory_ids") or []) if x and str(x) not in moved_set and str(x) != str(summary_id or "")]
+                    archived_left = [str(x) for x in (box.get("archived_memory_ids") or []) if x and str(x) not in moved_set and str(x) != str(summary_id or "")]
+                    await conn.execute("""
+                        UPDATE memory_palace_event_boxes
+                        SET live_memory_ids = $3::text[], archived_memory_ids = $4::text[],
+                            checkup_fingerprint = $5, checkup_at = NOW(), updated_at = NOW()
+                        WHERE character_id = $1 AND id = $2
+                    """, character_id, box_id, live_left, archived_left, _eb_member_fingerprint(remaining))
+
+    if need_compress:
+        failures = []
+        try:
+            done = await maybe_compress_memory_palace_event_boxes([box_id], character_id=character_id, threshold=2, failures=failures)
+        except Exception as e:
+            done = 0
+            failures.append({"raw": f"{type(e).__name__}: {e}"})
+        out["rewrite"] = "ok" if done else "failed"
+        if not done:
+            out["rewrite_error"] = str((failures[0].get("raw") if failures else "") or "压缩没有执行")[:300]
+
+    if rename and not out["dissolved"]:
+        async with pool.acquire() as conn:
+            result = await conn.execute("""
+                UPDATE memory_palace_event_boxes SET name = $3, updated_at = NOW()
+                WHERE character_id = $1 AND id = $2 AND name IS DISTINCT FROM $3
+            """, character_id, box_id, rename)
+        out["renamed"] = str(result or "").endswith(" 1")
+    return out
+
+
+async def confirm_event_box_checkup(decisions: list, character_id: str = "default") -> dict:
+    results = []
+    for d in (decisions if isinstance(decisions, list) else []):
+        if not isinstance(d, dict):
+            continue
+        box_id = str(d.get("box_id") or "").strip()
+        if not box_id:
+            continue
+        try:
+            results.append(await _eb_checkup_apply_one(box_id, d, character_id=character_id))
+        except Exception as e:
+            print(f"⚠️ 事件盒体检执行失败 {box_id}: {type(e).__name__}: {e}")
+            results.append({"box_id": box_id, "status": "error", "error": f"{type(e).__name__}: {e}"})
+    invalidate_memory_palace_cache(character_id)
+    return {"status": "ok", "results": results}
+
 
 _MEMORY_PALACE_EMPTY_ARRAY_RE = re.compile(r"^\s*\[\s*\]\s*$")
 

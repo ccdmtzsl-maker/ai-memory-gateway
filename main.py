@@ -7878,6 +7878,16 @@ async def api_user_impression_generate_preview(request: Request):
 # 记忆宫殿（Memory Palace）阶段 1：基础管理 API
 # ============================================================
 
+def _memory_palace_list_error(endpoint: str, e: Exception):
+    """仪表盘读接口出错时返回 JSON + 500，前端能显示真实原因。
+
+    asyncpg 超时等异常的 str(e) 常常是空的，所以带上异常类型名。
+    """
+    detail = f"{type(e).__name__}: {e}" if str(e) else type(e).__name__
+    add_dashboard_log("error", f"⚠️ 记忆宫殿读取失败（{endpoint}）：{detail}", category="memory")
+    return JSONResponse({"status": "error", "error": detail}, status_code=500)
+
+
 @app.get("/api/memory-palace/rooms")
 async def api_memory_palace_rooms(character_id: str = "default"):
     if not MEMORY_ENABLED:
@@ -7887,7 +7897,10 @@ async def api_memory_palace_rooms(character_id: str = "default"):
     cached = _cache_get(cache_key)
     if cached is not None:
         return cached
-    result = {"rooms": await list_memory_palace_rooms(character_id=character_id)}
+    try:
+        result = {"rooms": await list_memory_palace_rooms(character_id=character_id)}
+    except Exception as e:
+        return _memory_palace_list_error("rooms", e)
     return _cache_set(cache_key, result, ttl=900)
 
 
@@ -7906,10 +7919,13 @@ async def api_memory_palace_rooms_with_nodes(
     cached = _cache_get(cache_key)
     if cached is not None:
         return cached
-    rooms = await list_memory_palace_rooms(character_id=character_id)
-    nodes = await list_memory_palace_nodes(
-        room=room, character_id=character_id, archived=False, limit=limit, offset=0,
-    )
+    try:
+        rooms = await list_memory_palace_rooms(character_id=character_id)
+        nodes = await list_memory_palace_nodes(
+            room=room, character_id=character_id, archived=False, limit=limit, offset=0,
+        )
+    except Exception as e:
+        return _memory_palace_list_error("rooms-with-nodes", e)
     result = {"rooms": rooms, "nodes": nodes, "node_count": len(nodes)}
     return _cache_set(cache_key, result, ttl=900)
 
@@ -7932,9 +7948,12 @@ async def api_memory_palace_nodes(
     cached = _cache_get(cache_key)
     if cached is not None:
         return cached
-    nodes = await list_memory_palace_nodes(
-        room=room, character_id=character_id, archived=archived, limit=limit, offset=offset,
-    )
+    try:
+        nodes = await list_memory_palace_nodes(
+            room=room, character_id=character_id, archived=archived, limit=limit, offset=offset,
+        )
+    except Exception as e:
+        return _memory_palace_list_error("nodes", e)
     result = {"nodes": nodes}
     return _cache_set(cache_key, result, ttl=900)
 

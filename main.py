@@ -11343,6 +11343,37 @@ async def api_delete_message_legacy(message_id: int):
         return {"error": str(e)}
 
 
+@app.post("/api/messages/batch-delete")
+async def api_batch_delete_messages(request: Request):
+    """批量删除对话消息（仪表盘对话详情多选删除）。逐条释放图片引用后一次删除。"""
+    if not MEMORY_ENABLED:
+        return {"error": "记忆系统未启用"}
+    try:
+        body = await request.json()
+        raw_ids = body.get("message_ids") or []
+        ids = []
+        for x in raw_ids:
+            try:
+                v = int(x)
+            except (TypeError, ValueError):
+                continue
+            if v > 0 and v not in ids:
+                ids.append(v)
+        if not ids:
+            return {"error": "没有要删除的消息"}
+        if len(ids) > 500:
+            return {"error": "一次最多删除 500 条"}
+        for mid in ids:
+            await release_images_for_message_id(mid)
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch("DELETE FROM conversations WHERE id = ANY($1::int[]) RETURNING id", ids)
+        deleted_ids = [int(r["id"]) for r in rows]
+        return {"status": "ok", "deleted": len(deleted_ids), "deleted_ids": deleted_ids}
+    except Exception as e:
+        return {"error": f"{type(e).__name__}: {e}"}
+
+
 @app.post("/api/conversations/rebuild-directory")
 async def api_rebuild_conversation_directory():
     """按现有消息重新统计对话目录。只改目录统计，不动消息和分区状态。"""

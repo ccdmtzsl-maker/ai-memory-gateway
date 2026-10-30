@@ -1779,3 +1779,49 @@ body {
     color:var(--text-muted);
     line-height:1.7;
 }
+
+/* 对话详情：消息多选框。默认是一个淡淡的小圆点，像装饰；选中后填充主题色并显示对勾 */
+.conv-msg-check {
+    appearance: none;
+    -webkit-appearance: none;
+    width: 15px;
+    height: 15px;
+    margin: 0 2px;
+    border-radius: 50%;
+    border: 1.5px solid var(--border);
+    background: transparent;
+    cursor: pointer;
+    flex-shrink: 0;
+    position: relative;
+    opacity: 0.55;
+    transition: opacity .15s, border-color .15s, background-color .15s, transform .15s;
+}
+.conv-msg-check:hover {
+    opacity: 1;
+    border-color: var(--primary);
+}
+.conv-msg-check:focus-visible {
+    outline: 2px solid var(--primary);
+    outline-offset: 2px;
+    opacity: 1;
+}
+.conv-msg-check:checked {
+    opacity: 1;
+    border-color: var(--primary);
+    background: var(--primary);
+    transform: scale(1.05);
+}
+.conv-msg-check:checked::after {
+    content: '';
+    position: absolute;
+    left: 4.5px;
+    top: 1.5px;
+    width: 3px;
+    height: 7px;
+    border: solid #fff;
+    border-width: 0 1.6px 1.6px 0;
+    transform: rotate(45deg);
+}
+.conv-msg-selected {
+    box-shadow: inset 3px 0 0 var(--primary);
+}

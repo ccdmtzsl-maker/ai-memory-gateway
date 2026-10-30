@@ -754,22 +754,54 @@
                         <input type="number" id="set-CACHE_PARTITION_EXTRACT_LIMIT" class="input" min="1" max="1000">
                         <small class="form-hint">cursor 过滤后只取最新 N 条送入记忆提取模型；更旧积压直接跳过，不分批追历史。默认 120。</small>
                     </div>
-                    <div class="settings-field">
-                        <label>Embedding API Key</label>
-                        <input type="text" id="set-EMBEDDING_API_KEY" class="input" placeholder="sk-...">
-                        <small class="form-hint" id="set-EMBEDDING_API_KEY-hint">打码显示，留空不改</small>
+                    <details class="settings-field">
+                        <summary style="cursor:pointer;font-size:14px;color:var(--text-secondary);">向量模型配置（Embedding）</summary>
+                        <div style="margin:-4px 0 14px;padding:10px 0 2px 14px;border-left:2px solid var(--border-color);margin-top:10px;">
+                            <div class="settings-field">
+                                <label>Embedding API Key</label>
+                                <input type="text" id="set-EMBEDDING_API_KEY" class="input" placeholder="sk-...">
+                                <small class="form-hint" id="set-EMBEDDING_API_KEY-hint">打码显示，留空不改</small>
+                            </div>
+                            <div class="settings-field">
+                                <label>Embedding Base URL</label>
+                                <input type="text" id="set-EMBEDDING_BASE_URL" class="input" placeholder="https://api.openai.com/v1">
+                            </div>
+                            <div class="settings-field">
+                                <label>Embedding 模型</label>
+                                <input type="text" id="set-EMBEDDING_MODEL" class="input" placeholder="text-embedding-3-small">
+                            </div>
+                            <div class="settings-field">
+                                <label>Embedding 维度</label>
+                                <input type="number" id="set-EMBEDDING_DIM" class="input" min="64" max="4096">
+                            </div>
+                        </div>
+                    </details>
+                    <div class="settings-field settings-toggle-row">
+                        <label>启用非流式响应转换</label>
+                        <label class="toggle"><input type="checkbox" id="set-RESPONSE_TRANSFORM_ENABLED"><span class="toggle-slider"></span></label>
                     </div>
-                    <div class="settings-field">
-                        <label>Embedding Base URL</label>
-                        <input type="text" id="set-EMBEDDING_BASE_URL" class="input" placeholder="https://api.openai.com/v1">
+                    <div id="sub-RESPONSE_TRANSFORM" style="margin:-4px 0 14px;padding:10px 0 2px 14px;border-left:2px solid var(--border-color);display:none;">
+                        <div class="settings-field">
+                            <label>响应转换规则</label>
+                            <textarea id="set-RESPONSE_TRANSFORM_RULES" class="textarea" rows="4" placeholder="\\[语音::(.+?)\\] => &lt;hcard type='voice'&gt;$1&lt;/hcard&gt;"></textarea>
+                            <small class="form-hint">仅非流式响应生效。一行一条，格式：正则 =&gt; 替换，替换里可用 $1、$2 等捕获组。客户端收到转换后的文本，数据库保存转换前的原文。</small>
+                        </div>
                     </div>
-                    <div class="settings-field">
-                        <label>Embedding 模型</label>
-                        <input type="text" id="set-EMBEDDING_MODEL" class="input" placeholder="text-embedding-3-small">
+                    <div class="settings-field settings-toggle-row">
+                        <label>清理旧状态栏</label>
+                        <label class="toggle"><input type="checkbox" id="set-STATUS_TRIM_ENABLED"><span class="toggle-slider"></span></label>
                     </div>
-                    <div class="settings-field">
-                        <label>Embedding 维度</label>
-                        <input type="number" id="set-EMBEDDING_DIM" class="input" min="64" max="4096">
+                    <div id="sub-STATUS_TRIM" style="margin:-4px 0 14px;padding:10px 0 2px 14px;border-left:2px solid var(--border-color);display:none;">
+                        <div class="settings-field">
+                            <label>保留最近条数</label>
+                            <input type="number" id="set-STATUS_TRIM_KEEP" class="input" min="0" max="50" value="3" style="max-width:140px;">
+                            <small class="form-hint">仅分区模式生效。从最新往前数含状态栏的 AI 回复，最近 N 条保留，更早回复里匹配到的内容在发给模型前删掉；数据库原文不动。</small>
+                        </div>
+                        <div class="settings-field">
+                            <label>匹配规则</label>
+                            <textarea id="set-STATUS_TRIM_PATTERNS" class="textarea" rows="3" placeholder="&lt;think&gt;.*?&lt;/think&gt;&#10;\[状态::[^\]]*\]"></textarea>
+                            <small class="form-hint">一行一条正则，留空使用默认规则（伪装思考链 &lt;think&gt; 和 [状态::...]）。同一条回复里匹配到多种只算 1 条。</small>
+                        </div>
                     </div>
                 </div>
 
@@ -803,24 +835,6 @@
                         <label>启用性能诊断日志</label>
                         <label class="toggle"><input type="checkbox" id="set-PERF_DIAGNOSTIC_ENABLED"><span class="toggle-slider"></span></label>
                     </div>
-                    <div class="settings-field settings-toggle-row">
-                        <label>启用非流式响应转换</label>
-                        <label class="toggle"><input type="checkbox" id="set-RESPONSE_TRANSFORM_ENABLED"><span class="toggle-slider"></span></label>
-                    </div>
-                    <div class="settings-field">
-                        <label>响应转换规则 (RESPONSE_TRANSFORM_RULES)</label>
-                        <textarea id="set-RESPONSE_TRANSFORM_RULES" class="textarea" rows="6" placeholder="\\[语音::(.+?)\\] => &lt;hcard type='voice'&gt;$1&lt;/hcard&gt;"></textarea>
-                        <small class="form-hint">仅非流式响应生效；一行一条，格式：正则 =&gt; 替换。替换里可用 $1、$2 等捕获组。</small>
-                    </div>
-                    <div class="settings-field settings-toggle-row">
-                        <label>清理旧状态栏（仅分区模式），保留最近 <input type="number" id="set-STATUS_TRIM_KEEP" class="input" min="0" max="50" value="3" style="width:64px;display:inline-block;padding:4px 6px;"> 条</label>
-                        <label class="toggle"><input type="checkbox" id="set-STATUS_TRIM_ENABLED"><span class="toggle-slider"></span></label>
-                    </div>
-                    <details class="settings-field">
-                        <summary style="cursor:pointer;font-size:12px;color:var(--text-muted);">状态栏匹配规则（一行一条正则，留空用默认）</summary>
-                        <textarea id="set-STATUS_TRIM_PATTERNS" class="textarea" rows="3" placeholder="&lt;think&gt;.*?&lt;/think&gt;&#10;\[状态::[^\]]*\]" style="margin-top:6px;"></textarea>
-                        <small class="form-hint">只改发给模型的历史，数据库原文不动。按含状态栏的 AI 回复计数，更早回复里匹配到的内容会被删掉。</small>
-                    </details>
                     <div class="settings-field">
                         <label>图片归档到 R2 (IMAGE_ARCHIVE_ENABLED)</label>
                         <div id="imgArchiveStatus" style="font-size:13px;line-height:1.7;">读取中...</div>

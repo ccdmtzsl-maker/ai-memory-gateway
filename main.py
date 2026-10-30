@@ -10166,6 +10166,28 @@ def _memory_palace_output_is_skip(text, raw_items) -> bool:
     return bool(_MEMORY_PALACE_EMPTY_ARRAY_RE.match(cleaned))
 
 
+def _memory_palace_extractor_http_error(resp, model: str, system_prompt: str, messages_text: str) -> str:
+    """把上游 4xx/5xx 整理成一行可读错误：状态码 + 上游给的原因 + 本次请求规模。"""
+    detail = ""
+    try:
+        data = resp.json()
+        err = data.get("error") if isinstance(data, dict) else None
+        if isinstance(err, dict):
+            parts = [str(err.get(k)) for k in ("message", "type", "code", "param") if err.get(k) not in (None, "")]
+            detail = " | ".join(parts)
+        elif err:
+            detail = str(err)
+        elif isinstance(data, dict) and data.get("message"):
+            detail = str(data.get("message"))
+        if not detail:
+            detail = json.dumps(data, ensure_ascii=False)
+    except Exception:
+        detail = (resp.text or "").strip()
+    detail = re.sub(r"\s+", " ", detail or "").strip()[:500] or (resp.reason_phrase or "无响应内容")
+    size = f"model={model}，system {len(system_prompt or '')} 字 + 对话 {len(messages_text or '')} 字"
+    return f"HTTP {resp.status_code}：{detail}（{size}）"
+
+
 async def call_memory_palace_extractor(messages_text: str, character_id: str = "default", source_messages: list = None, return_skip: bool = False) -> tuple:
     base_url = await get_runtime_memory_api_base_url()
     if not base_url:
@@ -10199,7 +10221,10 @@ async def call_memory_palace_extractor(messages_text: str, character_id: str = "
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
             resp = await client.post(base_url, headers=headers, json=body)
-            resp.raise_for_status()
+            if resp.status_code >= 400:
+                # 以前直接 raise_for_status()，只留下状态码和网址；上游写在响应体里的
+                # 拒绝原因（参数不支持、超长、内容审核……）全丢了，无从排查。
+                raise RuntimeError(_memory_palace_extractor_http_error(resp, memory_model, system_prompt, messages_text))
             data = resp.json()
     except httpx.TimeoutException as e:
         # async with 会关闭连接池/连接；这里明确抛出可读错误。

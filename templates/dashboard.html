@@ -689,16 +689,18 @@
                         <label>启用关键词触发上下文 (KEYWORD_CONTEXT_ENABLED)</label>
                         <label class="toggle"><input type="checkbox" id="set-KEYWORD_CONTEXT_ENABLED"><span class="toggle-slider"></span></label>
                     </div>
-                    <div class="settings-field">
-                        <label>关键词触发规则 (KEYWORD_CONTEXT_RULES)</label>
-                        <input type="hidden" id="set-KEYWORD_CONTEXT_RULES">
-                        <div id="keyword-rule-editor" class="keyword-rule-editor"></div>
-                        <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:10px;">
-                            <button type="button" class="btn btn-sm btn-secondary" onclick="addKeywordRule()">+ 添加规则</button>
-                            <button type="button" class="btn btn-sm btn-secondary" onclick="testKeywordRules()">测试命中</button>
+                    <div id="sub-KEYWORD_CONTEXT" style="margin:-4px 0 14px;padding:10px 0 2px 14px;border-left:2px solid var(--border-color);display:none;">
+                        <div class="settings-field">
+                            <label>关键词触发规则 (KEYWORD_CONTEXT_RULES)</label>
+                            <input type="hidden" id="set-KEYWORD_CONTEXT_RULES">
+                            <div id="keyword-rule-editor" class="keyword-rule-editor"></div>
+                            <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:10px;">
+                                <button type="button" class="btn btn-sm btn-secondary" onclick="addKeywordRule()">+ 添加规则</button>
+                                <button type="button" class="btn btn-sm btn-secondary" onclick="testKeywordRules()">测试命中</button>
+                            </div>
+                            <input type="text" id="keyword-rule-test-input" class="input" placeholder="输入一句用户消息，用来测试会命中哪些规则" style="margin-top:8px;">
+                            <small class="form-hint" id="keyword-rule-test-result">规则会保存为 JSON；命中后仅本轮追加 system 消息，不写入历史。</small>
                         </div>
-                        <input type="text" id="keyword-rule-test-input" class="input" placeholder="输入一句用户消息，用来测试会命中哪些规则" style="margin-top:8px;">
-                        <small class="form-hint" id="keyword-rule-test-result">规则会保存为 JSON；命中后仅本轮追加 system 消息，不写入历史。</small>
                     </div>
                     <div class="settings-field settings-toggle-row">
                         <label>启用上下文模板 (CONTEXT_TEMPLATE_ENABLED)</label>

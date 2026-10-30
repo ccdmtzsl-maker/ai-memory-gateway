@@ -1947,6 +1947,26 @@ const _SETTINGS_FIELDS = {
 };
 
 
+// 开关打开才显示对应的小内容（规则输入框等）
+const _SETTINGS_SUBPANELS = {
+    'set-RESPONSE_TRANSFORM_ENABLED': 'sub-RESPONSE_TRANSFORM',
+    'set-STATUS_TRIM_ENABLED': 'sub-STATUS_TRIM',
+};
+function _syncSettingsSubpanels() {
+    Object.keys(_SETTINGS_SUBPANELS).forEach(id => {
+        const cb = document.getElementById(id);
+        const panel = document.getElementById(_SETTINGS_SUBPANELS[id]);
+        if (!cb || !panel) return;
+        const apply = () => { panel.style.display = cb.checked ? '' : 'none'; };
+        apply();
+        if (cb.dataset.subpanelBound !== '1') {
+            cb.addEventListener('change', apply);
+            cb.dataset.subpanelBound = '1';
+        }
+    });
+}
+document.addEventListener('DOMContentLoaded', _syncSettingsSubpanels);
+
 // 触发模式联动：time模式才显示时间窗口字段
 function _togglePartitionWindow(trigger) {
     const el = document.getElementById('field-CACHE_PARTITION_WINDOW');
@@ -2116,6 +2136,7 @@ async function loadSettings() {
             const el = document.getElementById('set-' + k);
             if (el) el.checked = !!s[k];
         });
+        _syncSettingsSubpanels();
         // 滑块
         _SETTINGS_FIELDS.range.forEach(k => {
             const el = document.getElementById('set-' + k);

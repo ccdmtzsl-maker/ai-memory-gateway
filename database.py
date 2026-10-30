@@ -345,6 +345,241 @@ async def search_memory_palace_vector_scores_multi(
     return out
 
 
+# ============================================================
+# 对话目录（session_cache_state 兼作目录表）
+#
+# 每个对话一行：有消息的对话由 conversations 上的触发器自动建行、维护统计；
+# 分区缓存的状态（摘要、轮转边界等）继续存在同一行里。
+#   updated_at IS NOT NULL → 这一行有分区状态（分区对话线）
+#   updated_at IS NULL     → 只是目录行，没有分区状态
+# 触发器在数据库里运行，聊天、导入、合并、改名、删除都会经过它，Python 写入点不用改。
+# ============================================================
+
+_SESSION_DIRECTORY_READY = [False]
+
+_SESSION_DIRECTORY_COLUMNS_SQL = """
+ALTER TABLE session_cache_state ADD COLUMN IF NOT EXISTS first_message_at TIMESTAMPTZ;
+ALTER TABLE session_cache_state ADD COLUMN IF NOT EXISTS last_message_at TIMESTAMPTZ;
+ALTER TABLE session_cache_state ADD COLUMN IF NOT EXISTS message_count INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE session_cache_state ADD COLUMN IF NOT EXISTS preview TEXT;
+ALTER TABLE session_cache_state ADD COLUMN IF NOT EXISTS preview_at TIMESTAMPTZ;
+"""
+
+_SESSION_DIRECTORY_FUNCTIONS_SQL = """
+CREATE OR REPLACE FUNCTION session_directory_recompute(sids TEXT[]) RETURNS VOID
+LANGUAGE plpgsql AS $fn$
+BEGIN
+    IF sids IS NULL OR array_length(sids, 1) IS NULL THEN
+        RETURN;
+    END IF;
+    -- 先锁住已有的目录行：并发插入的触发器会排在后面，在本次结果上继续累加
+    PERFORM 1 FROM session_cache_state WHERE session_id = ANY(sids) ORDER BY session_id FOR UPDATE;
+
+    INSERT INTO session_cache_state AS s
+        (session_id, updated_at, first_message_at, last_message_at, message_count, preview, preview_at)
+    SELECT agg.session_id, NULL, agg.first_at, agg.last_at, agg.cnt, fu.preview, fu.created_at
+    FROM (
+        SELECT c.session_id, MIN(c.created_at) AS first_at, MAX(c.created_at) AS last_at, COUNT(*)::int AS cnt
+        FROM conversations c
+        WHERE c.session_id = ANY(sids)
+        GROUP BY c.session_id
+    ) agg
+    LEFT JOIN LATERAL (
+        SELECT LEFT(COALESCE(u.content, ''), 200) AS preview, u.created_at
+        FROM conversations u
+        WHERE u.session_id = agg.session_id AND u.role = 'user'
+        ORDER BY u.created_at ASC, u.id ASC
+        LIMIT 1
+    ) fu ON TRUE
+    ON CONFLICT (session_id) DO UPDATE SET
+        first_message_at = EXCLUDED.first_message_at,
+        last_message_at = EXCLUDED.last_message_at,
+        message_count = EXCLUDED.message_count,
+        preview = EXCLUDED.preview,
+        preview_at = EXCLUDED.preview_at;
+
+    -- 消息删光了：纯目录行删掉；分区对话线保留分区状态，只清统计
+    DELETE FROM session_cache_state s
+    WHERE s.session_id = ANY(sids) AND s.updated_at IS NULL
+      AND NOT EXISTS (SELECT 1 FROM conversations c WHERE c.session_id = s.session_id);
+
+    UPDATE session_cache_state s
+    SET first_message_at = NULL, last_message_at = NULL, message_count = 0, preview = NULL, preview_at = NULL
+    WHERE s.session_id = ANY(sids)
+      AND NOT EXISTS (SELECT 1 FROM conversations c WHERE c.session_id = s.session_id);
+END;
+$fn$;
+
+CREATE OR REPLACE FUNCTION session_directory_after_insert() RETURNS TRIGGER
+LANGUAGE plpgsql AS $fn$
+DECLARE
+    preview_sids TEXT[];
+BEGIN
+    INSERT INTO session_cache_state AS s
+        (session_id, updated_at, first_message_at, last_message_at, message_count)
+    SELECT n.session_id, NULL, MIN(n.created_at), MAX(n.created_at), COUNT(*)::int
+    FROM directory_new_rows n
+    GROUP BY n.session_id
+    ON CONFLICT (session_id) DO UPDATE SET
+        first_message_at = LEAST(s.first_message_at, EXCLUDED.first_message_at),
+        last_message_at = GREATEST(s.last_message_at, EXCLUDED.last_message_at),
+        message_count = s.message_count + EXCLUDED.message_count;
+
+    -- 只有插入的用户消息可能早于当前「第一句」时才重算（导入旧记录、对话的第一句）
+    SELECT array_agg(DISTINCT n.session_id) INTO preview_sids
+    FROM directory_new_rows n
+    JOIN session_cache_state s ON s.session_id = n.session_id
+    WHERE n.role = 'user' AND (s.preview_at IS NULL OR n.created_at <= s.preview_at);
+
+    IF preview_sids IS NOT NULL THEN
+        UPDATE session_cache_state s
+        SET preview = fu.preview, preview_at = fu.created_at
+        FROM (
+            SELECT DISTINCT ON (u.session_id) u.session_id, LEFT(COALESCE(u.content, ''), 200) AS preview, u.created_at
+            FROM conversations u
+            WHERE u.session_id = ANY(preview_sids) AND u.role = 'user'
+            ORDER BY u.session_id, u.created_at ASC, u.id ASC
+        ) fu
+        WHERE s.session_id = fu.session_id;
+    END IF;
+    RETURN NULL;
+END;
+$fn$;
+
+CREATE OR REPLACE FUNCTION session_directory_after_delete() RETURNS TRIGGER
+LANGUAGE plpgsql AS $fn$
+BEGIN
+    PERFORM session_directory_recompute(ARRAY(SELECT DISTINCT o.session_id FROM directory_old_rows o));
+    RETURN NULL;
+END;
+$fn$;
+
+CREATE OR REPLACE FUNCTION session_directory_after_update() RETURNS TRIGGER
+LANGUAGE plpgsql AS $fn$
+BEGIN
+    -- 只改 AI 回复内容（re-roll、编辑）不影响目录，直接跳过
+    PERFORM session_directory_recompute(ARRAY(
+        SELECT o.session_id FROM directory_old_rows o JOIN directory_new_rows n ON n.id = o.id
+        WHERE o.session_id IS DISTINCT FROM n.session_id
+           OR o.created_at IS DISTINCT FROM n.created_at
+           OR o.role IS DISTINCT FROM n.role
+           OR (o.content IS DISTINCT FROM n.content AND (o.role = 'user' OR n.role = 'user'))
+        UNION
+        SELECT n.session_id FROM directory_old_rows o JOIN directory_new_rows n ON n.id = o.id
+        WHERE o.session_id IS DISTINCT FROM n.session_id
+           OR o.created_at IS DISTINCT FROM n.created_at
+           OR o.role IS DISTINCT FROM n.role
+           OR (o.content IS DISTINCT FROM n.content AND (o.role = 'user' OR n.role = 'user'))
+    ));
+    RETURN NULL;
+END;
+$fn$;
+"""
+
+_SESSION_DIRECTORY_TRIGGERS_SQL = """
+DROP TRIGGER IF EXISTS trg_session_directory_insert ON conversations;
+DROP TRIGGER IF EXISTS trg_session_directory_delete ON conversations;
+DROP TRIGGER IF EXISTS trg_session_directory_update ON conversations;
+CREATE TRIGGER trg_session_directory_insert AFTER INSERT ON conversations
+    REFERENCING NEW TABLE AS directory_new_rows
+    FOR EACH STATEMENT EXECUTE PROCEDURE session_directory_after_insert();
+CREATE TRIGGER trg_session_directory_delete AFTER DELETE ON conversations
+    REFERENCING OLD TABLE AS directory_old_rows
+    FOR EACH STATEMENT EXECUTE PROCEDURE session_directory_after_delete();
+CREATE TRIGGER trg_session_directory_update AFTER UPDATE ON conversations
+    REFERENCING OLD TABLE AS directory_old_rows NEW TABLE AS directory_new_rows
+    FOR EACH STATEMENT EXECUTE PROCEDURE session_directory_after_update();
+"""
+
+_SESSION_DIRECTORY_REBUILD_SQL = """
+SELECT session_directory_recompute(ARRAY(
+    SELECT session_id FROM session_cache_state
+    UNION
+    SELECT DISTINCT session_id FROM conversations
+))
+"""
+
+_SESSION_DIRECTORY_TOTAL_SQL = """
+SELECT COUNT(*) FROM session_cache_state
+WHERE message_count > 0 OR updated_at IS NOT NULL
+"""
+
+_SESSION_DIRECTORY_PAGE_SQL = """
+WITH page AS (
+    SELECT session_id,
+           COALESCE(first_message_at, updated_at) AS first_time,
+           COALESCE(last_message_at, updated_at) AS last_time,
+           message_count,
+           COALESCE(preview, '') AS preview
+    FROM session_cache_state
+    WHERE message_count > 0 OR updated_at IS NOT NULL
+    ORDER BY last_time DESC
+    LIMIT $1 OFFSET $2
+),
+usage AS (
+    SELECT tu.session_id, SUM(tu.total_tokens) AS total_all
+    FROM token_usage tu
+    JOIN page p ON p.session_id = tu.session_id
+    WHERE tu.usage_type = 'chat'
+    GROUP BY tu.session_id
+)
+SELECT p.session_id, p.first_time, p.last_time, p.message_count, p.preview,
+       COALESCE(u.total_all, 0) AS total_tokens
+FROM page p
+LEFT JOIN usage u ON u.session_id = p.session_id
+ORDER BY p.last_time DESC
+"""
+
+# 删除分区对话线：还有消息的只清分区状态（目录行保留，对话列表里照常显示）；没有消息的整行删掉
+_SESSION_DIRECTORY_RESET_THREAD_SQL = """
+UPDATE session_cache_state
+SET summary = '', a_start_round = 0, retained_tool_chains = '[]'::jsonb,
+    keep_a_tools_enabled = FALSE, evicted_through_message_id = 0, updated_at = NULL
+WHERE session_id = $1 AND message_count > 0
+"""
+_SESSION_DIRECTORY_DROP_EMPTY_THREAD_SQL = """
+DELETE FROM session_cache_state WHERE session_id = $1 AND message_count = 0
+"""
+
+
+async def ensure_session_directory(conn):
+    """建目录列、触发器；第一次上线时从现有消息回填。整段放在一个事务里，要么全成，要么全不改。
+
+    失败不影响启动：对话列表退回旧的全表统计查询。
+    """
+    try:
+        async with conn.transaction():
+            had_columns = await conn.fetchval("""
+                SELECT 1 FROM information_schema.columns
+                WHERE table_schema = current_schema()
+                  AND table_name = 'session_cache_state' AND column_name = 'message_count'
+            """)
+            await conn.execute(_SESSION_DIRECTORY_COLUMNS_SQL)
+            await conn.execute(_SESSION_DIRECTORY_FUNCTIONS_SQL)
+            await conn.execute(_SESSION_DIRECTORY_TRIGGERS_SQL)
+            if not had_columns:
+                await conn.execute(_SESSION_DIRECTORY_REBUILD_SQL)
+                print("✅ 对话目录：已从现有消息回填")
+        _SESSION_DIRECTORY_READY[0] = True
+    except Exception as e:
+        _SESSION_DIRECTORY_READY[0] = False
+        print(f"⚠️ 对话目录初始化失败，对话列表退回旧查询: {type(e).__name__}: {e}")
+
+
+async def rebuild_session_directory() -> int:
+    """按现有消息重新统计目录（对账兜底）。只改目录列，不动消息和分区状态。"""
+    if not _SESSION_DIRECTORY_READY[0]:
+        raise RuntimeError("对话目录未就绪（启动时初始化失败），请看启动日志")
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            # 重建期间挡住写入，避免统计到一半有新消息进来
+            await conn.execute("LOCK TABLE conversations IN SHARE ROW EXCLUSIVE MODE")
+            await conn.execute(_SESSION_DIRECTORY_REBUILD_SQL)
+            total = await conn.fetchval(_SESSION_DIRECTORY_TOTAL_SQL)
+    return int(total or 0)
+
+
 async def init_tables():
     global HAS_PGVECTOR
     pool = await get_pool()
@@ -415,6 +650,7 @@ async def init_tables():
             ALTER TABLE session_cache_state
             ADD COLUMN IF NOT EXISTS evicted_through_message_id BIGINT DEFAULT 0;
         """)
+        await ensure_session_directory(conn)
         
         # 日印象表（每天一条叙事摘要，不影响碎片/事件/核心三层结构）
         await conn.execute("""
@@ -1650,6 +1886,10 @@ async def ensure_token_usage_table():
         await conn.execute("""
             CREATE INDEX IF NOT EXISTS idx_token_usage_created ON token_usage (created_at DESC);
         """)
+        # 对话列表按 session 汇总 token，没有这个索引会扫整张 token_usage
+        await conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_token_usage_session ON token_usage (session_id);
+        """)
 
 
 async def save_token_usage(session_id: str, model: str, prompt_tokens: int, completion_tokens: int, total_tokens: int, usage_type: str = "chat"):
@@ -1665,7 +1905,8 @@ async def save_token_usage(session_id: str, model: str, prompt_tokens: int, comp
 # 对话记录管理
 # ============================================================
 
-async def get_conversations_paginated(page: int = 1, per_page: int = 20):
+async def _get_conversations_paginated_legacy(page: int = 1, per_page: int = 20):
+    """旧查询：每次对 conversations 全表分组统计。目录未就绪时兜底用。"""
     offset = (page - 1) * per_page
     pool = await get_pool()
     async with pool.acquire() as conn:
@@ -1747,6 +1988,38 @@ async def get_conversations_paginated(page: int = 1, per_page: int = 20):
                 'total_tokens': r['total_tokens'],
             })
         return results, total
+
+
+def _format_conversation_list_rows(rows) -> list:
+    results = []
+    for r in rows:
+        preview = (r['preview'] or '')[:80]
+        title = (preview[:30] + '...' if len(preview) > 30 else preview) or r['session_id']
+        results.append({
+            'session_id': r['session_id'],
+            'title': title,
+            'first_time': r['first_time'].isoformat() if r['first_time'] else None,
+            'last_time': r['last_time'].isoformat() if r['last_time'] else None,
+            'message_count': r['message_count'],
+            'preview': preview,
+            'total_tokens': r['total_tokens'],
+        })
+    return results
+
+
+async def get_conversations_paginated(page: int = 1, per_page: int = 20):
+    """对话列表。目录就绪时只查目录表（每个对话一行），不再扫消息表。"""
+    if _SESSION_DIRECTORY_READY[0]:
+        try:
+            offset = (page - 1) * per_page
+            pool = await get_pool()
+            async with pool.acquire() as conn:
+                total = await conn.fetchval(_SESSION_DIRECTORY_TOTAL_SQL)
+                rows = await conn.fetch(_SESSION_DIRECTORY_PAGE_SQL, per_page, offset)
+            return _format_conversation_list_rows(rows), int(total or 0)
+        except Exception as e:
+            print(f"⚠️ 对话目录查询失败，退回旧查询: {type(e).__name__}: {e}")
+    return await _get_conversations_paginated_legacy(page, per_page)
 
 
 async def delete_conversation(session_id: str):
@@ -1894,9 +2167,15 @@ async def list_all_session_cache_states() -> list:
 
 
 async def delete_session_cache_state(session_id: str):
+    """删除分区对话线的状态。不删消息。"""
     pool = await get_pool()
     async with pool.acquire() as conn:
-        await conn.execute("DELETE FROM session_cache_state WHERE session_id = $1", session_id)
+        if _SESSION_DIRECTORY_READY[0]:
+            async with conn.transaction():
+                await conn.execute(_SESSION_DIRECTORY_RESET_THREAD_SQL, session_id)
+                await conn.execute(_SESSION_DIRECTORY_DROP_EMPTY_THREAD_SQL, session_id)
+        else:
+            await conn.execute("DELETE FROM session_cache_state WHERE session_id = $1", session_id)
 
 
 async def rename_session_id(old_id: str, new_id: str) -> bool:

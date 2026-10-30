@@ -115,6 +115,7 @@ async function loadMemoryPalace() {
     try {
         mpMsg('');
         clearDigestPreviewArea();
+        clearCheckupPreviewArea();
 
         // 合并请求：一次拿房间 + 第一页节点
         const params = new URLSearchParams();
@@ -532,6 +533,180 @@ async function confirmDigest() {
     } catch (e) { mpMsg('认知消化执行失败：' + e.message, 'error'); } finally { _digestConfirmRunning = false; }
 }
 
+
+// ---------- 事件盒体检 ----------
+// 预览：后端挑最多 6 个未封盒、压缩 0~1 次的盒子，每盒问一次模型。
+// 执行：勾选的盒子按方案调整；没勾的、不用动的也会提交，只打健康标记。
+let _mpCheckupBoxes = [];
+let _mpCheckupRunning = false;
+
+function clearCheckupPreviewArea() {
+    const el = document.getElementById('mpCheckupPreview');
+    if (el) { el.style.display = 'none'; el.innerHTML = ''; }
+    _mpCheckupBoxes = [];
+}
+
+async function runEventBoxCheckup() {
+    if (_mpCheckupRunning) return;
+    _mpCheckupRunning = true;
+    try {
+        clearDigestPreviewArea();
+        clearCheckupPreviewArea();
+        mpMsg('事件盒体检中（每个盒子调一次模型，可能要等一会儿）...');
+        const data = await mpFetchJson('/api/memory-palace/event-boxes/checkup/preview', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({})});
+        if (data.status === 'empty') { mpMsg(data.message || '没有需要体检的事件盒'); return; }
+        _mpCheckupBoxes = data.boxes || [];
+        const changed = _mpCheckupBoxes.filter(b => b.status === 'ok').length;
+        const failed = _mpCheckupBoxes.filter(b => b.status === 'error').length;
+        mpMsg('体检完成：检查 ' + _mpCheckupBoxes.length + ' 个盒子，建议调整 ' + changed + ' 个' + (failed ? '，失败 ' + failed + ' 个' : ''), failed && !changed ? 'error' : '');
+        renderEventBoxCheckupPreview();
+    } catch (e) {
+        mpMsg('事件盒体检失败：' + e.message, 'error');
+    } finally {
+        _mpCheckupRunning = false;
+    }
+}
+
+function mpCheckupNodeLine(n) {
+    const tag = n.archived ? '<span style="font-size:11px;padding:1px 6px;border-radius:999px;background:#f1f5f9;color:#64748b;margin-right:6px;">已归档</span>' : '';
+    const date = n.date ? '<span style="color:var(--text-muted);font-size:12px;margin-right:6px;">' + mpEsc(n.date) + '</span>' : '';
+    const text = String(n.content || '');
+    return '<div style="font-size:13px;line-height:1.6;padding:3px 0;">' + date + tag + mpEsc(text.length > 120 ? text.slice(0, 120) + '…' : text) + '</div>';
+}
+
+function mpCheckupGroupHtml(title, color, nodes, nameInput) {
+    if (!nodes || !nodes.length) return '';
+    return '<div style="margin-top:10px;padding:8px 10px;border-left:3px solid ' + color + ';background:#fafafa;border-radius:6px;">' +
+        '<div style="font-size:12px;font-weight:700;color:' + color + ';margin-bottom:4px;">' + title + '</div>' +
+        (nameInput || '') + nodes.map(mpCheckupNodeLine).join('') + '</div>';
+}
+
+function renderEventBoxCheckupPreview() {
+    const el = document.getElementById('mpCheckupPreview');
+    if (!el) return;
+    el.style.display = 'block';
+    const inputStyle = 'width:100%;box-sizing:border-box;margin:2px 0 6px;padding:5px 8px;border:1px solid var(--border-color);border-radius:6px;font-size:13px;';
+    let html = '<div style="padding:16px;border:1px solid var(--border-color);border-radius:12px;background:#fff;">' +
+        '<h3 style="margin:0 0 6px;">事件盒体检预览</h3>' +
+        '<p style="color:var(--text-muted);font-size:13px;margin:0 0 12px;">勾选要执行的盒子，盒名可以直接改。没勾的盒子也会记为已检查，成员变化前不会再被挑中。移出了已归档记忆的盒子会自动重写总结。</p>';
+    _mpCheckupBoxes.forEach((b, i) => {
+        const origName = b.box_name || '未命名事件';
+        const meta = '压缩 ' + Number(b.compression_count || 0) + ' 次 · ' + Number(b.member_count || 0) + ' 条' + (b.has_summary ? ' · 有总结' : '');
+        html += '<div class="mp-checkup-card" data-index="' + i + '" style="margin:10px 0;padding:12px;border:1px solid var(--border-color);border-radius:10px;">';
+        if (b.status === 'error') {
+            html += '<div style="font-weight:700;">' + mpEsc(origName) + ' <span style="font-size:12px;color:var(--text-muted);font-weight:400;">' + mpEsc(meta) + '</span></div>' +
+                '<div style="color:#dc2626;font-size:13px;margin-top:6px;">体检失败：' + mpEsc(b.error || '未知错误') + '</div>' +
+                (b.raw ? '<details style="margin-top:6px;"><summary style="cursor:pointer;font-size:12px;color:var(--text-muted);">模型返回原文</summary><pre style="white-space:pre-wrap;font-size:12px;max-height:200px;overflow:auto;">' + mpEsc(b.raw) + '</pre></details>' : '') +
+                '</div>';
+            return;
+        }
+        const changed = b.status === 'ok';
+        const nameVal = b.suggested_name || origName;
+        html += '<label style="display:flex;gap:8px;align-items:center;cursor:pointer;">' +
+            '<input type="checkbox" class="mp-checkup-check" data-index="' + i + '"' + (changed ? ' checked' : '') + '>' +
+            '<b>' + mpEsc(origName) + '</b>' +
+            '<span style="font-size:12px;color:var(--text-muted);">' + mpEsc(meta) + '</span>' +
+            (changed ? '' : '<span style="font-size:12px;padding:1px 8px;border-radius:999px;background:#dcfce7;color:#166534;">不用动</span>') +
+            '</label>';
+        if (b.reason) html += '<div style="font-size:12px;color:var(--text-muted);margin-top:6px;">' + mpEsc(b.reason) + '</div>';
+        (b.warnings || []).forEach(w => { html += '<div style="font-size:12px;color:#b45309;margin-top:4px;">⚠ ' + mpEsc(w) + '</div>'; });
+        const boxName = '<input class="mp-checkup-name" data-index="' + i + '" value="' + mpEsc(nameVal) + '" placeholder="盒名" style="' + inputStyle + '">' +
+            (b.suggested_name ? '<div style="font-size:11px;color:var(--text-muted);margin:-4px 0 6px;">原名：' + mpEsc(origName) + '</div>' : '');
+        html += mpCheckupGroupHtml(changed ? '留在盒里' : '盒内记忆', '#059669', b.keep, boxName);
+        (b.new_boxes || []).forEach((g, gi) => {
+            const input = '<input class="mp-checkup-newname" data-index="' + i + '" data-group="' + gi + '" value="' + mpEsc(g.name || '') + '" placeholder="新盒名" style="' + inputStyle + '">';
+            html += mpCheckupGroupHtml('组成新盒', '#2563eb', g.nodes, input);
+        });
+        html += mpCheckupGroupHtml('移出成单间', '#9a3412', b.singles);
+        html += '</div>';
+    });
+    html += '<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px;">' +
+        '<button class="btn btn-sm" onclick="toggleCheckupChecks(false)">全不选</button>' +
+        '<button class="btn btn-sm" onclick="toggleCheckupChecks(true)">全选</button>' +
+        '<button class="btn btn-sm" onclick="clearCheckupPreviewArea()">取消</button>' +
+        '<button class="btn btn-primary btn-sm" onclick="confirmEventBoxCheckup()">确认执行</button>' +
+        '</div></div>';
+    el.innerHTML = html;
+}
+
+function toggleCheckupChecks(checked) {
+    document.querySelectorAll('.mp-checkup-check').forEach(cb => { cb.checked = checked; });
+}
+
+function mpCollectCheckupDecisions() {
+    const decisions = [];
+    _mpCheckupBoxes.forEach((b, i) => {
+        if (b.status === 'error') return;
+        const cb = document.querySelector('.mp-checkup-check[data-index="' + i + '"]');
+        const d = {box_id: b.box_id};
+        if (cb && cb.checked) {
+            const nameEl = document.querySelector('.mp-checkup-name[data-index="' + i + '"]');
+            const name = nameEl ? nameEl.value.trim() : '';
+            if (name && name !== (b.box_name || '')) d.rename = name;
+            d.singles = (b.singles || []).map(n => n.id);
+            d.new_boxes = (b.new_boxes || []).map((g, gi) => {
+                const ne = document.querySelector('.mp-checkup-newname[data-index="' + i + '"][data-group="' + gi + '"]');
+                return {name: (ne && ne.value.trim()) || g.name || '未命名事件', node_ids: (g.nodes || []).map(n => n.id)};
+            });
+        }
+        decisions.push(d);
+    });
+    return decisions;
+}
+
+async function confirmEventBoxCheckup() {
+    if (_mpCheckupRunning) return;
+    const decisions = mpCollectCheckupDecisions();
+    if (!decisions.length) { clearCheckupPreviewArea(); mpMsg('没有可执行的盒子'); return; }
+    const acting = decisions.filter(d => d.rename || (d.singles && d.singles.length) || (d.new_boxes && d.new_boxes.length)).length;
+    if (acting && !confirm('将调整 ' + acting + ' 个事件盒，其余 ' + (decisions.length - acting) + ' 个只记为已检查。继续吗？')) return;
+    _mpCheckupRunning = true;
+    try {
+        mpMsg('正在执行事件盒调整...');
+        const data = await mpFetchJson('/api/memory-palace/event-boxes/checkup/confirm', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({boxes: decisions})});
+        const results = data.results || [];
+        let moved = 0, newBoxes = 0, renamed = 0, dissolved = 0, rewritten = 0;
+        const problems = [];
+        results.forEach(r => {
+            const name = (_mpCheckupBoxes.find(b => b.box_id === r.box_id) || {}).box_name || r.box_id;
+            if (r.status === 'error') { problems.push('「' + name + '」' + (r.error || '执行失败')); return; }
+            moved += Number(r.moved_out || 0);
+            newBoxes += (r.new_boxes || []).length;
+            if (r.renamed) renamed++;
+            if (r.dissolved) dissolved++;
+            if (r.rewrite === 'ok') rewritten++;
+            if (r.rewrite === 'failed') problems.push('「' + name + '」重写总结失败，可以在盒子详情里点「压缩此盒」：' + (r.rewrite_error || ''));
+        });
+        const parts = ['移出 ' + moved + ' 条'];
+        if (newBoxes) parts.push('新建 ' + newBoxes + ' 个盒');
+        if (rewritten) parts.push('重写总结 ' + rewritten + ' 个');
+        if (dissolved) parts.push('解散 ' + dissolved + ' 个');
+        if (renamed) parts.push('改名 ' + renamed + ' 个');
+        clearCheckupPreviewArea();
+        await loadMemoryPalace();
+        if (typeof loadMemoryPalaceEventBoxes === 'function') { try { await loadMemoryPalaceEventBoxes(true); } catch (e) {} }
+        mpMsg('事件盒体检已执行：' + parts.join('，') + (problems.length ? '。' + problems.join('；') : ''), problems.length ? 'error' : '');
+    } catch (e) {
+        mpMsg('事件盒体检执行失败：' + e.message, 'error');
+    } finally {
+        _mpCheckupRunning = false;
+    }
+}
+
+async function renameMemoryPalaceEventBox(id, currentName) {
+    id = id || _mpCurrentEventBoxId;
+    if (!id) return;
+    const name = prompt('新的盒名（5-12 字为宜）：', currentName || '');
+    if (name === null) return;
+    if (!name.trim()) { mpMsg('盒名不能为空', 'error'); return; }
+    try {
+        await mpFetchJson('/api/memory-palace/event-boxes/' + encodeURIComponent(id), {method:'PATCH', headers:{'Content-Type':'application/json'}, body:JSON.stringify({name: name.trim()})});
+        mpMsg('已改名');
+        await loadMemoryPalaceEventBoxes(true);
+        await loadMemoryPalaceEventBoxDetail(id);
+    } catch (e) { mpMsg('改名失败：' + e.message, 'error'); }
+}
+
 async function runMemoryPalaceConsolidation() {
     if (!confirm('将执行记忆巩固：客厅高重要性记忆晋升卧室，客厅超容量记忆移入阁楼。继续吗？')) return;
     try {
@@ -916,6 +1091,7 @@ async function loadMemoryPalaceEventBoxDetail(id) {
                     '</div>' +
                     '<div style="font-size:12px;color:var(--text-muted);margin-top:6px;line-height:1.6;white-space:pre-wrap;">' + mpEsc(metaLines.join('\n')) + '</div>' +
                     '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;">' +
+                        '<button class="btn btn-secondary btn-sm mp-rename-event-box" data-id="' + mpEsc(box.id || '') + '" data-name="' + mpEsc(box.name || '') + '">改名</button>' +
                         '<button class="btn btn-secondary btn-sm mp-compress-current-box" data-id="' + mpEsc(box.id || '') + '">压缩此盒</button>' +
                         '<button class="btn btn-secondary btn-sm mp-undo-compress-box" data-id="' + mpEsc(box.id || '') + '">撤回上次压缩</button>' +
                         '<button class="btn btn-secondary btn-sm mp-toggle-sealed-box" data-id="' + mpEsc(box.id || '') + '" data-sealed="' + (box.sealed ? 'false' : 'true') + '">' + (box.sealed ? '解除封盒' : '封盒') + '</button>' +
@@ -1149,6 +1325,8 @@ function initMemoryPalaceInteractions() {
             deleteMemoryPalaceNode(deleteBtn.dataset.id || '');
             return;
         }
+        const renameBoxBtn = event.target.closest('.mp-rename-event-box');
+        if (renameBoxBtn) { renameMemoryPalaceEventBox(renameBoxBtn.dataset.id || '', renameBoxBtn.dataset.name || ''); return; }
         const compressBoxBtn = event.target.closest('.mp-compress-current-box');
         if (compressBoxBtn) { compressCurrentMemoryPalaceEventBox(compressBoxBtn.dataset.id || ''); return; }
         const undoCompressBtn = event.target.closest('.mp-undo-compress-box');

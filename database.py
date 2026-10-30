@@ -920,6 +920,12 @@ async def init_tables():
             CREATE INDEX IF NOT EXISTS idx_mp_event_boxes_character
             ON memory_palace_event_boxes (character_id);
         """)
+        # 事件盒体检的临时健康标记：体检时盒内成员 id 的指纹。成员变了指纹就对不上，标记自然失效。
+        await conn.execute("""
+            ALTER TABLE memory_palace_event_boxes
+            ADD COLUMN IF NOT EXISTS checkup_fingerprint TEXT,
+            ADD COLUMN IF NOT EXISTS checkup_at TIMESTAMPTZ;
+        """)
         
 
         await conn.execute("""

@@ -10,6 +10,8 @@ let _mpNodeLoadedCount = 0;
 let _mpNodeHasMore = true;
 let _mpNodeLoadingMore = false;
 let _mpNodeScrollListenerBound = false;
+// 节点列表请求序号：切房间或重新打开时递增，旧请求晚到的结果直接丢弃
+let _mpNodeRequestSeq = 0;
 let _mpCompressRunning = false;
 let _mpShowNodeIds = false;
 let _mpEventBoxesExpanded = false;
@@ -33,6 +35,26 @@ function mpMsg(text, type) {
     }
     const color = type === 'error' ? '#dc2626' : '#059669';
     el.innerHTML = '<div style=\"padding:10px 12px;border-radius:8px;background:#fff;border:1px solid ' + color + ';color:' + color + ';margin-bottom:12px;\">' + mpEsc(text) + '</div>';
+}
+
+// 统一的 JSON 请求：非 2xx、返回不是 JSON、或返回 {error} 都抛出带原因的错误。
+// 以前直接 resp.json()，后端 500 返回纯文本时只能看到 Unexpected token 这种解析错误。
+async function mpFetchJson(url, options) {
+    const resp = await fetch(url, options);
+    const text = await resp.text();
+    let data = null;
+    try {
+        data = text ? JSON.parse(text) : {};
+    } catch (e) {
+        data = null;
+    }
+    if (!resp.ok) {
+        const detail = (data && (data.error || data.message)) || text.slice(0, 160).trim() || resp.statusText || '';
+        throw new Error('HTTP ' + resp.status + (detail ? '：' + detail : ''));
+    }
+    if (data === null) throw new Error('接口返回不是 JSON：' + text.slice(0, 160));
+    if (data.error || data.status === 'error') throw new Error(data.error || data.message || '未知错误');
+    return data;
 }
 
 function mpRoomMeta(roomId) {
@@ -86,6 +108,10 @@ async function loadMemoryPalace() {
     const root = document.getElementById('section-memory-palace');
     if (!root) return;
 
+    // 本次加载的序号。加载期间切了房间，这次返回的节点就过期了，直接丢弃。
+    const seq = ++_mpNodeRequestSeq;
+    // 加载期间挡住滚动翻页，避免往旧列表追加一页后又被新列表覆盖或重复
+    _mpNodeLoadingMore = true;
     try {
         mpMsg('');
         clearDigestPreviewArea();
@@ -94,33 +120,34 @@ async function loadMemoryPalace() {
         const params = new URLSearchParams();
         params.set('limit', String(MP_NODE_PAGE_SIZE));
         if (_mpCurrentRoom) params.set('room', _mpCurrentRoom);
-        const resp = await fetch('/api/memory-palace/rooms-with-nodes?' + params.toString());
-        const data = await resp.json();
-        if (data.error) throw new Error(data.error);
+        const data = await mpFetchJson('/api/memory-palace/rooms-with-nodes?' + params.toString());
 
+        // 房间计数和当前选中哪个房间无关，总是更新
         _mpRooms = data.rooms || [];
-        const nodes = data.nodes || [];
-        _mpNodes = nodes;
-        _mpNodeLoadedCount = nodes.length;
-        _mpNodeHasMore = nodes.length >= MP_NODE_PAGE_SIZE;
-        _mpNodeLoadingMore = false;
-
         renderMemoryPalaceRooms();
         renderMemoryPalaceEventBoxCollapseState();
         renderMemoryPalaceToolsState();
 
-        const nodeList = document.getElementById('mpNodeList');
-        if (nodeList) {
-            if (!nodes.length) {
-                nodeList.innerHTML = '<div class="card" style="padding:24px;color:var(--text-muted);text-align:center;">这个房间还没有记忆。可以点"新增记忆"手动放一条进去。</div>';
-            } else {
-                nodeList.innerHTML = '';
-                ensureMemoryPalaceNodeScrollListener();
-                appendMemoryPalaceNodeBatch(0, nodes);
-                renderMemoryPalaceNodeLoadMoreHint();
+        if (seq === _mpNodeRequestSeq) {
+            const nodes = data.nodes || [];
+            _mpNodes = nodes;
+            _mpNodeLoadedCount = nodes.length;
+            _mpNodeHasMore = nodes.length >= MP_NODE_PAGE_SIZE;
+            _mpNodeLoadingMore = false;
+
+            const nodeList = document.getElementById('mpNodeList');
+            if (nodeList) {
+                if (!nodes.length) {
+                    nodeList.innerHTML = '<div class="card" style="padding:24px;color:var(--text-muted);text-align:center;">这个房间还没有记忆。可以点"新增记忆"手动放一条进去。</div>';
+                } else {
+                    nodeList.innerHTML = '';
+                    ensureMemoryPalaceNodeScrollListener();
+                    appendMemoryPalaceNodeBatch(0, nodes);
+                    renderMemoryPalaceNodeLoadMoreHint();
+                }
             }
+            updateMemoryPalaceRoomTitle();
         }
-        updateMemoryPalaceRoomTitle();
 
         if (_mpEventBoxesExpanded) {
             await loadMemoryPalaceEventBoxes();
@@ -129,6 +156,8 @@ async function loadMemoryPalace() {
         mpMsg('加载记忆宫殿失败：' + e.message, 'error');
         const roomsEl = document.getElementById('mpRooms');
         if (roomsEl) roomsEl.innerHTML = '<div style="color:var(--text-muted);">加载失败</div>';
+    } finally {
+        if (seq === _mpNodeRequestSeq) _mpNodeLoadingMore = false;
     }
 }
 
@@ -265,8 +294,10 @@ async function loadMemoryPalaceNodes(room) {
 }
 
 async function fetchNextMemoryPalaceNodePage(reset) {
-    if (_mpNodeLoadingMore) return;
-    if (!reset && !_mpNodeHasMore) return;
+    if (!reset && (_mpNodeLoadingMore || !_mpNodeHasMore)) return;
+    // 切房间（reset）开一个新序号；在这之前发出、之后才返回的请求一律丢弃
+    if (reset) _mpNodeRequestSeq++;
+    const seq = _mpNodeRequestSeq;
 
     _mpNodeLoadingMore = true;
     const params = new URLSearchParams();
@@ -276,9 +307,14 @@ async function fetchNextMemoryPalaceNodePage(reset) {
     if (_mpCurrentRoom) params.set('room', _mpCurrentRoom);
 
     try {
-        const resp = await fetch('/api/memory-palace/nodes?' + params.toString());
-        const data = await resp.json();
-        if (data.error) throw new Error(data.error);
+        let data;
+        try {
+            data = await mpFetchJson('/api/memory-palace/nodes?' + params.toString());
+        } catch (e) {
+            if (seq !== _mpNodeRequestSeq) return;  // 过期请求的报错不提示
+            throw e;
+        }
+        if (seq !== _mpNodeRequestSeq) return;
         const nodes = data.nodes || [];
         if (reset) {
             _mpNodes = nodes;
@@ -291,12 +327,13 @@ async function fetchNextMemoryPalaceNodePage(reset) {
             appendMemoryPalaceNodeBatch(startIndex, nodes);
         }
         _mpNodeHasMore = nodes.length >= MP_NODE_PAGE_SIZE;
+        // 先结束“加载中”再画底部提示，否则提示会一直停在“正在加载更多记忆...”
+        _mpNodeLoadingMore = false;
         renderMemoryPalaceNodeLoadMoreHint();
     } finally {
-        _mpNodeLoadingMore = false;
+        if (seq === _mpNodeRequestSeq) _mpNodeLoadingMore = false;
     }
 }
-
 
 function memoryPalaceNodeCardHtml(node, index) {
     const room = mpRoomMeta(node.room);
@@ -688,9 +725,7 @@ async function loadMemoryPalaceEventBoxes(forceRefresh) {
         // 列表接口有 15 分钟缓存。删除事件盒 / 移出最后一条记忆之后缓存不会自动失效，
         // 左侧可能继续显示已经不存在的盒子。「刷新事件盒」按钮传 refresh=1 强制重查。
         const url = '/api/memory-palace/event-boxes?limit=100' + (forceRefresh ? '&refresh=1' : '');
-        const resp = await fetch(url);
-        const data = await resp.json();
-        if (data.error || data.status === 'error') throw new Error(data.error || '加载失败');
+        const data = await mpFetchJson(url);
         _mpEventBoxes = data.boxes || [];
         if (_mpCurrentEventBoxId && !_mpEventBoxes.some(b => b.id === _mpCurrentEventBoxId)) {
             _mpCurrentEventBoxId = null;

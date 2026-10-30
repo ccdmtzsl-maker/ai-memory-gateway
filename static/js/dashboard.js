@@ -1309,7 +1309,7 @@ function renderConvMemoryPalacePreview(groups) {
 
         if (g.status !== 'ok') {
             const err = document.createElement('span');
-            err.style.cssText = 'color:var(--error);font-size:13px;';
+            err.style.cssText = g.status === 'skipped' ? 'color:var(--text-muted);font-size:13px;' : 'color:var(--error);font-size:13px;';
             err.textContent = g.error || g.message || '没有结果';
             groupEl.appendChild(err);
             p.appendChild(groupEl);

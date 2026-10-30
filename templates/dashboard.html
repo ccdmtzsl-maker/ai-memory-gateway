@@ -395,6 +395,7 @@
                         <button id="mpModifyPinBtn" class="btn" style="background:#fff;border-style:dashed;border-width:2px;border-radius:18px;padding:10px 20px;font-weight:900;box-shadow:0 6px 0 rgba(15,23,42,.08), inset 0 0 0 3px rgba(255,255,255,.92);border-color:#991b1b;color:#991b1b;" onclick="modifyMemoryPalacePin()">修改便利贴</button>
                         <button class="btn mp-advanced-action" style="display:none;background:#fff;border-style:dashed;border-width:2px;border-radius:18px;padding:10px 20px;font-weight:900;box-shadow:0 6px 0 rgba(15,23,42,.08), inset 0 0 0 3px rgba(255,255,255,.92);border-color:#b9a7e8;color:#6d4cc2;" onclick="runMemoryPalaceConsolidation()">巩固记忆</button>
                         <button class="btn mp-advanced-action" style="display:none;background:#fff;border-style:dashed;border-width:2px;border-radius:18px;padding:10px 20px;font-weight:900;box-shadow:0 6px 0 rgba(15,23,42,.08), inset 0 0 0 3px rgba(255,255,255,.92);border-color:#15803d;color:#15803d;" onclick="runCognitiveDigestion()">认知消化</button>
+                        <button class="btn mp-advanced-action" style="display:none;background:#fff;border-style:dashed;border-width:2px;border-radius:18px;padding:10px 20px;font-weight:900;box-shadow:0 6px 0 rgba(15,23,42,.08), inset 0 0 0 3px rgba(255,255,255,.92);border-color:#0e7490;color:#0e7490;" onclick="runEventBoxCheckup()">事件盒体检</button>
                         <div id="mpVectorMaintenanceWrap" class="mp-advanced-action" style="display:none;position:relative;">
                             <button type="button" id="mpVectorMaintenanceBtn" class="btn" style="background:#fff7ed;border-style:dashed;border-width:2px;border-radius:18px;padding:10px 20px;font-weight:900;box-shadow:0 6px 0 rgba(120,53,15,.12), inset 0 0 0 3px rgba(255,255,255,.92);border-color:#9a3412;color:#7c2d12;" onclick="toggleMemoryPalaceVectorMenu(event)" style="background:#fff7ed;border-style:dashed;border-width:2px;border-radius:18px;padding:10px 20px;font-weight:900;box-shadow:0 6px 0 rgba(120,53,15,.12), inset 0 0 0 3px rgba(255,255,255,.92);border-color:#9a3412;color:#7c2d12;touch-action:manipulation;-webkit-tap-highlight-color:transparent;">向量维护 ⚙</button>
                         </div>
@@ -408,6 +409,7 @@
                 </div>
 
                 <div id="mpDigestPreview" style="display:none;margin-top:14px;"></div>
+                    <div id="mpCheckupPreview" style="display:none;margin-top:14px;"></div>
 
                 <div id="mpRecallDebugCard" class="card" style="display:none;margin-top:14px;padding:16px;">
                     <div style="font-weight:800;margin-bottom:10px;">召回调试</div>
@@ -1041,6 +1043,6 @@
     });
 
     </script>
-    <script src="/static/js/memory_palace.js?v=5.7"></script>
+    <script src="/static/js/memory_palace.js?v=5.8"></script>
 </body>
 </html>

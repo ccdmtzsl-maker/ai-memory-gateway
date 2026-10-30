@@ -43,6 +43,7 @@ from starlette.middleware.gzip import GZipResponder
 from database import init_tables, close_pool, save_message, get_pool, get_gateway_config, set_gateway_config, set_gateway_config_many, get_all_gateway_config, get_conversation_messages, get_session_cache_state, save_session_cache_state, delete_session_cache_state, save_token_usage, ensure_token_usage_table, get_conversations_paginated, get_conversation_messages_after_id, delete_conversation, batch_delete_conversations, merge_sessions_to_target, list_all_session_cache_states, export_all_conversations, import_conversations, get_last_user_content, update_last_assistant_message, update_last_assistant_if_same_user, db_row_to_message, search_conversations, update_message_content, rename_session_id, get_conversation_messages_by_date, upsert_daily_impression, get_daily_impression, list_daily_impressions, search_memory_palace_vector_scores, search_memory_palace_vector_scores_multi, memory_palace_vector_ready
 from database import list_memory_palace_rooms, list_memory_palace_nodes, get_memory_palace_node, create_memory_palace_node, update_memory_palace_node, delete_memory_palace_node, clear_expired_memory_palace_pins, get_user_impression, upsert_user_impression, delete_user_impression, normalize_user_impression, get_user_activity_meta, upsert_user_activity_meta, delete_user_activity_meta
 import database as _db_module  # 用于 /api/settings 热更新 database.py 全局变量
+import user_portrait as _user_portrait  # 特点画像（测试中），接口和提示词变量 {{user_portrait}}
 from memory_extractor import get_extraction_prompt, set_extraction_prompt, _DEFAULT_EXTRACTION_PROMPT
 from memory_palace_scoring import (
     _MEMORY_PALACE_BM25_WEIGHT,
@@ -3083,6 +3084,8 @@ async def replace_explicit_memory_variables(prompt: str, query: str = "", charac
     _v_mark("daily_impressions")
     prompt = await replace_user_impression_variables(prompt, character_id=character_id)
     _v_mark("user_impression")
+    prompt = await _user_portrait.replace_user_portrait_variables(prompt, character_id=character_id)
+    _v_mark("user_portrait")
     prompt = await replace_user_activity_meta_variables(prompt, character_id=character_id)
     _v_mark("user_activity_meta")
     prompt = await replace_special_memory_variables(prompt, character_id=character_id)
@@ -12934,6 +12937,39 @@ async def save_settings(request: Request):
     except Exception as e:
         print(f"[save_settings] 错误: {e}")
         return {"error": str(e)}
+
+
+# ============================================================
+# 特点画像（user_portrait.py）：注入依赖并挂上接口。
+# 放在文件末尾，因为依赖的函数都定义在上面。
+# ============================================================
+
+def _user_portrait_extra_headers(base_url: str) -> dict:
+    if "openrouter" in (base_url or ""):
+        return {"HTTP-Referer": EXTRA_REFERER, "X-Title": EXTRA_TITLE}
+    return {}
+
+
+_user_portrait.configure_user_portrait(
+    get_pool=get_pool,
+    cache_get=_cache_get,
+    cache_set=_cache_set,
+    cache_delete_prefix=_cache_delete_prefix,
+    get_system_prompt=get_system_prompt,
+    get_user_nickname=get_runtime_user_nickname,
+    get_character_name=get_runtime_character_name,
+    get_memory_base_url=get_runtime_memory_api_base_url,
+    get_memory_model=get_runtime_memory_model,
+    get_memory_api_key=get_runtime_memory_api_key,
+    extra_headers=_user_portrait_extra_headers,
+    collect_memory_material=_collect_user_impression_memory_material,
+    collect_recent_messages=_collect_user_impression_recent_messages,
+    format_recent_messages=_format_impression_recent_messages,
+    format_daily_impressions=format_daily_impressions_for_prompt,
+    get_old_impression=lambda cid: get_user_impression(character_id=cid, with_pending_count=False),
+    memory_enabled=lambda: MEMORY_ENABLED,
+)
+app.include_router(_user_portrait.router)
 
 
 # ============================================================

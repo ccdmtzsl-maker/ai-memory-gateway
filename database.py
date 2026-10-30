@@ -590,6 +590,16 @@ async def init_tables():
             CREATE INDEX IF NOT EXISTS idx_mp_nodes_archived
             ON memory_palace_nodes (archived);
         """)
+        # 仪表盘列表专用组合索引，列顺序和 list_memory_palace_nodes 的 WHERE / ORDER BY 一致。
+        # date DESC 默认 NULLS FIRST，查询用的是 NULLS LAST，必须显式写出来索引才能用于排序。
+        await conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_mp_nodes_list_order
+            ON memory_palace_nodes (character_id, archived, date DESC NULLS LAST, created_at DESC, updated_at DESC);
+        """)
+        await conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_mp_nodes_room_list_order
+            ON memory_palace_nodes (character_id, archived, room, date DESC NULLS LAST, created_at DESC, updated_at DESC);
+        """)
         
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS memory_palace_vectors (
@@ -2470,7 +2480,8 @@ async def clear_expired_memory_palace_pins(character_id: str = None):
 
 
 async def list_memory_palace_rooms(character_id: str = "default"):
-    await clear_expired_memory_palace_pins(character_id)
+    # 只读：过期便利贴由聊天检索和记忆提取链路清理，这里不再顺带写库。
+    # 前端按 pinned_until 自行显示“已过期”。
     pool = await get_pool()
     async with pool.acquire() as conn:
         rows = await conn.fetch("""
@@ -2497,7 +2508,7 @@ async def list_memory_palace_nodes(
 ):
     limit = max(1, min(int(limit or 100), 500))
     offset = max(0, int(offset or 0))
-    await clear_expired_memory_palace_pins(character_id)
+    # 只读：不再在这里清过期便利贴（原来打开页面清两次，每翻一页再清一次）。
     pool = await get_pool()
     async with pool.acquire() as conn:
         conditions = ["character_id = $1", "archived = $2"]

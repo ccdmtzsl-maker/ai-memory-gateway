@@ -11315,6 +11315,18 @@ async def api_delete_message_legacy(message_id: int):
         return {"error": str(e)}
 
 
+@app.post("/api/conversations/rebuild-directory")
+async def api_rebuild_conversation_directory():
+    """按现有消息重新统计对话目录。只改目录统计，不动消息和分区状态。"""
+    if not MEMORY_ENABLED:
+        return {"error": "记忆系统未启用"}
+    try:
+        total = await _db_module.rebuild_session_directory()
+        return {"status": "ok", "total": total}
+    except Exception as e:
+        return {"error": f"{type(e).__name__}: {e}"}
+
+
 @app.get("/api/conversations/export")
 async def api_export_conversations():
     """导出所有对话记录"""

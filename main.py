@@ -370,6 +370,22 @@ FORCE_STREAM = os.getenv("FORCE_STREAM", "false").lower() == "true"
 RESPONSE_TRANSFORM_ENABLED = os.getenv("RESPONSE_TRANSFORM_ENABLED", "false").lower() == "true"
 RESPONSE_TRANSFORM_RULES = os.getenv("RESPONSE_TRANSFORM_RULES", "")
 
+# 旧状态栏清理（仅分区模式）：发给模型前，只保留最近 N 条 AI 回复里的状态栏/伪装思考链。
+# 数据库原文不动。规则一行一条正则，留空时用默认规则。
+_STATUS_TRIM_DEFAULT_PATTERNS = "<think>.*?</think>\n\\[状态::[^\\]]*\\]"
+
+
+def _parse_status_trim_keep(value) -> int:
+    try:
+        return max(0, min(int(float(str(value).strip())), 50))
+    except (TypeError, ValueError):
+        return 3
+
+
+STATUS_TRIM_ENABLED = os.getenv("STATUS_TRIM_ENABLED", "false").lower() == "true"
+STATUS_TRIM_KEEP = _parse_status_trim_keep(os.getenv("STATUS_TRIM_KEEP", "3"))
+STATUS_TRIM_PATTERNS = os.getenv("STATUS_TRIM_PATTERNS", _STATUS_TRIM_DEFAULT_PATTERNS)
+
 # 推理/思维链参数（部分客户端走网关时不会自动添加reasoning参数，导致上游不返回thinking数据）
 # 设为 low/medium/high 会在转发请求时注入 reasoning_effort 参数
 REASONING_EFFORT = os.getenv("REASONING_EFFORT", "")
@@ -665,7 +681,7 @@ async def lifespan(app: FastAPI):
                         "FORCE_STREAM": lambda v: _parse_bool(v),
                         "RESPONSE_TRANSFORM_ENABLED": lambda v: _parse_bool(v),
                         "PERF_DIAGNOSTIC_ENABLED": lambda v: _parse_bool(v),
-                        "RESPONSE_TRANSFORM_RULES": str,
+                        "RESPONSE_TRANSFORM_RULES": str, "STATUS_TRIM_ENABLED": lambda v: _parse_bool(v), "STATUS_TRIM_KEEP": _parse_status_trim_keep, "STATUS_TRIM_PATTERNS": str,
                         "REASONING_EFFORT": str,
                         "MEMORY_PALACE_DEFAULT_LIMIT": int,
                         "MEMORY_PALACE_INJECTION_DEPTH": int,
@@ -4227,6 +4243,96 @@ def _apply_breakpoint(msg: dict) -> bool:
     return False
 
 
+_status_trim_compiled_cache = {}
+
+
+def _status_trim_patterns() -> list:
+    text = str(STATUS_TRIM_PATTERNS or "")
+    if not text.strip():
+        text = _STATUS_TRIM_DEFAULT_PATTERNS
+    cached = _status_trim_compiled_cache.get(text)
+    if cached is not None:
+        return cached
+    compiled = []
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        try:
+            compiled.append(re.compile(line, re.S))
+        except re.error as e:
+            print(f"⚠️ 状态栏清理规则无效，已跳过: {line} ({e})")
+    _status_trim_compiled_cache.clear()
+    _status_trim_compiled_cache[text] = compiled
+    return compiled
+
+
+def trim_old_status_blocks(messages: list, session_id: str = "") -> list:
+    """只保留最近 STATUS_TRIM_KEEP 条带状态栏的 AI 回复，更早回复里的状态栏删掉。
+
+    按“回复”计数，不按类型分开数：同一条回复里有思考链和状态栏算 1 条。
+    返回新列表，被改的消息是浅拷贝，原 dict（以及数据库里的原文）不受影响。
+    删完变成空白、又没有工具调用的回复保持原样，避免发出空 assistant 消息被上游拒绝。
+    """
+    if not STATUS_TRIM_ENABLED or not messages:
+        return messages
+    patterns = _status_trim_patterns()
+    if not patterns:
+        return messages
+    keep = _parse_status_trim_keep(STATUS_TRIM_KEEP)
+
+    def _has(text: str) -> bool:
+        return any(p.search(text) for p in patterns)
+
+    def _strip(text: str) -> str:
+        for p in patterns:
+            text = p.sub("", text)
+        return re.sub(r"\n{3,}", "\n\n", text).strip()
+
+    out = list(messages)
+    seen = 0
+    trimmed = 0
+    for i in range(len(out) - 1, -1, -1):
+        msg = out[i]
+        if not isinstance(msg, dict) or msg.get("role") != "assistant":
+            continue
+        content = msg.get("content")
+        if isinstance(content, str):
+            if not content or not _has(content):
+                continue
+            seen += 1
+            if seen <= keep:
+                continue
+            new_content = _strip(content)
+            if not new_content and not msg.get("tool_calls"):
+                continue
+        elif isinstance(content, list):
+            if not any(isinstance(it, dict) and it.get("type") == "text" and isinstance(it.get("text"), str) and _has(it["text"]) for it in content):
+                continue
+            seen += 1
+            if seen <= keep:
+                continue
+            new_content = []
+            for it in content:
+                if isinstance(it, dict) and it.get("type") == "text" and isinstance(it.get("text"), str):
+                    text = _strip(it["text"])
+                    if text:
+                        new_content.append({**it, "text": text})
+                else:
+                    new_content.append(it)
+            if not new_content and not msg.get("tool_calls"):
+                continue
+        else:
+            continue
+        new_msg = dict(msg)
+        new_msg["content"] = new_content
+        out[i] = new_msg
+        trimmed += 1
+    if trimmed:
+        print(f"🧹 状态栏清理: 保留最近{keep}条，清理更早{trimmed}条回复 session={session_id}")
+    return out
+
+
 async def build_partitioned_messages(
     session_id: str,
     all_messages: list,
@@ -5545,6 +5651,7 @@ async def chat_completions(request: Request):
             state=partition_state,
         )
         _ent_log("组装分区消息")
+        messages = trim_old_status_blocks(messages, session_id=session_id)
         messages = _repair_tool_call_ids_by_adjacency(messages, session_id=session_id, reason="final_messages")
         messages = _normalize_tool_chains_by_id(messages)
         messages = _drop_orphan_tool_messages(messages)
@@ -11744,6 +11851,9 @@ async def get_settings():
             "PERF_DIAGNOSTIC_ENABLED": _parse_bool(db.get("PERF_DIAGNOSTIC_ENABLED"), PERF_DIAGNOSTIC_ENABLED),
             "RESPONSE_TRANSFORM_ENABLED": _parse_bool(db.get("RESPONSE_TRANSFORM_ENABLED"), RESPONSE_TRANSFORM_ENABLED),
             "RESPONSE_TRANSFORM_RULES": db.get("RESPONSE_TRANSFORM_RULES") or str(RESPONSE_TRANSFORM_RULES),
+            "STATUS_TRIM_ENABLED": _parse_bool(db.get("STATUS_TRIM_ENABLED"), STATUS_TRIM_ENABLED),
+            "STATUS_TRIM_KEEP": _parse_status_trim_keep(db.get("STATUS_TRIM_KEEP") or STATUS_TRIM_KEEP),
+            "STATUS_TRIM_PATTERNS": db.get("STATUS_TRIM_PATTERNS") or str(STATUS_TRIM_PATTERNS or _STATUS_TRIM_DEFAULT_PATTERNS),
             "REASONING_EFFORT":   db.get("REASONING_EFFORT") or str(REASONING_EFFORT),
             "USER_NICKNAME":      db.get("USER_NICKNAME") or str(USER_NICKNAME),
             "CHARACTER_NAME":      db.get("CHARACTER_NAME") or str(CHARACTER_NAME),
@@ -11899,7 +12009,7 @@ async def save_settings(request: Request):
             "FORCE_STREAM":          lambda v: _parse_bool(v),
             "PERF_DIAGNOSTIC_ENABLED":  lambda v: _parse_bool(v),
             "RESPONSE_TRANSFORM_ENABLED": lambda v: _parse_bool(v),
-            "RESPONSE_TRANSFORM_RULES": str,
+            "RESPONSE_TRANSFORM_RULES": str, "STATUS_TRIM_ENABLED": lambda v: _parse_bool(v), "STATUS_TRIM_KEEP": _parse_status_trim_keep, "STATUS_TRIM_PATTERNS": str,
             "REASONING_EFFORT":      str,
             "USER_NICKNAME":         str,
             "CHARACTER_NAME":         str,

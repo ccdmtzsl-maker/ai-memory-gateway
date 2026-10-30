@@ -836,6 +836,12 @@ async def init_tables():
             CREATE INDEX IF NOT EXISTS idx_mp_nodes_room_list_order
             ON memory_palace_nodes (character_id, archived, room, date DESC NULLS LAST, created_at DESC, updated_at DESC);
         """)
+        # 便利贴专用部分索引：只收 pinned_until 有值的行。清过期、取有效便利贴都只看这几行。
+        await conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_mp_nodes_pinned
+            ON memory_palace_nodes (character_id, pinned_until)
+            WHERE pinned_until IS NOT NULL;
+        """)
         
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS memory_palace_vectors (

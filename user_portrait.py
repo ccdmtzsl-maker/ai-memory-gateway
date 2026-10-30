@@ -1,9 +1,17 @@
-"""特点画像（测试中）：把对用户的理解写成几条「特点」，每条讲一个稳定的特点，用真实经历撑起来。
+"""特点画像（测试中）：把对用户的理解写成几条「特点」，每条讲一个稳定的特点。
 
 和旧画像（user_impressions，标签式）并行存在，互不影响：
 - 存在 user_portraits 表；
-- 提示词变量 {{user_portrait}}（旧的 {{user_impression}} 不变）；
-- 第一次生成时，旧画像只当参考材料。
+- 提示词变量 {{user_portrait}}（旧的 {{user_impression}} 不变）。
+
+材料按日期区间取，不放人设和记忆宫殿：
+- 区间内的日印象；
+- 区间内的聊天原文（脱水：用户消息保留原文，角色回复只留头 50 字 + 尾 40 字）；
+- 可选附上当前旧画像的标签（旧画像已经提纯过记忆）。
+
+生成分两步写在同一次输出里：先列「线索」（具体现象），再用线索归纳「特点」，
+每条特点要用同一个原因串起不同场景的线索，避免只是把相似材料归类精简。
+线索只在预览里显示，不保存。
 
 更新时模型不重写整份画像，只输出改动（edit / merge / add / delete），
 没提到的条目由代码原样保留。
@@ -14,11 +22,14 @@ import re
 import json
 import uuid
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta, date
 
 import httpx
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
+
+from database import get_conversation_messages_by_date
+from timestamps import _to_local_dt, _split_timestamp_prefix
 
 router = APIRouter()
 
@@ -26,9 +37,17 @@ _DEPS = {}
 _TABLE_READY = False
 _LOCKS = {}
 
-MAX_TRAITS = 10
+MIN_TRAITS = 4
+MAX_TRAITS = 8
 TITLE_MAX = 20
-CONTENT_MAX = 400
+CONTENT_MAX = 500
+MAX_CLUES = 40
+ASSISTANT_KEEP = 100      # 角色回复不超过这个字数就原样保留
+ASSISTANT_HEAD = 50
+ASSISTANT_TAIL = 40
+MAX_RANGE_DAYS = 366
+PROMPT_MAX_CHARS = 120000  # 超过就让用户缩短日期范围，免得上游 400 或超时
+TIME_MARK_GAP = timedelta(minutes=30)
 
 _OLD_TAG_LABELS = {
     "core_values": "核心价值观", "likes": "喜好", "dislikes": "雷点/反感", "money_attitude": "金钱观",
@@ -63,6 +82,21 @@ def _iso(v):
         return v.isoformat()
     except Exception:
         return str(v)
+
+
+def _local_today() -> date:
+    return _to_local_dt(_now()).date()
+
+
+def _parse_date(v):
+    if isinstance(v, datetime):
+        return v.date()
+    if isinstance(v, date):
+        return v
+    try:
+        return datetime.strptime(str(v or "").strip()[:10], "%Y-%m-%d").date()
+    except Exception:
+        return None
 
 
 def _new_trait_id():
@@ -105,6 +139,11 @@ async def _ensure_table(conn):
             updated_at TIMESTAMPTZ DEFAULT NOW()
         )
     """)
+    await conn.execute("""
+        ALTER TABLE user_portraits
+        ADD COLUMN IF NOT EXISTS last_range_start DATE,
+        ADD COLUMN IF NOT EXISTS last_range_end DATE
+    """)
     _TABLE_READY = True
 
 
@@ -127,12 +166,17 @@ def _parse_traits(raw) -> list:
     return out
 
 
+def _date_text(v):
+    d = _parse_date(v)
+    return d.isoformat() if d else None
+
+
 async def get_user_portrait(character_id: str = "default"):
     pool = await _dep("get_pool")()
     async with pool.acquire() as conn:
         await _ensure_table(conn)
         row = await conn.fetchrow("""
-            SELECT character_id, traits, revision, last_consumed_node_id, source_mode, created_at, updated_at
+            SELECT character_id, traits, revision, source_mode, last_range_start, last_range_end, created_at, updated_at
             FROM user_portraits WHERE character_id = $1
         """, character_id)
     if not row:
@@ -141,38 +185,41 @@ async def get_user_portrait(character_id: str = "default"):
         "character_id": row["character_id"],
         "traits": _parse_traits(row["traits"]),
         "revision": int(row["revision"] or 0),
-        "last_consumed_node_id": row["last_consumed_node_id"],
         "source_mode": row["source_mode"],
+        "last_range_start": _date_text(row["last_range_start"]),
+        "last_range_end": _date_text(row["last_range_end"]),
         "created_at": _iso(row["created_at"]),
         "updated_at": _iso(row["updated_at"]),
     }
 
 
-async def _save(conn, character_id: str, traits: list, source_mode: str, last_consumed_node_id=None, keep_pointer=True):
+async def _save(conn, character_id: str, traits: list, source_mode: str, range_start=None, range_end=None, keep_range=True):
     now = _iso(_now())
     for t in traits:
-        t.setdefault("created_at", now)
         t["created_at"] = t.get("created_at") or now
+        t.pop("clues", None)
     payload = json.dumps(traits, ensure_ascii=False)
-    if keep_pointer:
+    rs, re_ = _parse_date(range_start), _parse_date(range_end)
+    if keep_range:
         row = await conn.fetchrow("""
-            INSERT INTO user_portraits (character_id, traits, revision, last_consumed_node_id, source_mode, created_at, updated_at)
-            VALUES ($1, $2::jsonb, 1, $3, $4, NOW(), NOW())
+            INSERT INTO user_portraits (character_id, traits, revision, source_mode, last_range_start, last_range_end, created_at, updated_at)
+            VALUES ($1, $2::jsonb, 1, $3, $4, $5, NOW(), NOW())
             ON CONFLICT (character_id) DO UPDATE SET
                 traits = EXCLUDED.traits, revision = user_portraits.revision + 1,
                 source_mode = EXCLUDED.source_mode, updated_at = NOW()
             RETURNING revision
-        """, character_id, payload, last_consumed_node_id, source_mode)
+        """, character_id, payload, source_mode, rs, re_)
     else:
         row = await conn.fetchrow("""
-            INSERT INTO user_portraits (character_id, traits, revision, last_consumed_node_id, source_mode, created_at, updated_at)
-            VALUES ($1, $2::jsonb, 1, $3, $4, NOW(), NOW())
+            INSERT INTO user_portraits (character_id, traits, revision, source_mode, last_range_start, last_range_end, created_at, updated_at)
+            VALUES ($1, $2::jsonb, 1, $3, $4, $5, NOW(), NOW())
             ON CONFLICT (character_id) DO UPDATE SET
                 traits = EXCLUDED.traits, revision = user_portraits.revision + 1,
-                last_consumed_node_id = EXCLUDED.last_consumed_node_id,
-                source_mode = EXCLUDED.source_mode, updated_at = NOW()
+                source_mode = EXCLUDED.source_mode,
+                last_range_start = EXCLUDED.last_range_start, last_range_end = EXCLUDED.last_range_end,
+                updated_at = NOW()
             RETURNING revision
-        """, character_id, payload, last_consumed_node_id, source_mode)
+        """, character_id, payload, source_mode, rs, re_)
     _invalidate(character_id)
     return int(row["revision"])
 
@@ -218,8 +265,111 @@ async def replace_user_portrait_variables(prompt: str, character_id: str = "defa
 
 # ---------------- 材料 ----------------
 
-def _format_old_impression(imp: dict) -> str:
-    tags = imp.get("tags") if isinstance(imp.get("tags"), dict) else {}
+def _plain_text(content) -> str:
+    """消息内容转纯文本。多模态（list 或 JSON 字符串形式的 list）里的图片换成 [图片]。"""
+    value = content
+    if isinstance(value, str):
+        s = value.strip()
+        if s.startswith("[{") and s.endswith("}]"):
+            try:
+                value = json.loads(s)
+            except Exception:
+                return value
+        else:
+            return value
+    if isinstance(value, list):
+        parts = []
+        for b in value:
+            if not isinstance(b, dict):
+                continue
+            if b.get("type") == "text":
+                parts.append(str(b.get("text") or ""))
+            elif "image" in str(b.get("type") or ""):
+                parts.append("[图片]")
+        return "\n".join(p for p in parts if p)
+    return str(value or "")
+
+
+def dehydrate_user(text: str) -> str:
+    _, t = _split_timestamp_prefix(text or "")
+    t = t if isinstance(t, str) else _plain_text(t)
+    return "\n".join(line.strip() for line in t.splitlines() if line.strip())
+
+
+def dehydrate_assistant(text: str) -> str:
+    t = re.sub(r"<think>.*?</think>", "", str(text or ""), flags=re.S | re.I)
+    t = re.sub(r"\s+", " ", t).strip()
+    if len(t) <= ASSISTANT_KEEP:
+        return t
+    return t[:ASSISTANT_HEAD] + "……" + t[-ASSISTANT_TAIL:]
+
+
+def format_dialogue(messages: list, user: str, char: str) -> tuple:
+    """按天分段；隔了 30 分钟以上才标一次时间。返回 (文本, {user,assistant} 条数, 有聊天的天数)。"""
+    by_day = {}
+    for m in messages or []:
+        role = m.get("role")
+        if role not in ("user", "assistant"):
+            continue
+        dt = _to_local_dt(m.get("created_at"))
+        if not dt:
+            continue
+        raw = _plain_text(m.get("content"))
+        text = dehydrate_user(raw) if role == "user" else dehydrate_assistant(raw)
+        if not text:
+            continue
+        by_day.setdefault(dt.date(), []).append((dt, role, text))
+    counts = {"user": 0, "assistant": 0}
+    sections = []
+    for day in sorted(by_day):
+        lines = [f"===== {day.month}月{day.day}日 ====="]
+        last = None
+        for dt, role, text in sorted(by_day[day], key=lambda x: x[0]):
+            if last is None or dt - last >= TIME_MARK_GAP:
+                lines.append(f"[{dt.strftime('%H:%M')}]")
+            last = dt
+            lines.append(f"{user if role == 'user' else char}: {text}")
+            counts[role] += 1
+        sections.append("\n".join(lines))
+    return "\n\n".join(sections), counts, len(by_day)
+
+
+async def _daily_impressions_in_range(start: date, end: date) -> list:
+    pool = await _dep("get_pool")()
+    try:
+        async with pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT impression_date, summary, tags, mood
+                FROM daily_impressions
+                WHERE impression_date >= $1 AND impression_date <= $2
+                ORDER BY impression_date ASC
+            """, start, end)
+        return [dict(r) for r in rows]
+    except Exception as e:
+        print(f"[UserPortrait] 读取日印象失败，忽略: {e}")
+        return []
+
+
+def format_daily(rows: list) -> str:
+    lines = []
+    for r in rows:
+        d = _parse_date(r.get("impression_date"))
+        if not d:
+            continue
+        meta = f"{d.month}月{d.day}日"
+        if str(r.get("tags") or "").strip():
+            meta += f"｜标签：{str(r['tags']).strip()}"
+        if str(r.get("mood") or "").strip():
+            meta += f"｜氛围：{str(r['mood']).strip()}"
+        summary = str(r.get("summary") or "").strip()
+        if summary:
+            lines.append(f"- {meta}\n  {summary}")
+    return "\n".join(lines)
+
+
+def format_old_impression(imp: dict) -> str:
+    """只取旧画像的标签，不取整体印象 / 近期状态 / 最近变化。"""
+    tags = imp.get("tags") if isinstance(imp, dict) and isinstance(imp.get("tags"), dict) else {}
     lines = []
     for k, v in tags.items():
         label = _OLD_TAG_LABELS.get(k, k)
@@ -232,75 +382,99 @@ def _format_old_impression(imp: dict) -> str:
     return "\n".join(lines)
 
 
-async def _build_materials(character_id: str, mode: str, pointer=None) -> dict:
-    persona = (await _dep("get_system_prompt")() or "").strip()
+def _check_range(start, end):
+    s, e = _parse_date(start), _parse_date(end)
+    if not s or not e:
+        raise ValueError("请选择开始和结束日期")
+    if s > e:
+        raise ValueError("开始日期不能晚于结束日期")
+    if (e - s).days + 1 > MAX_RANGE_DAYS:
+        raise ValueError(f"日期范围最多 {MAX_RANGE_DAYS} 天")
+    return s, e
+
+
+async def build_materials(character_id: str, start: date, end: date, include_old: bool) -> dict:
     user = await _dep("get_user_nickname")() or "用户"
     char = await _dep("get_character_name")() or "角色"
-    mem = await _dep("collect_memory_material")(character_id, mode=mode, last_consumed_node_id=pointer if mode == "update" else None)
-    daily = await _dep("format_daily_impressions")(limit=7 if mode == "update" else 3)
-    recent = await _dep("collect_recent_messages")(mode=mode)
-    sections = [f"【角色人设】\n{persona or '（空）'}", f"【用户昵称】\n{user}"]
-    label = "记忆宫殿新材料" if mode == "update" else "记忆宫殿长期材料"
-    items = mem.get("items") or []
-    if items:
-        lines = []
-        for i, it in enumerate(items, 1):
-            date = str(it.get("date") or "")[:10]
-            lines.append(f"{i}. [{it.get('room_label') or it.get('room')}] {date}: {it.get('content')}")
-        sections.append(f"【{label}】\n" + "\n".join(lines))
+    daily_rows = await _daily_impressions_in_range(start, end)
+    if start < end:
+        messages = await get_conversation_messages_by_date(end, start_hour=0, start_date=start)
     else:
-        sections.append(f"【{label}】\n（暂无）")
-    if daily:
-        sections.append(daily)
-    ritems = recent.get("items") or []
-    if ritems:
-        sections.append("【近期聊天】\n" + _dep("format_recent_messages")(ritems, user, char))
-    else:
-        sections.append("【近期聊天】\n（暂无）")
+        messages = await get_conversation_messages_by_date(end, start_hour=0)
+    dialogue, counts, chat_days = format_dialogue(messages, user, char)
     old_text = ""
-    if mode == "initial":
+    if include_old:
         try:
             old = await _dep("get_old_impression")(character_id)
             imp = (old or {}).get("impression") if old else None
-            if isinstance(imp, dict):
-                old_text = _format_old_impression(imp)
+            old_text = format_old_impression(imp) if isinstance(imp, dict) else ""
         except Exception as e:
             print(f"[UserPortrait] 读取旧画像失败，忽略: {e}")
+    range_text = f"{start.isoformat()} ~ {end.isoformat()}"
+    sections = []
+    daily_text = format_daily(daily_rows)
+    sections.append(f"【日印象（{range_text}）】\n" + (daily_text or "（这段时间没有日印象）"))
+    sections.append(
+        f"【聊天原文（{range_text}，已脱水）】\n"
+        f"{user}的消息是原文；{char}的回复超过 {ASSISTANT_KEEP} 字的只保留开头和结尾，中间用「……」省略。\n\n"
+        + (dialogue or "（这段时间没有聊天记录）")
+    )
+    if old_text:
+        sections.append(
+            "【旧画像（标签式，只作参考线索）】\n"
+            "这是以前按标签整理的画像，可能有重复、过期或拆得很散的内容。可以从中找方向，"
+            "但每条线索都要能在上面的日印象或聊天原文里找到对应的事。\n" + old_text
+        )
     return {
         "user": user, "char": char,
+        "range_start": start.isoformat(), "range_end": end.isoformat(),
         "material_text": "\n\n".join(sections),
-        "old_impression_text": old_text,
-        "memory_count": len(items),
-        "recent_count": len(ritems),
-        "max_node_id": mem.get("max_node_id"),
+        "stats": {
+            "daily_count": len([r for r in daily_rows if str(r.get("summary") or "").strip()]),
+            "chat_days": chat_days,
+            "user_messages": counts["user"],
+            "assistant_messages": counts["assistant"],
+            "used_old_impression": bool(old_text),
+        },
+        "empty": not daily_text and not dialogue,
     }
 
 
+# ---------------- 提示词 ----------------
+
+_CLUE_GUIDE = """第一步·线索：从材料里挑出值得解释的具体现象，写进 clues，编号 C1、C2……每条写清是什么事、大概什么时候（≤60 字）。优先找这几类：
+- 前后矛盾：嘴上这么说，做的却是另一回事
+- 跨场景重复：在不相干的事情上出现同一种反应
+- 反应强度不寻常：小事反应特别大，或大事反应特别平淡
+- 回避：总是绕开的话题，或一碰到就转移
+- 反复回到的话题、坚持、执念"""
+
 _TRAIT_RULES = """每条特点的要求：
-1. title：这个特点的简短名字，4-10 字。
-2. content：80-200 字，第一人称。写清这个特点是什么、平时怎么表现出来、背后可能的原因。用 1-2 件材料里真实发生过的具体经历撑起来，写出是什么事，不要只说「有一次」。
-3. 一件事只写进一条。几个现象其实是同一个特点时（比如讨厌被敷衍、被糊弄会生气、不满时回复变短），合成一条写，不要拆开。
-4. 只写稳定的特点。不写TA最近的状态、近期变化、正在忙的事。
-5. 不写「我该怎么对TA」「我应该……」之类的应对建议。
-6. 没有证据的不写，宁缺毋滥。早期和近期材料同等对待，判断哪些到现在仍然成立。"""
+1. 至少解释 2 条来自不同场景的线索，在 clues 里写出引用的线索编号。如果引用的线索都是同一类事（比如都是在抱怨工作），那只是总结，不算特点，不要写。
+2. title：4-10 字，说出这个特点本身，而不是某个现象的名字。
+3. content：100-250 字，第一人称。写这几件看起来不相干的事背后是什么：TA在意的、怕的、想要的是什么，它在不同场合怎么冒出来。提到经历时写出是什么事，不要只说「有一次」。
+4. 一个特点只写一条。几条其实指向同一个原因时，合成一条。
+5. 写TA是什么样的人。不写TA需要我怎样、我应该怎样对TA、怎么和TA相处。
+6. 只写稳定的特点，不写最近的状态和变化。
+7. 推测要有线索支撑。线索不够就少写几条，宁缺毋滥。"""
 
 
 def build_initial_prompt(m: dict) -> str:
-    old = ""
-    if m.get("old_impression_text"):
-        old = ("\n\n【旧画像（标签式，只作参考材料）】\n"
-               "这是以前按标签整理的画像，可能有重复、过期或拆得很散的内容。可以从中找线索，但每条特点都要回到上面的材料里找经历来印证。\n"
-               + m["old_impression_text"])
-    return f"""{m['material_text']}{old}
+    return f"""{m['material_text']}
 
 【你要写什么】
-你就是「{m['char']}」。这是你写给自己的私人笔记：你眼中的{m['user']}是一个什么样的人。
-把对TA的理解整理成 6-{MAX_TRAITS} 条「特点」，每条讲TA身上一个稳定的特点。按重要性排序，最能说明TA是谁的放前面。
+你就是「{m['char']}」。这是你写给自己的私人笔记：{m['user']}是一个什么样的人。
+不要只是把相似的材料归类、精简一遍。要找出那些看起来不相干的事背后共同的原因。
+
+{_CLUE_GUIDE}
+写 15-30 条。
+
+第二步·特点：用线索归纳出 {MIN_TRAITS}-{MAX_TRAITS} 条特点，写进 traits，按重要性排序，最能说明TA是谁的放前面。
 
 {_TRAIT_RULES}
 
 只输出 JSON 对象，不要 markdown，不要解释：
-{{"traits":[{{"title":"……","content":"……"}}]}}""".strip()
+{{"clues":[{{"id":"C1","text":"……"}}],"traits":[{{"title":"……","content":"……","clues":["C1","C4"]}}]}}""".strip()
 
 
 def build_update_prompt(m: dict, traits: list) -> str:
@@ -311,24 +485,29 @@ def build_update_prompt(m: dict, traits: list) -> str:
 {m['material_text']}
 
 【你要做什么】
-你就是「{m['char']}」，这份画像是你写的私人笔记。根据上面的新材料更新它。
-默认全部保持不变，只有新材料带来新证据时才改。可用的操作：
+你就是「{m['char']}」，上面的当前画像是你写的私人笔记。根据 {m['range_start']} ~ {m['range_end']} 的新材料更新它。
+不要只是把相似的材料归类、精简一遍。要找出那些看起来不相干的事背后共同的原因。
+
+{_CLUE_GUIDE}
+写 5-20 条。
+
+第二步·改动：对照当前画像，只在线索带来新证据时才改。可用的操作：
 - edit：补充或修正某一条，输出改完以后的完整 title 和 content。
-- merge：几条其实在讲同一个特点，合成一条。ids 写被合并的条目，输出合并后的 title 和 content。
-- add：新材料揭示了一个现有条目都没覆盖的稳定特点。
+- merge：几条其实指向同一个原因，合成一条。ids 写被合并的条目，输出合并后的 title 和 content。
+- add：线索揭示了一个现有条目都没覆盖的稳定特点。
 - delete：某一条已经被新材料证明不成立。
-没写到的条目会原样保留，所以不需要动的条目不要写。总数尽量不超过 {MAX_TRAITS} 条。
+没写到的条目会原样保留，不需要动的条目不要写。总数不超过 {MAX_TRAITS} 条。edit、merge、add 也要写 clues。
 
 {_TRAIT_RULES}
 
 只输出 JSON 对象，不要 markdown，不要解释。每个操作写一句 reason：
-{{"ops":[
-  {{"op":"edit","id":"T2","title":"……","content":"……","reason":"……"}},
-  {{"op":"merge","ids":["T3","T5"],"title":"……","content":"……","reason":"……"}},
-  {{"op":"add","title":"……","content":"……","reason":"……"}},
+{{"clues":[{{"id":"C1","text":"……"}}],"ops":[
+  {{"op":"edit","id":"T2","title":"……","content":"……","clues":["C1","C3"],"reason":"……"}},
+  {{"op":"merge","ids":["T3","T5"],"title":"……","content":"……","clues":["C2","C5"],"reason":"……"}},
+  {{"op":"add","title":"……","content":"……","clues":["C4","C6"],"reason":"……"}},
   {{"op":"delete","id":"T4","reason":"……"}}
 ]}}
-没有需要改的就输出 {{"ops":[]}}。""".strip()
+没有需要改的就输出 {{"clues":[...],"ops":[]}}。""".strip()
 
 
 # ---------------- 模型调用 ----------------
@@ -350,7 +529,7 @@ async def _call_llm(prompt: str) -> str:
             {"role": "user", "content": prompt},
         ],
         "temperature": 0.5,
-        "max_tokens": 8000,
+        "max_tokens": 12000,
         "stream": True,
     }
     print(f"[UserPortrait] Calling LLM(stream): model={model}, prompt_chars={len(prompt)}")
@@ -410,9 +589,46 @@ def parse_json_object(text: str):
     return d if isinstance(d, dict) else None
 
 
-# ---------------- 操作整理 / 执行 ----------------
+# ---------------- 线索 / 操作整理 / 执行 ----------------
 
-def normalize_initial(data: dict) -> tuple:
+def normalize_clues(data: dict) -> list:
+    out, seen = [], set()
+    for c in (data.get("clues") if isinstance(data.get("clues"), list) else []):
+        if isinstance(c, dict):
+            cid, text = str(c.get("id") or "").strip().upper(), str(c.get("text") or "").strip()
+        else:
+            cid, text = "", str(c or "").strip()
+        if not text:
+            continue
+        if not cid or cid in seen:
+            cid = f"C{len(out) + 1}"
+            while cid in seen:
+                cid += "'"
+        seen.add(cid)
+        out.append({"id": cid, "text": text[:200]})
+        if len(out) >= MAX_CLUES:
+            break
+    return out
+
+
+def _clue_refs(o: dict, valid: set) -> list:
+    refs = []
+    for x in (o.get("clues") if isinstance(o.get("clues"), list) else []):
+        cid = str(x or "").strip().upper()
+        if cid in valid and cid not in refs:
+            refs.append(cid)
+    return refs
+
+
+def _thin_warning(title: str, refs: list):
+    if len(refs) < 2:
+        return f"「{title}」只引用了 {len(refs)} 条线索，可能只是在复述某件事"
+    return None
+
+
+def normalize_initial(data: dict, clues: list = None) -> tuple:
+    clues = clues if clues is not None else normalize_clues(data)
+    valid = {c["id"] for c in clues}
     warnings, ops = [], []
     for t in (data.get("traits") if isinstance(data.get("traits"), list) else []):
         if not isinstance(t, dict):
@@ -421,14 +637,20 @@ def normalize_initial(data: dict) -> tuple:
         if not content:
             warnings.append("有一条特点内容为空，已忽略")
             continue
-        ops.append({"op": "add", "title": title or "未命名", "content": content, "reason": ""})
+        refs = _clue_refs(t, valid)
+        w = _thin_warning(title or "未命名", refs)
+        if w:
+            warnings.append(w)
+        ops.append({"op": "add", "title": title or "未命名", "content": content, "clues": refs, "reason": ""})
     if len(ops) > MAX_TRAITS:
         warnings.append(f"模型写了 {len(ops)} 条，超过 {MAX_TRAITS} 条，可以在预览里取消勾选一些")
     return ops, warnings
 
 
-def normalize_update(data: dict, traits: list) -> tuple:
+def normalize_update(data: dict, traits: list, clues: list = None) -> tuple:
     """把模型输出的操作整理成合法操作；T 标签换成真实 id。每条现有特点只能被一个操作引用。"""
+    clues = clues if clues is not None else normalize_clues(data)
+    valid = {c["id"] for c in clues}
     warnings, ops, used = [], [], set()
     label_to_id = {f"T{i}": t["id"] for i, t in enumerate(traits, 1)}
 
@@ -451,6 +673,7 @@ def normalize_update(data: dict, traits: list) -> tuple:
         kind = str(o.get("op") or "").strip().lower()
         reason = str(o.get("reason") or "").strip()[:200]
         title, content = _clean_title(o.get("title")), _clean_content(o.get("content"))
+        refs = _clue_refs(o, valid)
         if kind == "merge":
             ids = []
             for x in (o.get("ids") if isinstance(o.get("ids"), list) else []):
@@ -461,10 +684,14 @@ def normalize_update(data: dict, traits: list) -> tuple:
                 warnings.append("有一个合并操作缺内容或条目，已忽略")
                 continue
             used.update(ids)
+            t_title = title or by_id[ids[0]]["title"]
+            w = _thin_warning(t_title, refs)
+            if w:
+                warnings.append(w)
             if len(ids) == 1:
-                ops.append({"op": "edit", "id": ids[0], "title": title or by_id[ids[0]]["title"], "content": content, "reason": reason})
+                ops.append({"op": "edit", "id": ids[0], "title": t_title, "content": content, "clues": refs, "reason": reason})
             else:
-                ops.append({"op": "merge", "ids": ids, "title": title or by_id[ids[0]]["title"], "content": content, "reason": reason})
+                ops.append({"op": "merge", "ids": ids, "title": t_title, "content": content, "clues": refs, "reason": reason})
         elif kind in ("edit", "delete"):
             tid = ref(o.get("id"))
             if not tid:
@@ -477,7 +704,7 @@ def normalize_update(data: dict, traits: list) -> tuple:
                 if content == old["content"] and (title or old["title"]) == old["title"]:
                     continue
                 used.add(tid)
-                ops.append({"op": "edit", "id": tid, "title": title or old["title"], "content": content, "reason": reason})
+                ops.append({"op": "edit", "id": tid, "title": title or old["title"], "content": content, "clues": refs, "reason": reason})
             else:
                 used.add(tid)
                 ops.append({"op": "delete", "id": tid, "reason": reason})
@@ -485,7 +712,10 @@ def normalize_update(data: dict, traits: list) -> tuple:
             if not content:
                 warnings.append("有一个新增操作内容为空，已忽略")
                 continue
-            ops.append({"op": "add", "title": title or "未命名", "content": content, "reason": reason})
+            w = _thin_warning(title or "未命名", refs)
+            if w:
+                warnings.append(w)
+            ops.append({"op": "add", "title": title or "未命名", "content": content, "clues": refs, "reason": reason})
         elif kind in ("keep", ""):
             continue
         else:
@@ -547,29 +777,59 @@ def _enabled() -> bool:
     return bool(fn()) if fn else True
 
 
+async def _read_json(request: Request) -> dict:
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    return data if isinstance(data, dict) else {}
+
+
 @router.get("/api/user-portrait")
 async def api_get_user_portrait(character_id: str = "default"):
     if not _enabled():
         return {"error": "记忆系统未启用"}
     try:
         item = await get_user_portrait(character_id or "default")
+        today = _local_today().isoformat()
         if not item:
-            return {"status": "not_found", "traits": []}
-        return {"status": "ok", **item}
+            return {"status": "not_found", "traits": [], "today": today}
+        return {"status": "ok", **item, "today": today}
     except Exception as e:
         return JSONResponse({"status": "error", "error": str(e)}, status_code=500)
+
+
+@router.post("/api/user-portrait/materials")
+async def api_user_portrait_materials(request: Request):
+    """材料预览：只收集材料，不调用模型。"""
+    if not _enabled():
+        return {"error": "记忆系统未启用"}
+    data = await _read_json(request)
+    cid = data.get("character_id") or "default"
+    try:
+        start, end = _check_range(data.get("start"), data.get("end"))
+    except ValueError as e:
+        return {"status": "error", "error": str(e)}
+    try:
+        m = await build_materials(cid, start, end, bool(data.get("include_old")))
+        return {"status": "ok", "range_start": m["range_start"], "range_end": m["range_end"], "stats": m["stats"],
+                "material_chars": len(m["material_text"]), "prompt_max_chars": PROMPT_MAX_CHARS,
+                "material_text": m["material_text"]}
+    except Exception as e:
+        return {"status": "error", "error": f"{type(e).__name__}: {e}"}
 
 
 @router.post("/api/user-portrait/generate-preview")
 async def api_user_portrait_generate_preview(request: Request):
     if not _enabled():
         return {"error": "记忆系统未启用"}
+    data = await _read_json(request)
+    cid = data.get("character_id") or "default"
+    mode = "update" if data.get("mode") == "update" else "initial"
     try:
-        data = await request.json()
-    except Exception:
-        data = {}
-    cid = (data or {}).get("character_id") or "default"
-    mode = "update" if (data or {}).get("mode") == "update" else "initial"
+        start, end = _check_range(data.get("start"), data.get("end"))
+    except ValueError as e:
+        return {"status": "error", "error": str(e)}
     lk = _lock(cid)
     if lk.locked():
         return JSONResponse({"status": "error", "error": "特点画像正在生成中，请等当前任务完成"}, status_code=429)
@@ -579,24 +839,32 @@ async def api_user_portrait_generate_preview(request: Request):
             traits = (current or {}).get("traits") or []
             if mode == "update" and not traits:
                 return {"status": "error", "error": "还没有特点画像，请先「从零生成」"}
-            m = await _build_materials(cid, mode, pointer=(current or {}).get("last_consumed_node_id"))
+            m = await build_materials(cid, start, end, bool(data.get("include_old")))
+            if m["empty"]:
+                return {"status": "error", "error": "这段时间没有聊天记录，也没有日印象"}
             prompt = build_initial_prompt(m) if mode == "initial" else build_update_prompt(m, traits)
+            if len(prompt) > PROMPT_MAX_CHARS:
+                return {"status": "error", "error": f"材料太长（提示词 {len(prompt)} 字，上限 {PROMPT_MAX_CHARS}），请缩短日期范围"}
             raw = await _call_llm(prompt)
             parsed = parse_json_object(raw)
             if parsed is None:
                 return {"status": "error", "error": "模型返回的内容解析不出 JSON", "raw": str(raw)[:4000]}
-            ops, warnings = normalize_initial(parsed) if mode == "initial" else normalize_update(parsed, traits)
-            if mode == "initial" and not ops:
-                return {"status": "error", "error": "模型没有写出任何特点", "raw": str(raw)[:4000]}
-            pointer = m.get("max_node_id") or (current or {}).get("last_consumed_node_id")
+            clues = normalize_clues(parsed)
+            if mode == "initial":
+                ops, warnings = normalize_initial(parsed, clues)
+                if not ops:
+                    return {"status": "error", "error": "模型没有写出任何特点", "raw": str(raw)[:4000]}
+            else:
+                ops, warnings = normalize_update(parsed, traits, clues)
+            if not clues:
+                warnings.insert(0, "模型没有列出线索")
             return {
                 "status": "ok", "mode": mode, "character_id": cid,
                 "base_revision": int((current or {}).get("revision") or 0),
                 "current_traits": traits,
-                "ops": ops, "warnings": warnings,
-                "last_consumed_node_id": pointer,
-                "material_summary": {"memory_count": m["memory_count"], "recent_message_count": m["recent_count"],
-                                     "used_old_impression": bool(m.get("old_impression_text")), "prompt_chars": len(prompt)},
+                "clues": clues, "ops": ops, "warnings": warnings,
+                "range_start": m["range_start"], "range_end": m["range_end"],
+                "material_summary": {**m["stats"], "prompt_chars": len(prompt)},
             }
         except Exception as e:
             print(f"⚠️ 特点画像生成失败: {type(e).__name__}: {e}")
@@ -607,11 +875,7 @@ async def api_user_portrait_generate_preview(request: Request):
 async def api_user_portrait_confirm(request: Request):
     if not _enabled():
         return {"error": "记忆系统未启用"}
-    try:
-        data = await request.json()
-    except Exception:
-        data = {}
-    data = data or {}
+    data = await _read_json(request)
     cid = data.get("character_id") or "default"
     mode = "update" if data.get("mode") == "update" else "initial"
     ops = [o for o in (data.get("ops") or []) if isinstance(o, dict)]
@@ -630,7 +894,7 @@ async def api_user_portrait_confirm(request: Request):
                     if not ops:
                         return JSONResponse({"status": "error", "error": "至少要保留一条特点"}, status_code=400)
                 new_traits, skipped = apply_ops(base, ops)
-                revision = await _save(conn, cid, new_traits, mode, data.get("last_consumed_node_id"), keep_pointer=False)
+                revision = await _save(conn, cid, new_traits, mode, data.get("range_start"), data.get("range_end"), keep_range=False)
         return {"status": "ok", "revision": revision, "traits": new_traits, "skipped": skipped}
     except Exception as e:
         return JSONResponse({"status": "error", "error": str(e)}, status_code=500)
@@ -638,14 +902,10 @@ async def api_user_portrait_confirm(request: Request):
 
 @router.put("/api/user-portrait")
 async def api_user_portrait_save(request: Request):
-    """手动编辑：整份替换条目，不改消费指针。"""
+    """手动编辑：整份替换条目，不改上次用到的日期范围。"""
     if not _enabled():
         return {"error": "记忆系统未启用"}
-    try:
-        data = await request.json()
-    except Exception:
-        data = {}
-    data = data or {}
+    data = await _read_json(request)
     cid = data.get("character_id") or "default"
     try:
         incoming = data.get("traits") if isinstance(data.get("traits"), list) else []
@@ -672,7 +932,7 @@ async def api_user_portrait_save(request: Request):
                         traits.append({**prev, "title": title, "content": content, "updated_at": now if changed else prev.get("updated_at")})
                     else:
                         traits.append({"id": _new_trait_id(), "title": title, "content": content, "created_at": now, "updated_at": now})
-                revision = await _save(conn, cid, traits, "manual", None, keep_pointer=True)
+                revision = await _save(conn, cid, traits, "manual", keep_range=True)
         return {"status": "ok", "revision": revision, "traits": traits}
     except Exception as e:
         return JSONResponse({"status": "error", "error": str(e)}, status_code=500)

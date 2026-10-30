@@ -4026,11 +4026,11 @@ async def _extract_memory_palace_from_partition_messages_locked(messages: list, 
         messages_text = _format_messages_for_memory_palace(rows)
         raw_items, unpin_ids, related_refs, corrections, model_skipped = await call_memory_palace_extractor(messages_text, character_id=character_id, source_messages=rows, return_skip=True)
         if model_skipped:
-            # 模型输出 <skip>：本轮判定完成，标记消息并推进游标，下次不再重复送这批消息
+            # 模型返回空数组 []：本轮判定完成，标记消息并推进游标，下次不再重复送这批消息
             max_message_id = max(message_ids)
             marked_count = await mark_memory_palace_messages_extracted(message_ids, session_id, character_id=character_id, source="partition_auto")
             await save_memory_palace_extraction_cursor(session_id, max_message_id, character_id=character_id, last_source="partition_auto")
-            log_memory_palace_auto_extract("success", f"🧠 分区自动提取完成：模型输出 <skip>，本轮无需提取 session={session_id}, 消息{len(rows)}条, 标记{marked_count}条, cursor->{max_message_id}", session_id=session_id)
+            log_memory_palace_auto_extract("success", f"🧠 分区自动提取完成：模型返回空数组 []，本轮无需提取 session={session_id}, 消息{len(rows)}条, 标记{marked_count}条, cursor->{max_message_id}", session_id=session_id)
             return {"status": "ok", "skipped_by_model": True, "processed_messages": len(rows), "extracted": 0, "created": 0, "embedded": 0, "unpinned": 0, "marked": marked_count, "cursor": max_message_id}
         normalized = [_normalize_memory_palace_item(x) for x in raw_items]
         normalized = [x for x in normalized if x]
@@ -10022,18 +10022,22 @@ async def maybe_compress_memory_palace_event_boxes(box_ids=None, character_id: s
                     print(f"⚠️ 事件盒压缩解锁失败 {box_id}: {e}")
     return compressed
 
-_MEMORY_PALACE_SKIP_RE = re.compile(r"<\s*skip\s*/?\s*>", re.IGNORECASE)
+_MEMORY_PALACE_EMPTY_ARRAY_RE = re.compile(r"^\s*\[\s*\]\s*$")
 
 
 def _memory_palace_output_is_skip(text, raw_items) -> bool:
-    """模型输出 <skip> 且没有解析出任何条目时，判定本轮无需提取。
+    """模型明确输出空数组 [] 时，判定本轮无需提取。
 
-    同时输出了条目和 <skip> 时以条目为准，避免丢记忆。思考块里的 <skip> 不算。
+    只认整段输出就是 []（允许外面包思考块或 ```json 代码块）。
+    空回复、JSON 解析失败、输出被截断也会得到空 raw_items，但这些不算完成，
+    游标保持不动，下次重试，避免把故障当成“没有可记的”。
     """
     if raw_items:
         return False
-    cleaned = re.sub(r"<think>.*?</think>", "", str(text or ""), flags=re.DOTALL | re.IGNORECASE)
-    return bool(_MEMORY_PALACE_SKIP_RE.search(cleaned))
+    cleaned = re.sub(r"<think>.*?</think>", "", str(text or ""), flags=re.DOTALL | re.IGNORECASE).strip()
+    cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\s*```$", "", cleaned).strip()
+    return bool(_MEMORY_PALACE_EMPTY_ARRAY_RE.match(cleaned))
 
 
 async def call_memory_palace_extractor(messages_text: str, character_id: str = "default", source_messages: list = None, return_skip: bool = False) -> tuple:
@@ -10793,11 +10797,11 @@ async def preview_memory_palace_extraction_for_session(session_id: str, characte
     pinned_refs = await get_active_memory_palace_pin_refs(character_id)
     raw_items, unpin_ids, related_refs, corrections, model_skipped = await call_memory_palace_extractor(messages_text, character_id=character_id, source_messages=rows, return_skip=True)
     if model_skipped:
-        # 模型输出 <skip>：预览阶段直接判定本轮完成（没有可导入条目，否则游标永远推不动）
+        # 模型返回空数组 []：预览阶段直接判定本轮完成（没有可导入条目，否则游标永远推不动）
         max_message_id = max(source_message_ids)
         marked_count = await mark_memory_palace_messages_extracted(source_message_ids, session_id, character_id=character_id, source="manual_preview")
         await save_memory_palace_extraction_cursor(session_id, max_message_id, character_id=character_id, last_source="manual_preview")
-        return {"session_id": session_id, "status": "skipped", "message": f"模型输出 <skip>，判定本轮无需提取，已标记 {len(rows)} 条消息", "cursor": max_message_id, "message_count": len(rows), "marked": marked_count, "items": []}
+        return {"session_id": session_id, "status": "skipped", "message": f"模型返回空数组 []，判定本轮无需提取，已标记 {len(rows)} 条消息", "cursor": max_message_id, "message_count": len(rows), "marked": marked_count, "items": []}
     normalized = [_normalize_memory_palace_item(x) for x in raw_items]
     normalized = [x for x in normalized if x]
     related_ref_ids = [str(r.get("id")) for r in (related_refs or []) if r.get("id")]

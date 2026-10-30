@@ -2131,6 +2131,93 @@ def format_memory_palace_event_box_item(row: dict) -> str:
 _memory_palace_last_explain_corpus = {}
 
 
+def _memory_palace_skip_pins_sql(expr: str, with_room: bool, touch: bool) -> str:
+    """跳过词表命中时用的一条 SQL：摘掉已过期便利贴、取仍有效的便利贴、给它们记一次访问。
+
+    三段改的行互不重叠（过期的 pinned_until <= NOW()，有效的 > NOW()，同一语句里 NOW() 是同一个值），
+    pins 读的是语句开始时的快照，所以返回的 access_count 等字段是加一之前的值，和原来逐步执行时一致。
+    WITH 里的 UPDATE 不被主查询引用也会执行到底。
+    """
+    room_cond = " AND n.room = $2" if with_room else ""
+    touched = """,
+        touched AS (
+            UPDATE memory_palace_nodes t
+            SET access_count = t.access_count + 1, last_accessed_at = NOW(), updated_at = NOW()
+            FROM pins
+            WHERE t.id = pins.id
+            RETURNING t.id
+        )""" if touch else ""
+    return f"""
+        WITH cleared AS (
+            UPDATE memory_palace_nodes
+            SET pinned_until = NULL, updated_at = NOW()
+            WHERE character_id = $1 AND pinned_until IS NOT NULL AND pinned_until <= NOW()
+            RETURNING id
+        ),
+        pins AS (
+            SELECT n.id, n.content, n.room, n.tags, n.importance, n.mood, n.valence, n.arousal,
+                   n.date, n.created_at, n.last_accessed_at, n.access_count, n.pinned_until, n.event_box_id, n.archived, n.is_box_summary,
+                   {expr} AS has_pgvec
+            FROM memory_palace_nodes n
+            LEFT JOIN memory_palace_vectors v ON v.memory_id = n.id
+            WHERE n.character_id = $1 AND n.archived = FALSE
+              AND n.pinned_until IS NOT NULL AND n.pinned_until > NOW(){room_cond}
+        ){touched}
+        SELECT * FROM pins ORDER BY pinned_until, id
+    """
+
+
+async def _memory_palace_fetch_skip_pins_legacy(room: str = None, character_id: str = "default", touch_access: bool = True) -> list:
+    """原来的分步实现，合并 SQL 出错时兜底。"""
+    await clear_expired_memory_palace_pins(character_id)
+    rows = await _memory_palace_fetch_rows(room=room, character_id=character_id)
+    now = datetime.now(timezone.utc)
+    pinned = []
+    for row in rows:
+        pu = _memory_palace_aware_dt(row["pinned_until"])
+        if pu and pu > now:
+            item = dict(row)
+            item["score"] = 999.0
+            pinned.append(item)
+    pinned.sort(key=lambda x: x["pinned_until"] or now)
+    if touch_access and pinned:
+        try:
+            pool = await get_pool()
+            async with pool.acquire() as conn:
+                await conn.executemany(
+                    "UPDATE memory_palace_nodes SET access_count = access_count + 1, last_accessed_at = NOW(), updated_at = NOW() WHERE id = $1",
+                    [(item["id"],) for item in pinned]
+                )
+        except Exception as e:
+            print(f"⚠️ Memory Palace access stats update failed: {e}")
+    return pinned
+
+
+async def _memory_palace_fetch_skip_pins(room: str = None, character_id: str = "default", touch_access: bool = True) -> list:
+    room = room if room in _MEMORY_PALACE_ROOM_LABELS else None
+    has_pgvec_expr = "(v.embedding IS NOT NULL)" if memory_palace_vector_ready() else "FALSE"
+    args = (character_id, room) if room else (character_id,)
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            try:
+                rows = await conn.fetch(_memory_palace_skip_pins_sql(has_pgvec_expr, bool(room), touch_access), *args)
+            except Exception as e:
+                if has_pgvec_expr == "FALSE":
+                    raise
+                print(f"⚠️ 便利贴查询带 has_pgvec 失败，退回保守模式: {str(e)[:120]}")
+                rows = await conn.fetch(_memory_palace_skip_pins_sql("FALSE", bool(room), touch_access), *args)
+    except Exception as e:
+        print(f"⚠️ 便利贴合并查询失败，退回分步查询: {type(e).__name__}: {str(e)[:160]}")
+        return await _memory_palace_fetch_skip_pins_legacy(room=room, character_id=character_id, touch_access=touch_access)
+    pinned = []
+    for row in rows:
+        item = dict(row)
+        item["score"] = 999.0
+        pinned.append(item)
+    return pinned
+
+
 async def retrieve_memory_palace_rows_for_prompt(query: str = "", limit: int = 5, room: str = None, character_id: str = "default", recent_messages=None, touch_access: bool = True, explain: bool = False, skip_recall: bool = False):
     import time as _time
     _t0 = _time.perf_counter()
@@ -2142,25 +2229,10 @@ async def retrieve_memory_palace_rows_for_prompt(query: str = "", limit: int = 5
     limit = max(1, min(int(limit or 5), 30))
     if skip_recall:
         # 命中跳过词表：不向量化、不打分，只取仍在有效期内的便利贴。
-        await clear_expired_memory_palace_pins(character_id)
-        rows = await _memory_palace_fetch_rows(room=room, character_id=character_id)
-        now = datetime.now(timezone.utc)
-        pinned = []
-        for row in rows:
-            pu = _memory_palace_aware_dt(row["pinned_until"])
-            if pu and pu > now:
-                item = dict(row)
-                item["score"] = 999.0
-                pinned.append(item)
-        pinned.sort(key=lambda x: x["pinned_until"] or now)
+        # 清过期 + 取便利贴 + 记访问合成一条 SQL，只传回便利贴本身。
+        pinned = await _memory_palace_fetch_skip_pins(room=room, character_id=character_id, touch_access=touch_access)
         if touch_access and pinned:
             try:
-                pool = await get_pool()
-                async with pool.acquire() as conn:
-                    await conn.executemany(
-                        "UPDATE memory_palace_nodes SET access_count = access_count + 1, last_accessed_at = NOW(), updated_at = NOW() WHERE id = $1",
-                        [(item["id"],) for item in pinned]
-                    )
                 await _memory_palace_strengthen_coactivated([item["id"] for item in pinned], character_id=character_id)
             except Exception as e:
                 print(f"⚠️ Memory Palace access stats update failed: {e}")
@@ -3052,7 +3124,22 @@ def _message_content_text(msg: dict) -> str:
     return str(content or "")
 
 
+# 关键词规则解析结果缓存：配置原文不变就直接复用，不用每轮重新 json.loads + 清洗。
+# 原文本身已走设置缓存（get_gateway_config），保存设置后原文变了，这里自然失效。
+_KEYWORD_RULES_PARSED = {"raw": None, "rules": []}
+
+
 def _normalize_keyword_context_rules(raw: str) -> list:
+    raw = raw or "[]"
+    if _KEYWORD_RULES_PARSED["raw"] == raw:
+        return _KEYWORD_RULES_PARSED["rules"]
+    rules = _parse_keyword_context_rules(raw)
+    _KEYWORD_RULES_PARSED["raw"] = raw
+    _KEYWORD_RULES_PARSED["rules"] = rules
+    return rules
+
+
+def _parse_keyword_context_rules(raw: str) -> list:
     try:
         data = json.loads(raw or "[]")
     except Exception as e:

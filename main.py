@@ -10207,11 +10207,14 @@ async def call_memory_palace_extractor(messages_text: str, character_id: str = "
         headers["X-Title"] = EXTRA_TITLE
     body = {
         "model": memory_model,
-        # 规则放 system，待提取的对话放 user。原来两者挤在同一条 user message 里，
-        # 规则体积是对话内容的四倍多，模型分不清哪段是指令哪段是素材。
+        # 规则、对话各占一条 system，分开放让模型分得清哪段是指令、哪段是素材。
         "messages": [
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": f"对话内容：\n{messages_text}"},
+            # 待提取的对话也放 system：部分中转站的内容审核主要查 user 消息。
+            {"role": "system", "content": f"对话内容：\n{messages_text}"},
+            # 末尾留一条很短的 user：Gemini、Claude 等的兼容接口要求至少一条 user，
+            # 全是 system 会直接 400。这句只是触发输出，不含对话内容。
+            {"role": "user", "content": "请按以上规则，只输出 JSON 数组。"},
         ],
         # 提取要判断什么值得记、怎么组织叙事，0.2 会让输出趋于模板化。
         "temperature": 0.4,

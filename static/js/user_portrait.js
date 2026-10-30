@@ -54,11 +54,71 @@
         try {
             const data = await api('/api/user-portrait?character_id=default');
             current = data.status === 'ok' ? data : null;
+            fillDefaultRange(data);
         } catch (e) {
             current = null;
             msg('特点画像加载失败：' + e.message, 'error');
         }
         render();
+    }
+
+    // ---------- 日期范围 ----------
+    function addDays(iso, n) {
+        const d = new Date(iso + 'T00:00:00Z');
+        d.setUTCDate(d.getUTCDate() + n);
+        return d.toISOString().slice(0, 10);
+    }
+
+    // 只在输入框还空着时填默认值：开始 = 上次范围的次日（没有就是 30 天前），结束 = 今天
+    function fillDefaultRange(data) {
+        const s = $('upStart'), e = $('upEnd');
+        if (!s || !e) return;
+        const today = (data && data.today) || new Date().toISOString().slice(0, 10);
+        if (!e.value) e.value = today;
+        if (!s.value) {
+            const last = data && data.last_range_end;
+            if (last) {
+                const next = addDays(last, 1);
+                s.value = next <= today ? next : today;
+            } else {
+                s.value = addDays(today, -29);
+            }
+        }
+        const hint = $('upRangeHint');
+        if (hint) hint.textContent = (data && data.last_range_start) ? ('上次用的范围：' + data.last_range_start + ' ~ ' + data.last_range_end) : '';
+    }
+
+    function rangeParams() {
+        const s = ($('upStart') || {}).value || '';
+        const e = ($('upEnd') || {}).value || '';
+        if (!s || !e) throw new Error('请选择开始和结束日期');
+        if (s > e) throw new Error('开始日期不能晚于结束日期');
+        const old = $('upIncludeOld');
+        return {start: s, end: e, include_old: !!(old && old.checked)};
+    }
+
+    async function showMaterials() {
+        if (busy) return;
+        let range;
+        try { range = rangeParams(); } catch (e) { msg(e.message, 'error'); return; }
+        busy = true;
+        const pv = $('upPreview');
+        pv.style.display = 'block';
+        pv.innerHTML = '<div style="color:var(--text-muted);">正在收集材料...</div>';
+        try {
+            const d = await api('/api/user-portrait/materials', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(Object.assign({character_id: 'default'}, range))});
+            const st = d.stats || {};
+            const over = d.material_chars > d.prompt_max_chars;
+            pv.innerHTML = '<div style="font-weight:800;">材料预览 <span style="font-weight:400;font-size:12px;color:var(--text-muted);">' + esc(d.range_start) + ' ~ ' + esc(d.range_end) + '</span></div>' +
+                '<div style="font-size:12px;color:' + (over ? '#dc2626' : 'var(--text-muted)') + ';margin:2px 0 8px;">日印象 ' + (st.daily_count || 0) + ' 篇 · 有聊天 ' + (st.chat_days || 0) + ' 天 · 用户消息 ' + (st.user_messages || 0) + ' 条 · 角色回复 ' + (st.assistant_messages || 0) + ' 条' +
+                (st.used_old_impression ? ' · 附了旧画像' : '') + ' · 共 ' + (d.material_chars || 0) + ' 字' + (over ? '（超过上限 ' + d.prompt_max_chars + '，请缩短范围）' : '') + '</div>' +
+                '<pre style="white-space:pre-wrap;font-size:12px;line-height:1.6;max-height:420px;overflow:auto;background:#fff;border:1px solid var(--border-color);border-radius:8px;padding:10px;">' + esc(d.material_text) + '</pre>' +
+                '<div style="text-align:right;margin-top:8px;"><button class="btn btn-sm" onclick="upClosePreview()">关闭</button></div>';
+        } catch (e) {
+            pv.innerHTML = '<div class="msg-box msg-error">收集材料失败：' + esc(e.message) + '</div><div style="text-align:right;margin-top:8px;"><button class="btn btn-sm" onclick="upClosePreview()">关闭</button></div>';
+        } finally {
+            busy = false;
+        }
     }
 
     // ---------- 生成预览 ----------
@@ -67,15 +127,17 @@
 
     async function generate(mode) {
         if (busy) return;
+        let range;
+        try { range = rangeParams(); } catch (e) { msg(e.message, 'error'); return; }
         if (mode === 'initial' && current && (current.traits || []).length &&
             !confirm('从零生成会在预览确认后替换现有的 ' + current.traits.length + ' 条特点。继续吗？')) return;
         busy = true;
         preview = null;
         const pv = $('upPreview');
         pv.style.display = 'block';
-        pv.innerHTML = '<div style="color:var(--text-muted);">正在' + (mode === 'update' ? '更新' : '生成') + '特点画像，可能要等一两分钟...</div>';
+        pv.innerHTML = '<div style="color:var(--text-muted);">正在' + (mode === 'update' ? '更新' : '生成') + '特点画像（' + esc(range.start) + ' ~ ' + esc(range.end) + '），可能要等一两分钟...</div>';
         try {
-            preview = await api('/api/user-portrait/generate-preview', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({character_id: 'default', mode: mode})});
+            preview = await api('/api/user-portrait/generate-preview', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(Object.assign({character_id: 'default', mode: mode}, range))});
             renderPreview();
         } catch (e) {
             const raw = e.data && e.data.raw;
@@ -93,10 +155,24 @@
         const byId = {};
         (preview.current_traits || []).forEach(t => { byId[t.id] = t; });
         const ms = preview.material_summary || {};
-        let html = '<div style="font-weight:800;">' + (preview.mode === 'update' ? '更新预览' : '生成预览') + '</div>' +
-            '<div style="font-size:12px;color:var(--text-muted);margin:2px 0 8px;">记忆 ' + (ms.memory_count || 0) + ' 条 · 近期聊天 ' + (ms.recent_message_count || 0) + ' 条' +
-            (ms.used_old_impression ? ' · 参考了旧标签画像' : '') + ' · 提示词 ' + (ms.prompt_chars || 0) + ' 字</div>';
+        const clueText = {};
+        (preview.clues || []).forEach(c => { clueText[c.id] = c.text; });
+        let html = '<div style="font-weight:800;">' + (preview.mode === 'update' ? '更新预览' : '生成预览') +
+            ' <span style="font-weight:400;font-size:12px;color:var(--text-muted);">' + esc(preview.range_start || '') + ' ~ ' + esc(preview.range_end || '') + '</span></div>' +
+            '<div style="font-size:12px;color:var(--text-muted);margin:2px 0 8px;">日印象 ' + (ms.daily_count || 0) + ' 篇 · 用户消息 ' + (ms.user_messages || 0) + ' 条 · 角色回复 ' + (ms.assistant_messages || 0) + ' 条' +
+            (ms.used_old_impression ? ' · 附了旧画像' : '') + ' · 提示词 ' + (ms.prompt_chars || 0) + ' 字</div>';
         (preview.warnings || []).forEach(w => { html += '<div style="font-size:12px;color:#b45309;">⚠ ' + esc(w) + '</div>'; });
+        if ((preview.clues || []).length) {
+            html += '<details style="margin:8px 0;"><summary style="cursor:pointer;font-size:13px;font-weight:700;">模型找到的线索（' + preview.clues.length + ' 条，不保存）</summary>' +
+                '<div style="font-size:12px;line-height:1.7;padding:6px 10px;background:#fff;border:1px solid var(--border-color);border-radius:8px;margin-top:4px;">' +
+                preview.clues.map(c => '<div><b>' + esc(c.id) + '</b> ' + esc(c.text) + '</div>').join('') + '</div></details>';
+        }
+        const clueLine = o => {
+            const refs = o.clues || [];
+            if (!refs.length) return '<div style="font-size:12px;color:#b45309;margin-top:4px;">没有引用线索</div>';
+            return '<div style="font-size:12px;color:var(--text-muted);margin-top:4px;line-height:1.6;">依据：' +
+                refs.map(id => '<b>' + esc(id) + '</b> ' + esc(clueText[id] || '')).join('；') + '</div>';
+        };
         const ops = preview.ops || [];
         if (!ops.length) {
             html += '<div style="margin:10px 0;color:var(--text-muted);">模型认为没有需要改的地方。</div>' +
@@ -119,6 +195,7 @@
                     body += '<div style="font-size:12px;color:var(--text-muted);">合并：' + (o.ids || []).map(id => '「' + esc((byId[id] || {}).title || id) + '」').join(' + ') + '</div>';
                 }
                 body += traitHtml(o, 'border-color:' + color + ';');
+                body += clueLine(o);
             }
             html += '<label style="display:block;margin:10px 0;padding:10px;border:1px dashed ' + color + ';border-radius:10px;cursor:pointer;">' +
                 '<div style="display:flex;gap:8px;align-items:center;"><input type="checkbox" class="up-op-check" data-index="' + i + '" checked>' +
@@ -147,8 +224,13 @@
         try {
             await api('/api/user-portrait/confirm', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({
                 character_id: 'default', mode: preview.mode, ops: ops,
-                base_revision: preview.base_revision || 0, last_consumed_node_id: preview.last_consumed_node_id || null
+                base_revision: preview.base_revision || 0,
+                range_start: preview.range_start || null, range_end: preview.range_end || null
             })});
+            // 下次默认从这次范围的次日开始
+            const s = $('upStart'), e = $('upEnd');
+            if (s && preview.range_end) s.value = '';
+            if (e) e.value = '';
             closePreview();
             await load();
             msg('特点画像已保存');
@@ -245,6 +327,7 @@
     }
 
     window.upGenerate = generate;
+    window.upShowMaterials = showMaterials;
     window.upConfirmPreview = confirmPreview;
     window.upClosePreview = closePreview;
     window.upOpenEditor = openEditor;

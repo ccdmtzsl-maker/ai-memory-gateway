@@ -495,7 +495,7 @@ async function loadConversationList(page = 1) {
     setConvPlainMessage(container, '加载中...');
     
     try {
-        const resp = await fetch('/api/conversations?page=' + page + '&per_page=20');
+        const resp = await fetch('/api/conversations?page=' + page + '&per_page=10');
         const data = await resp.json();
         if (data.error) {
             setConvPlainMessage(container, '加载失败: ' + data.error, {style:'color:var(--error);padding:20px 0;'});
@@ -733,6 +733,7 @@ async function openConvDetail(sessionId) {
     
     convDetailSessionId = sessionId;
     convDetailLoadedCount = 0;
+    clearConvMsgSelection();
     panel.style.display = 'block';
     titleEl.textContent = '加载中...';
     setConvPlainMessage(messagesEl, '加载中...');
@@ -908,12 +909,20 @@ function createConvMessageElement(msg) {
         editBtn.addEventListener('click', () => toggleEditMessage(msgId));
         tools.appendChild(editBtn);
 
-        const delBtn = document.createElement('button');
-        delBtn.className = 'btn btn-sm';
-        delBtn.style.cssText = 'font-size:11px;padding:2px 8px;color:var(--error);';
-        delBtn.textContent = '删除';
-        delBtn.addEventListener('click', () => deleteSingleMessage(msgId));
-        tools.appendChild(delBtn);
+        const check = document.createElement('input');
+        check.type = 'checkbox';
+        check.className = 'conv-msg-check';
+        check.title = '选择这条消息';
+        check.setAttribute('aria-label', '选择这条消息');
+        check.checked = _convSelectedMsgIds.has(String(msgId));
+        if (check.checked) wrap.classList.add('conv-msg-selected');
+        check.addEventListener('change', () => {
+            const key = String(msgId);
+            if (check.checked) _convSelectedMsgIds.add(key); else _convSelectedMsgIds.delete(key);
+            wrap.classList.toggle('conv-msg-selected', check.checked);
+            updateConvMsgSelectionUi();
+        });
+        tools.appendChild(check);
     }
     header.appendChild(tools);
     wrap.appendChild(header);
@@ -960,6 +969,7 @@ function setConvDetailEditScrollLock(locked) {
 
 function closeConvDetail() {
     setConvDetailEditScrollLock(false);
+    clearConvMsgSelection();
     document.getElementById('conv-detail-panel').style.display = 'none';
 }
 
@@ -1047,6 +1057,69 @@ async function saveMessageEdit(msgId) {
         toggleEditMessage(msgId);
     } catch(e) {
         alert('请求失败: ' + e.message);
+    }
+}
+
+// ---------- 对话详情：消息多选删除 ----------
+const _convSelectedMsgIds = new Set();
+
+function updateConvMsgSelectionUi() {
+    const btn = document.getElementById('conv-detail-delete-selected');
+    if (!btn) return;
+    const n = _convSelectedMsgIds.size;
+    btn.style.display = n ? '' : 'none';
+    btn.textContent = n > 1 ? `删除（${n}）` : '删除';
+}
+
+function clearConvMsgSelection() {
+    _convSelectedMsgIds.clear();
+    document.querySelectorAll('#conv-detail-messages .conv-msg-check:checked').forEach(cb => { cb.checked = false; });
+    document.querySelectorAll('#conv-detail-messages .conv-msg-selected').forEach(el => el.classList.remove('conv-msg-selected'));
+    updateConvMsgSelectionUi();
+}
+
+async function deleteSelectedConvMessages() {
+    const ids = Array.from(_convSelectedMsgIds);
+    if (!ids.length) return;
+    if (!confirm(`确定删除选中的 ${ids.length} 条消息？此操作不可撤销。`)) return;
+    const btn = document.getElementById('conv-detail-delete-selected');
+    if (btn) btn.disabled = true;
+    try {
+        const resp = await fetch('/api/messages/batch-delete', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ message_ids: ids.map(Number) }),
+        });
+        let data = null;
+        try { data = await resp.json(); } catch (e) { data = null; }
+        if (!resp.ok || !data || data.error) {
+            alert('删除失败: ' + ((data && data.error) || ('HTTP ' + resp.status)));
+            return;
+        }
+        const deleted = (data.deleted_ids || []).map(String);
+        deleted.forEach(id => {
+            const el = document.getElementById('msg-' + id);
+            if (el) el.remove();
+            _convSelectedMsgIds.delete(id);
+        });
+        // 已经不存在的（被别处删掉了）也从选择里去掉
+        ids.forEach(id => { if (!document.getElementById('msg-' + id)) _convSelectedMsgIds.delete(id); });
+        // 已加载计数同步减掉，否则“加载更多”的 offset 会跳过消息
+        convDetailLoadedCount = Math.max(0, convDetailLoadedCount - deleted.length);
+        setConvDetailEditScrollLock(false);
+        const titleEl = document.getElementById('conv-detail-title');
+        if (titleEl) {
+            const m = titleEl.textContent.match(/(\d+)\s*\/\s*(\d+)/);
+            if (m) {
+                const total = Math.max(0, parseInt(m[2]) - deleted.length);
+                titleEl.textContent = `对话详情（${convDetailLoadedCount} / ${total} 条消息）`;
+            }
+        }
+        updateConvMsgSelectionUi();
+    } catch (e) {
+        alert('请求失败: ' + e.message);
+    } finally {
+        if (btn) btn.disabled = false;
     }
 }
 

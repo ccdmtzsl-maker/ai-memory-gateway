@@ -1951,6 +1951,7 @@ const _SETTINGS_FIELDS = {
 const _SETTINGS_SUBPANELS = {
     'set-RESPONSE_TRANSFORM_ENABLED': 'sub-RESPONSE_TRANSFORM',
     'set-STATUS_TRIM_ENABLED': 'sub-STATUS_TRIM',
+    'set-KEYWORD_CONTEXT_ENABLED': 'sub-KEYWORD_CONTEXT',
 };
 function _syncSettingsSubpanels() {
     Object.keys(_SETTINGS_SUBPANELS).forEach(id => {

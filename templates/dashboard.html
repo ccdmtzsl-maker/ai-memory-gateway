@@ -812,6 +812,15 @@
                         <textarea id="set-RESPONSE_TRANSFORM_RULES" class="textarea" rows="6" placeholder="\\[语音::(.+?)\\] => &lt;hcard type='voice'&gt;$1&lt;/hcard&gt;"></textarea>
                         <small class="form-hint">仅非流式响应生效；一行一条，格式：正则 =&gt; 替换。替换里可用 $1、$2 等捕获组。</small>
                     </div>
+                    <div class="settings-field settings-toggle-row">
+                        <label>清理旧状态栏（仅分区模式），保留最近 <input type="number" id="set-STATUS_TRIM_KEEP" class="input" min="0" max="50" value="3" style="width:64px;display:inline-block;padding:4px 6px;"> 条</label>
+                        <label class="toggle"><input type="checkbox" id="set-STATUS_TRIM_ENABLED"><span class="toggle-slider"></span></label>
+                    </div>
+                    <details class="settings-field">
+                        <summary style="cursor:pointer;font-size:12px;color:var(--text-muted);">状态栏匹配规则（一行一条正则，留空用默认）</summary>
+                        <textarea id="set-STATUS_TRIM_PATTERNS" class="textarea" rows="3" placeholder="&lt;think&gt;.*?&lt;/think&gt;&#10;\[状态::[^\]]*\]" style="margin-top:6px;"></textarea>
+                        <small class="form-hint">只改发给模型的历史，数据库原文不动。按含状态栏的 AI 回复计数，更早回复里匹配到的内容会被删掉。</small>
+                    </details>
                     <div class="settings-field">
                         <label>图片归档到 R2 (IMAGE_ARCHIVE_ENABLED)</label>
                         <div id="imgArchiveStatus" style="font-size:13px;line-height:1.7;">读取中...</div>

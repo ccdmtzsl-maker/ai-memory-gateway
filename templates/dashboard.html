@@ -491,6 +491,24 @@
                     <div class="hint" style="margin-top:10px;">initial 会从零生成；update 会带入旧画像并读取更多近期聊天。两者都会先生成预览，不会自动覆盖。</div>
                 </div>
 
+                <div id="upCard" class="card" style="padding:18px;margin-bottom:14px;">
+                    <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;">
+                        <div>
+                            <div style="font-weight:800;">特点画像 <span style="font-size:11px;padding:1px 8px;border-radius:999px;background:#fef3c7;color:#92400e;vertical-align:middle;">测试中</span></div>
+                            <div style="font-size:12px;color:var(--text-muted);margin-top:2px;">每条讲一个稳定的特点，用真实经历撑起来。提示词变量 <code>{{user_portrait}}</code>，和下面的旧画像互不影响。</div>
+                        </div>
+                        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+                            <button class="btn" style="background:#fff;border-style:dashed;border-width:2px;border-radius:18px;padding:8px 16px;font-weight:900;box-shadow:0 6px 0 rgba(15,23,42,.08), inset 0 0 0 3px rgba(255,255,255,.92);border-color:#e8a7bb;color:#b4466a;" onclick="upGenerate('initial')">从零生成</button>
+                            <button id="upUpdateBtn" class="btn" style="background:#fff;border-style:dashed;border-width:2px;border-radius:18px;padding:8px 16px;font-weight:900;box-shadow:0 6px 0 rgba(15,23,42,.08), inset 0 0 0 3px rgba(255,255,255,.92);border-color:#1e3a8a;color:#1e3a8a;" onclick="upGenerate('update')" disabled>更新</button>
+                            <button id="upEditBtn" class="btn" style="background:#fff;border-style:dashed;border-width:2px;border-radius:18px;padding:8px 16px;font-weight:900;box-shadow:0 6px 0 rgba(15,23,42,.08), inset 0 0 0 3px rgba(255,255,255,.92);border-color:#475569;color:#475569;" onclick="upOpenEditor()" disabled>编辑</button>
+                            <button id="upDeleteBtn" class="btn" style="background:#fff;border-style:dashed;border-width:2px;border-radius:18px;padding:8px 16px;font-weight:900;box-shadow:0 6px 0 rgba(15,23,42,.08), inset 0 0 0 3px rgba(255,255,255,.92);border-color:#991b1b;color:#991b1b;" onclick="upDelete()" disabled>删除</button>
+                        </div>
+                    </div>
+                    <div id="upMsg" style="margin-top:10px;"></div>
+                    <div id="upPreview" style="display:none;margin-top:12px;padding:12px;border:1px solid var(--border-color);border-radius:12px;background:#fafafa;"></div>
+                    <div id="upCurrent" style="margin-top:12px;">加载中...</div>
+                </div>
+
                 <div id="userActivityMetaCard" class="card" style="padding:18px;margin-bottom:14px;">活跃元数据未统计。</div>
 
                 <div id="uiEditorCard" style="display:none;"></div>
@@ -1044,5 +1062,6 @@
 
     </script>
     <script src="/static/js/memory_palace.js?v=5.9"></script>
+    <script src="/static/js/user_portrait.js?v=1.0"></script>
 </body>
 </html>

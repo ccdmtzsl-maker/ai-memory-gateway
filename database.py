@@ -1146,8 +1146,6 @@ async def compute_embedding(text: str) -> list:
         text = str(text or "").strip()
         if not text:
             return []
-        if len(text) > 4000:
-            text = text[:4000]
 
         base_body = {
             "model": EMBEDDING_MODEL,

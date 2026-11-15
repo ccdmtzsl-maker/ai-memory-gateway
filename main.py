@@ -1176,7 +1176,7 @@ def _memory_palace_split_last_turn_queries(messages):
     seen = set()
     spikes = []
     for idx, msg in enumerate(user_intent):
-        stripped = url_re.sub(" ", _memory_palace_message_text(msg)).strip()[:2000]
+        stripped = url_re.sub(" ", _memory_palace_message_text(msg)).strip()
         meaningful = punct_ws_re.sub("", stripped)
         if len(meaningful) < min_len or stripped in seen:
             continue
@@ -1195,8 +1195,8 @@ def _memory_palace_split_last_turn_queries(messages):
             if sub_idx >= max_sub_spikes_per_msg:
                 break
     spikes = spikes[-max_spikes:]
-    context_query = "\n".join(_memory_palace_message_text(m) for m in context_turns).strip()[:2000]
-    fallback_query = "\n".join(_memory_palace_message_text(m) for m in (context_turns + user_intent)).strip()[:2000]
+    context_query = "\n".join(_memory_palace_message_text(m) for m in context_turns).strip()
+    fallback_query = "\n".join(_memory_palace_message_text(m) for m in (context_turns + user_intent)).strip()
     return spikes, context_query, fallback_query
 
 
@@ -1534,7 +1534,7 @@ async def _call_digest_llm(material: dict, character_id: str = "default") -> lis
         section_lines = [f'- ({n.get("room","")}, {n.get("mood","")}): {n.get("content","")}' for n in recent]
         sections.append("### 最近发生的事\n" + "\n".join(section_lines))
     material_text = "\n\n".join(sections)
-    persona_block = f"\n以下是你的核心人设：\n{character_prompt[:800]}\n" if character_prompt else ""
+    persona_block = f"\n以下是你的核心人设：\n{character_prompt}\n" if character_prompt else ""
     system_prompt = f"""你是{char_name}。{persona_block}
 你现在正在独处，安静地回想最近的事情。你需要对内心里那些"还没消化完"的东西做一次统一审视，同时梳理你对{user_name}的了解，以及审视你自己。
 
@@ -9693,7 +9693,7 @@ async def bind_memory_palace_event_boxes(event_links: list, event_hints: dict, c
                     or by_id[first_existing].get("content")
                     or by_id[new_id].get("content")
                     or "未命名事件"
-                )[:24]
+                )[:40]
                 tags = _merge_text_tags(
                     hint.get("eventTags") or [],
                     (predecessor or {}).get("tags"),
@@ -9924,8 +9924,6 @@ def _format_messages_for_memory_palace(rows) -> str:
         except Exception:
             ts_text = str(ts)[:16]
         content = str(r["content"] or "").strip()
-        if len(content) > 2000:
-            content = content[:2000] + "…"
         parts.append(f"[{ts_text}] {name}: {content}")
     return "\n".join(parts).strip()
 
@@ -10284,7 +10282,6 @@ async def maybe_compress_memory_palace_event_boxes(box_ids=None, character_id: s
 _EB_CHECKUP_MAX_BOXES = 6
 _EB_CHECKUP_MIN_MEMBERS = 2
 _EB_CHECKUP_MAX_COMPRESSION = 1
-_EB_CHECKUP_CONTENT_MAX_CHARS = 300
 
 
 def _eb_member_ids(box: dict) -> list:
@@ -10306,7 +10303,7 @@ def _eb_member_fingerprint(ids) -> str:
 def _eb_clean_name(value) -> str:
     text = re.sub(r"\s+", " ", str(value or "")).strip()
     text = text.strip("「」『』\"'“”‘’《》【】[]").strip()
-    return text[:24]
+    return text[:40]
 
 
 async def _eb_checkup_select_boxes(conn, character_id: str, limit: int = _EB_CHECKUP_MAX_BOXES) -> list:
@@ -10357,12 +10354,12 @@ def _eb_checkup_prompt(items: list, char_name: str) -> str:
     for key, box, labeled, summary in items:
         parts += ["", f"### 盒子 {key}「{box.get('name') or '未命名事件'}」"]
         if summary:
-            s = re.sub(r"\s+", " ", summary).strip()[:600]
+            s = re.sub(r"\s+", " ", summary).strip()
             parts.append(f"之前压缩出的总结（可能已经掺进了无关内容，只作参考）：{s}")
         for lab, n in labeled:
             date_text = str(n.get("date") or n.get("created_at") or "")[:10]
             room = _MEMORY_PALACE_ROOM_LABELS.get(n.get("room"), n.get("room") or "")
-            content = re.sub(r"\s+", " ", str(n.get("content") or "")).strip()[:_EB_CHECKUP_CONTENT_MAX_CHARS]
+            content = re.sub(r"\s+", " ", str(n.get("content") or "")).strip()
             parts.append(f"{lab} [{date_text}]（{room}）{content}")
     parts += [
         "",
@@ -11095,7 +11092,6 @@ async def compute_memory_palace_embeddings(texts: list) -> list:
         s = str(t or "").strip()
         if not s:
             continue
-        s = s[:4000]
         # 缓存命中的直接填进 out，不占批次名额。
         # 一轮检索的几段文字里常有上轮出现过的，能少发就少发。
         if _cfg0["ready"]:
@@ -11204,8 +11200,6 @@ async def compute_memory_palace_embedding(text: str) -> list:
     text = str(text or "").strip()
     if not text:
         return []
-    if len(text) > 4000:
-        text = text[:4000]
     cfg = _mp_embedding_config()
     if not cfg["ready"]:
         _mp_embedding_warn_once(
@@ -11738,8 +11732,6 @@ async def extract_memories_from_text_for_palace(text: str, character_id: str = "
     text = str(text or "").strip()
     if not text:
         return {"status": "error", "error": "文本为空"}
-    if len(text) > 20000:
-        text = text[:20000] + "\n…（已截断）"
     raw_items, unpin_ids, related_refs, corrections = await call_memory_palace_extractor(text, character_id=character_id)
     normalized = [_normalize_memory_palace_item(x) for x in raw_items]
     normalized = [x for x in normalized if x]
@@ -11815,8 +11807,6 @@ async def api_memory_palace_extract_text(request: Request):
             try:
                 if not text:
                     return {"status": "error", "error": "文本为空"}
-                if len(text) > 20000:
-                    text = text[:20000] + "\n…（已截断）"
                 raw_items, unpin_ids, related_refs, corrections = await call_memory_palace_extractor(text, character_id=character_id)
                 normalized = [_normalize_memory_palace_item(x) for x in raw_items]
                 normalized = [x for x in normalized if x]

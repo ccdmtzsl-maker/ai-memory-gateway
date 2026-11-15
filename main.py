@@ -10276,12 +10276,13 @@ async def maybe_compress_memory_palace_event_boxes(box_ids=None, character_id: s
     return compressed
 
 # ============================================================
-# 事件盒体检：检查未封盒、压缩 0~1 次的事件盒里有没有混进无关记忆
-# 流程：preview（整批盒子一次发给模型，可以跨盒挪动、跨盒组新盒）→ 前端逐条勾选 → confirm（执行 + 打健康标记）
+# 事件盒体检：检查未封盒、压缩 0~1 次的事件盒里有没有混进无关记忆，并顺带检查一批散落记忆
+# 流程：preview（整批盒子 + 散落记忆一次发给模型，可以跨盒挪动、跨盒组新盒）→ 前端逐条勾选 → confirm（执行 + 打健康标记）
 # ============================================================
 _EB_CHECKUP_MAX_BOXES = 6
 _EB_CHECKUP_MIN_MEMBERS = 2
 _EB_CHECKUP_MAX_COMPRESSION = 1
+_EB_CHECKUP_MIN_SINGLES = 10
 
 
 def _eb_member_ids(box: dict) -> list:
@@ -10345,11 +10346,94 @@ async def _eb_checkup_load_material(conn, box: dict, character_id: str):
     return [dict(r) for r in rows], (str(summary).strip() if summary else None)
 
 
-def _eb_checkup_prompt(items: list, char_name: str) -> str:
-    """items: [(盒子标签 X1, box, [(记忆标签 M1, node), ...], summary)]"""
+async def _eb_checkup_select_singles(conn, character_id: str, seed_ids: list = None, min_count: int = _EB_CHECKUP_MIN_SINGLES) -> list:
+    """挑一批不属于任何事件盒的单间记忆。
+
+    1. 缺失向量的单间全部带上（不限数量）。
+    2. 不足 min_count 条时，按扩散激活（memory_palace_links）补齐到 min_count 条。
+    """
+    unembedded = await conn.fetch("""
+        SELECT n.id, n.content, n.room, n.tags, n.importance, n.date, n.created_at, n.archived
+        FROM memory_palace_nodes n
+        LEFT JOIN memory_palace_vectors v ON v.memory_id = n.id
+        WHERE n.character_id = $1
+          AND n.event_box_id IS NULL
+          AND n.archived = FALSE
+          AND n.is_box_summary = FALSE
+          AND COALESCE(NULLIF(TRIM(n.content), ''), '') <> ''
+          AND (
+              n.embedded = FALSE
+              OR v.memory_id IS NULL
+              OR NULLIF(TRIM(COALESCE(v.embedding_json, '')), '') IS NULL
+              OR LOWER(TRIM(v.embedding_json)) IN ('[]', 'null')
+          )
+        ORDER BY COALESCE(n.date, n.created_at::date) ASC, n.created_at ASC, n.id ASC
+    """, character_id)
+    picked = [{**dict(r), "_no_vector": True} for r in unembedded]
+    need = max(0, int(min_count) - len(picked))
+    if need <= 0:
+        return picked
+    exclude_ids = [r["id"] for r in picked]
+    seeds = [str(x) for x in (seed_ids or []) if x]
+    links = []
+    if seeds:
+        links = await conn.fetch("""
+            SELECT source_id, target_id, link_type, strength
+            FROM memory_palace_links
+            WHERE character_id = $1 AND (source_id = ANY($2::text[]) OR target_id = ANY($2::text[]))
+        """, character_id, seeds)
+    if not links:
+        links = await conn.fetch("""
+            SELECT source_id, target_id, link_type, strength
+            FROM memory_palace_links
+            WHERE character_id = $1
+        """, character_id)
+    if not links:
+        return picked
+    seed_set = set(seeds)
+    exclude_set = set(exclude_ids) | seed_set
+    scores = {}
+    for lk in links:
+        src, tgt = lk["source_id"], lk["target_id"]
+        if seed_set:
+            cand = tgt if src in seed_set else (src if tgt in seed_set else None)
+            cands = [cand] if cand else []
+        else:
+            cands = [src, tgt]
+        w = _MEMORY_PALACE_PERSONALITY_WEIGHTS.get(lk["link_type"], 0.2)
+        sc = float(lk["strength"] or 0.0) * w * _MEMORY_PALACE_ACTIVATION_DECAY
+        for cid in cands:
+            if not cid or cid in exclude_set:
+                continue
+            if sc > scores.get(cid, 0.0):
+                scores[cid] = sc
+    if not scores:
+        return picked
+    cand_ids = [cid for cid, _ in sorted(scores.items(), key=lambda x: -x[1])]
+    rows = await conn.fetch("""
+        SELECT id, content, room, tags, importance, date, created_at, archived
+        FROM memory_palace_nodes
+        WHERE character_id = $1
+          AND id = ANY($2::text[])
+          AND event_box_id IS NULL
+          AND archived = FALSE
+          AND is_box_summary = FALSE
+          AND COALESCE(NULLIF(TRIM(content), ''), '') <> ''
+    """, character_id, cand_ids)
+    by_id = {r["id"]: dict(r) for r in rows}
+    for cid in cand_ids:
+        if cid in by_id:
+            picked.append(by_id[cid])
+            if len(picked) >= min_count:
+                break
+    return picked
+
+
+def _eb_checkup_prompt(items: list, loose: list, char_name: str) -> str:
+    """items: [(盒子标签 X1, box, [(记忆标签 M1, node), ...], summary)]；loose: [(M标签, node), ...]"""
     parts = [
         f"你在帮{char_name or '角色'}整理记忆宫殿。事件盒用来装「同一件事」的一组记忆，召回时整盒一起出现。"
-        "下面这批盒子里，可能有记忆被分错了盒，或者混进了跟主线无关的记忆。请一起检查。",
+        "下面这批盒子里，可能有记忆被分错了盒，或者混进了跟主线无关的记忆；另外还附了一批随机抽取的散落记忆（目前不属于任何事件盒）。请一起检查。",
     ]
     for key, box, labeled, summary in items:
         parts += ["", f"### 盒子 {key}「{box.get('name') or '未命名事件'}」"]
@@ -10361,23 +10445,34 @@ def _eb_checkup_prompt(items: list, char_name: str) -> str:
             room = _MEMORY_PALACE_ROOM_LABELS.get(n.get("room"), n.get("room") or "")
             content = re.sub(r"\s+", " ", str(n.get("content") or "")).strip()
             parts.append(f"{lab} [{date_text}]（{room}）{content}")
+    if loose:
+        parts += [
+            "",
+            "### 随机抽取的散落记忆（不属于任何事件盒，绝大多数和上面的盒子没有关系，只有确实是同一件事时才归入或组盒，无关的直接忽略不用输出）",
+        ]
+        for lab, n in loose:
+            date_text = str(n.get("date") or n.get("created_at") or "")[:10]
+            room = _MEMORY_PALACE_ROOM_LABELS.get(n.get("room"), n.get("room") or "")
+            content = re.sub(r"\s+", " ", str(n.get("content") or "")).strip()
+            parts.append(f"{lab} [{date_text}]（{room}）{content}")
     parts += [
         "",
         "## 怎么判断",
         "1. 先看每个盒子的主线：大多数记忆在讲的那一件事。",
-        "2. 每条记忆归到一处：留在原盒 / 挪进这批里另一个讲同一件事的盒子 / 和其他记忆组成新盒（可以来自不同盒子）/ 单独移出。",
-        "3. 只是时间相近、出现了同一个人、或情绪相似，不算同一件事。同一件事要有连续的情节或明确的因果。",
-        "4. 拿不准的留在原盒。挪盒、组新盒都要有明确的理由。新盒至少两条。",
-        "5. 给每个盒子（包括新盒）起名，盒名精简。原名合适就原样写原名。",
+        "2. 盒内每条记忆归到一处：留在原盒 / 挪进这批里另一个讲同一件事的盒子 / 和其他记忆组成新盒（可以来自不同盒子或散落记忆）/ 移出成单间（不再放进任何盒）。",
+        "3. 散落记忆是随机抽出来的，大多数本来就是独立记忆，千万不要为了凑数强扯关联；只有和某个盒子、或和其他记忆确实在讲同一件具体的事时，才放进对应盒子或组成新盒，其余直接忽略。",
+        "4. 只是时间相近、出现了同一个人、或情绪相似，不算同一件事。同一件事要有连续的情节或明确的因果。",
+        "5. 盒内记忆拿不准的留在原盒。挪盒、组新盒都要有明确的理由。新盒至少两条。",
+        "6. 给每个盒子（包括新盒）起名，盒名精简。原名合适就原样写原名。",
         "",
         "## 输出",
-        "严格 JSON 对象，不要 markdown。",
-        "- 每个盒子都要写进 boxes。不用动的盒子：members 原样写出它的全部标签。要动的盒子：写动完以后的标签（包括从别的盒子挪进来的）。",
+        "严格 JSON 对象，不要 markdown。只输出事件盒和事件盒里的记忆，单间不用输出：",
+        "- 每个原有盒子都要写进 boxes。不用动的盒子：members 原样写出它的全部标签。要动的盒子：写动完以后留在盒里的标签（包括从别的盒子或散落记忆挪进来的）；要从盒里移出成单间的标签，直接从 members 里删掉即可，不用另外列。",
         "- 组成的新盒写进 new_boxes，写盒名和组好的标签。",
-        "- 单独移出的标签写进 singles。",
-        "- 每个 M 标签必须出现、且只出现一次。",
+        "- 散落记忆如果没进任何盒子，直接不要写。",
+        "- 同一个 M 标签最多只能在一个盒子里出现一次。",
         '{"boxes":[{"box":"X1","name":"盒名","members":["M1","M2"]},{"box":"X2","name":"盒名","members":["M5","M3"]}],'
-        '"new_boxes":[{"name":"新盒名","members":["M4","M8"]}],"singles":["M6"],"reason":"简要说明每处调整的理由"}',
+        '"new_boxes":[{"name":"新盒名","members":["M4","M8"]}],"reason":"简要说明每处调整的理由"}',
     ]
     return "\n".join(parts)
 
@@ -10430,10 +10525,13 @@ def _eb_checkup_parse(raw: str):
 
 
 def _eb_checkup_normalize(plan: dict, labels: list, home: dict, box_keys: list) -> dict:
-    """把模型的方案整理成合法方案：每个 M 标签只归到一处。
+    """把模型的方案整理成合法方案：每个 M 标签最多归到一个盒子里。
 
-    优先级 boxes > new_boxes > singles（重复时按第一次出现的位置）；漏写的标签回到原盒；
-    只有一条的新盒按单独移出处理。
+    - 模型只输出 boxes 和 new_boxes，单间不用输出：
+      原属于某个盒子的标签如果没出现在任何盒子里 → 移出成单间；
+      散落记忆（home[lab] is None）如果没出现在任何盒子里 → 保持单间不动。
+    - 没写进 boxes 的盒子：按不动处理（原成员除已被挪走的之外留在原盒）。
+    - 只有 1 条的新盒：不建新盒（原盒成员变单间，散落记忆保持不动）。
     """
     warnings = []
     valid = set(labels)
@@ -10478,21 +10576,21 @@ def _eb_checkup_normalize(plan: dict, labels: list, home: dict, box_keys: list) 
         members = take(nb.get("members"), "new_boxes")
         if members:
             groups.append({"name": _eb_clean_name(nb.get("name")) or "未命名事件", "members": members})
-    singles = take(plan.get("singles"), "singles")
     new_boxes = []
     for g in groups:
         if len(g["members"]) >= 2:
             new_boxes.append(g)
         else:
-            singles.extend(g["members"])
+            for lab in g["members"]:
+                seen.discard(lab)
     unwritten = [k for k in box_keys if k not in written]
     if unwritten:
         warnings.append(f"模型没写盒子 {'、'.join(unwritten)}，没被挪走的记忆按留在原盒处理")
-    missing = [lab for lab in labels if lab not in seen]
-    if missing:
-        warnings.append(f"模型漏写了 {'、'.join(missing)}，按留在原盒处理")
-        for lab in missing:
-            keep[home[lab]].append(lab)
+        for lab in labels:
+            if home.get(lab) in unwritten and lab not in seen:
+                keep[home[lab]].append(lab)
+                seen.add(lab)
+    singles = [lab for lab in labels if home.get(lab) is not None and lab not in seen]
     order = {lab: i for i, lab in enumerate(labels)}
     for k in keep:
         keep[k].sort(key=lambda lab: order[lab])
@@ -10505,10 +10603,13 @@ async def preview_event_box_checkup(character_id: str = "default") -> dict:
     async with pool.acquire() as conn:
         boxes = await _eb_checkup_select_boxes(conn, character_id)
         materials = []
+        seed_ids = []
         for b in boxes:
             nodes, summary = await _eb_checkup_load_material(conn, b, character_id)
             if nodes:
                 materials.append((b, nodes, summary))
+                seed_ids.extend(n["id"] for n in nodes)
+        loose_nodes = await _eb_checkup_select_singles(conn, character_id, seed_ids) if materials else []
     if not materials:
         return {
             "status": "empty",
@@ -10531,6 +10632,14 @@ async def preview_event_box_checkup(character_id: str = "default") -> dict:
             lab_node[lab] = n
             labeled.append((lab, n))
         items.append((key, b, labeled, summary))
+    loose_labeled = []
+    for n in loose_nodes:
+        counter += 1
+        lab = f"M{counter}"
+        labels.append(lab)
+        home[lab] = None
+        lab_node[lab] = n
+        loose_labeled.append((lab, n))
 
     def box_base(key):
         b = box_by_key[key]
@@ -10540,7 +10649,7 @@ async def preview_event_box_checkup(character_id: str = "default") -> dict:
             "member_count": b["_count"], "has_summary": bool(b["_summary"]),
         }
 
-    prompt = _eb_checkup_prompt(items, await get_runtime_character_name())
+    prompt = _eb_checkup_prompt(items, loose_labeled, await get_runtime_character_name())
     try:
         raw = await _eb_checkup_call_llm(prompt)
     except Exception as e:
@@ -10555,17 +10664,21 @@ async def preview_event_box_checkup(character_id: str = "default") -> dict:
 
     def view(lab):
         n = lab_node[lab]
-        src = box_by_key[home[lab]]
+        h = home.get(lab)
+        src = box_by_key[h] if h else None
         return {
             "id": n["id"], "content": str(n.get("content") or ""), "archived": bool(n.get("archived")),
+            "no_vector": bool(n.get("_no_vector")),
             "date": str(n.get("date") or n.get("created_at") or "")[:10],
-            "from_box_id": src["id"], "from_box_name": src.get("name") or "未命名事件",
+            "from_box_id": src["id"] if src else "",
+            "from_box_name": (src.get("name") or "未命名事件") if src else "单间",
         }
 
     moves = []
 
     def add_move(lab, to_box=None, to_new=None, to_text=""):
-        moves.append({"node_id": lab_node[lab]["id"], "from_box": box_by_key[home[lab]]["id"],
+        h = home.get(lab)
+        moves.append({"node_id": lab_node[lab]["id"], "from_box": box_by_key[h]["id"] if h else "",
                       "to_box": to_box, "to_new": to_new, "_to_text": to_text, "_view": view(lab)})
         return len(moves) - 1
 
@@ -10606,6 +10719,7 @@ async def preview_event_box_checkup(character_id: str = "default") -> dict:
         "status": "ok",
         "reason": str(plan.get("reason") or "").strip()[:600],
         "warnings": norm["warnings"],
+        "single_candidates": len(loose_nodes),
         "boxes": out_boxes,
         "new_boxes": new_boxes,
         "singles": singles,
@@ -10617,7 +10731,7 @@ async def confirm_event_box_checkup(payload: dict, character_id: str = "default"
     """执行体检方案（整批一个事务），并给这批盒子打健康标记。
 
     payload = {boxes: [{box_id, rename?}], moves: [{node_id, from_box, to_box?, to_new?}], new_boxes: [{name}]}
-    moves 只含勾选的调整；没提交的记忆留在原盒。
+    moves 只含勾选的调整；没提交的记忆留在原处（from_box 为空表示原本是单间记忆）。
     盒子移出了已归档记忆、且有总结时：复活剩余归档、删除旧总结、压缩次数归零，
     事务提交后再重新压缩（成功后压缩次数回到 1）。失败时盒子停在「全部 live、没有总结」，
     可以手动「压缩此盒」。改名放在最后，免得被重新压缩时模型给的名字覆盖。
@@ -10634,7 +10748,7 @@ async def confirm_event_box_checkup(payload: dict, character_id: str = "default"
     box_ids = box_ids[:_EB_CHECKUP_MAX_BOXES * 2]
     result = {"status": "ok", "moved": 0, "ignored_moves": 0, "new_boxes": [], "dissolved": [],
               "rewritten": [], "rewrite_failed": [], "renamed": 0, "skipped": []}
-    if not box_ids:
+    if not box_ids and not moves_in:
         return result
     need_compress = []
     pool = await get_pool()
@@ -10647,7 +10761,7 @@ async def confirm_event_box_checkup(payload: dict, character_id: str = "default"
                 FROM memory_palace_event_boxes
                 WHERE character_id = $1 AND id = ANY($2::text[])
                 FOR UPDATE
-            """, character_id, box_ids)
+            """, character_id, box_ids) if box_ids else []
             boxes = {r["id"]: dict(r) for r in rows}
             valid = [bid for bid in box_ids if bid in boxes and not boxes[bid].get("sealed")]
             for bid in box_ids:
@@ -10660,11 +10774,32 @@ async def confirm_event_box_checkup(payload: dict, character_id: str = "default"
             member_of = {nid: bid for bid in valid for nid in cur[bid]}
             archived_of = {bid: {str(x) for x in (boxes[bid].get("archived_memory_ids") or []) if x} for bid in valid}
 
+            loose_ids = list(dict.fromkeys(
+                str(m.get("node_id") or "").strip() for m in moves_in
+                if not str(m.get("from_box") or "").strip() and str(m.get("node_id") or "").strip()
+            ))
+            valid_loose = set()
+            if loose_ids:
+                lrows = await conn.fetch("""
+                    SELECT id FROM memory_palace_nodes
+                    WHERE character_id = $1 AND id = ANY($2::text[])
+                      AND event_box_id IS NULL AND archived = FALSE AND is_box_summary = FALSE
+                    FOR UPDATE
+                """, character_id, loose_ids)
+                valid_loose = {r["id"] for r in lrows}
+
             dest_of = {}
             for m in moves_in:
                 nid = str(m.get("node_id") or "").strip()
                 frm = str(m.get("from_box") or "").strip()
-                if not nid or member_of.get(nid) != frm or nid in dest_of:
+                if not nid or nid in dest_of:
+                    result["ignored_moves"] += 1
+                    continue
+                if frm:
+                    if member_of.get(nid) != frm:
+                        result["ignored_moves"] += 1
+                        continue
+                elif nid not in valid_loose:
                     result["ignored_moves"] += 1
                     continue
                 to_box = str(m.get("to_box") or "").strip()
@@ -10684,8 +10819,11 @@ async def confirm_event_box_checkup(payload: dict, character_id: str = "default"
                         result["ignored_moves"] += 1
                         continue
                     dest_of[nid] = ("new", idx)
-                else:
+                elif frm:
                     dest_of[nid] = ("single", None)
+                else:
+                    result["ignored_moves"] += 1
+                    continue
 
             new_members = {}
             for nid, d in dest_of.items():
@@ -10694,7 +10832,10 @@ async def confirm_event_box_checkup(payload: dict, character_id: str = "default"
             for idx, ids in list(new_members.items()):
                 if len(ids) < 2:
                     for nid in ids:
-                        dest_of[nid] = ("single", None)
+                        if nid in member_of:
+                            dest_of[nid] = ("single", None)
+                        else:
+                            del dest_of[nid]
                     del new_members[idx]
 
             final = {bid: [n for n in cur[bid] if n not in dest_of] for bid in valid}
@@ -10703,7 +10844,8 @@ async def confirm_event_box_checkup(payload: dict, character_id: str = "default"
                     final[d[1]].append(nid)
             changed = {bid: False for bid in valid}
             for nid, d in dest_of.items():
-                changed[member_of[nid]] = True
+                if nid in member_of:
+                    changed[member_of[nid]] = True
                 if d[0] == "box":
                     changed[d[1]] = True
             dissolved = set()
@@ -10711,7 +10853,10 @@ async def confirm_event_box_checkup(payload: dict, character_id: str = "default"
                 if changed[bid] and len(final[bid]) <= 1:
                     dissolved.add(bid)
                     for nid in final[bid]:
-                        dest_of[nid] = ("single", None)
+                        if nid in member_of:
+                            dest_of[nid] = ("single", None)
+                        else:
+                            dest_of.pop(nid, None)
                     final[bid] = []
             result["moved"] = sum(1 for nid, d in dest_of.items() if not (d[0] == "box" and d[1] == member_of.get(nid)))
 

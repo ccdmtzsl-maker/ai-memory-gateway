@@ -561,7 +561,8 @@ async function runEventBoxCheckup() {
         } else {
             const n = (data.moves || []).length;
             const renames = (data.boxes || []).filter(x => x.suggested_name).length;
-            mpMsg('体检完成：检查 ' + (data.boxes || []).length + ' 个盒子，建议挪动 ' + n + ' 条记忆' + (renames ? '，改名 ' + renames + ' 个' : ''));
+            const sc = Number(data.single_candidates || 0);
+            mpMsg('体检完成：检查 ' + (data.boxes || []).length + ' 个盒子' + (sc ? ' + ' + sc + ' 条散落记忆' : '') + '，建议挪动 ' + n + ' 条记忆' + (renames ? '，改名 ' + renames + ' 个' : ''));
         }
         renderEventBoxCheckupPreview();
     } catch (e) {
@@ -575,7 +576,8 @@ function mpCheckupNodeText(n) {
     const text = String(n.content || '');
     const date = n.date ? '<span style="color:var(--text-muted);font-size:12px;margin-right:6px;">' + mpEsc(n.date) + '</span>' : '';
     const arch = n.archived ? '<span style="font-size:11px;padding:1px 6px;border-radius:999px;background:#f1f5f9;color:#64748b;margin-right:6px;">已归档</span>' : '';
-    return date + arch + mpEsc(text.length > 120 ? text.slice(0, 120) + '…' : text);
+    const novec = n.no_vector ? '<span style="font-size:11px;padding:1px 6px;border-radius:999px;background:#fef3c7;color:#92400e;margin-right:6px;">无向量</span>' : '';
+    return date + arch + novec + mpEsc(text.length > 120 ? text.slice(0, 120) + '…' : text);
 }
 
 // 一条挪动在预览里可能出现两次（来源盒的「移出」和目标盒的「挪进」），两个勾选框联动
@@ -630,7 +632,7 @@ function renderEventBoxCheckupPreview() {
         const stay = (bx.members || []).filter(n => n.move_index === undefined || n.move_index === null);
         const incoming = (bx.members || []).filter(n => !(n.move_index === undefined || n.move_index === null));
         html += mpCheckupSection('留在盒里', '#059669', stay.map(n => '<div style="font-size:13px;line-height:1.6;padding:3px 0 3px 20px;">' + mpCheckupNodeText(n) + '</div>').join(''));
-        html += mpCheckupSection('挪进来', '#0e7490', incoming.map(n => mpCheckupMoveLine(n, '← 来自「' + (n.from_box_name || '') + '」')).join(''));
+        html += mpCheckupSection('挪进来', '#0e7490', incoming.map(n => mpCheckupMoveLine(n, (n.from_box_id ? '← 来自「' + (n.from_box_name || '') + '」' : '← 来自单间'))).join(''));
         html += mpCheckupSection('移出去', '#9a3412', (bx.moved_out || []).map(n => mpCheckupMoveLine(n, '→ ' + (n.to || ''))).join(''));
         html += '</div>';
     });
@@ -639,14 +641,14 @@ function renderEventBoxCheckupPreview() {
         html += '<div style="margin:10px 0;padding:12px;border:1px dashed #2563eb;border-radius:10px;">' +
             '<div style="font-weight:700;color:#2563eb;">新盒</div>' +
             '<input class="mp-checkup-newname" data-group="' + gi + '" value="' + mpEsc(g.name || '') + '" placeholder="新盒名" style="' + inputStyle + 'margin-top:8px;">' +
-            (g.nodes || []).map(n => mpCheckupMoveLine(n, '← 来自「' + (n.from_box_name || '') + '」')).join('') +
+            (g.nodes || []).map(n => mpCheckupMoveLine(n, (n.from_box_id ? '← 来自「' + (n.from_box_name || '') + '」' : '← 来自单间'))).join('') +
             '<div style="font-size:11px;color:var(--text-muted);margin-top:4px;">勾选不到 2 条时不建新盒，勾选的那条变成单间。</div>' +
             '</div>';
     });
     if ((data.singles || []).length) {
         html += '<div style="margin:10px 0;padding:12px;border:1px dashed #9a3412;border-radius:10px;">' +
             '<div style="font-weight:700;color:#9a3412;margin-bottom:4px;">移出成单间</div>' +
-            data.singles.map(n => mpCheckupMoveLine(n, '← 来自「' + (n.from_box_name || '') + '」')).join('') + '</div>';
+            data.singles.map(n => mpCheckupMoveLine(n, (n.from_box_id ? '← 来自「' + (n.from_box_name || '') + '」' : '← 来自单间'))).join('') + '</div>';
     }
     html += '<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px;">' +
         '<button class="btn btn-sm" onclick="toggleCheckupChecks(false)">全不选</button>' +
